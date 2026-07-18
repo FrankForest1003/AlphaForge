@@ -1,0 +1,305 @@
+{
+  "$defs": {
+    "ExecutionSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "end_date": {
+          "format": "date",
+          "title": "End Date",
+          "type": "string"
+        },
+        "initial_cash": {
+          "default": 100000,
+          "exclusiveMinimum": 0,
+          "title": "Initial Cash",
+          "type": "number"
+        },
+        "rebalance": {
+          "const": "monthly",
+          "default": "monthly",
+          "title": "Rebalance",
+          "type": "string"
+        },
+        "resolution": {
+          "const": "daily",
+          "default": "daily",
+          "title": "Resolution",
+          "type": "string"
+        },
+        "start_date": {
+          "format": "date",
+          "title": "Start Date",
+          "type": "string"
+        },
+        "top_k": {
+          "default": 3,
+          "maximum": 10,
+          "minimum": 1,
+          "title": "Top K",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "start_date",
+        "end_date"
+      ],
+      "title": "ExecutionSpec",
+      "type": "object"
+    },
+    "HybridLogic": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "hybrid",
+          "default": "hybrid",
+          "title": "Kind",
+          "type": "string"
+        },
+        "ml": {
+          "$ref": "#/$defs/MLLogic"
+        },
+        "traditional": {
+          "$ref": "#/$defs/TraditionalLogic"
+        },
+        "traditional_weight": {
+          "exclusiveMaximum": 1,
+          "exclusiveMinimum": 0,
+          "title": "Traditional Weight",
+          "type": "number"
+        }
+      },
+      "required": [
+        "traditional",
+        "ml",
+        "traditional_weight"
+      ],
+      "title": "HybridLogic",
+      "type": "object"
+    },
+    "MLLogic": {
+      "additionalProperties": false,
+      "properties": {
+        "feature_set_version": {
+          "title": "Feature Set Version",
+          "type": "string"
+        },
+        "kind": {
+          "const": "ml",
+          "default": "ml",
+          "title": "Kind",
+          "type": "string"
+        },
+        "model": {
+          "enum": [
+            "gradient_boosting",
+            "random_forest"
+          ],
+          "title": "Model",
+          "type": "string"
+        },
+        "prediction_horizon_days": {
+          "maximum": 63,
+          "minimum": 1,
+          "title": "Prediction Horizon Days",
+          "type": "integer"
+        },
+        "random_seed": {
+          "title": "Random Seed",
+          "type": "integer"
+        },
+        "task": {
+          "enum": [
+            "relative_alpha_regression",
+            "direction_classification"
+          ],
+          "title": "Task",
+          "type": "string"
+        },
+        "training_window_days": {
+          "maximum": 2520,
+          "minimum": 252,
+          "title": "Training Window Days",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "model",
+        "task",
+        "training_window_days",
+        "prediction_horizon_days",
+        "feature_set_version",
+        "random_seed"
+      ],
+      "title": "MLLogic",
+      "type": "object"
+    },
+    "RiskConstraints": {
+      "additionalProperties": false,
+      "properties": {
+        "long_only": {
+          "const": true,
+          "default": true,
+          "title": "Long Only",
+          "type": "boolean"
+        },
+        "max_drawdown_limit": {
+          "default": 0.25,
+          "exclusiveMinimum": 0,
+          "maximum": 1,
+          "title": "Max Drawdown Limit",
+          "type": "number"
+        },
+        "max_leverage": {
+          "const": 1.0,
+          "default": 1.0,
+          "title": "Max Leverage",
+          "type": "number"
+        },
+        "max_position_weight": {
+          "default": 0.35,
+          "exclusiveMinimum": 0,
+          "maximum": 0.35,
+          "title": "Max Position Weight",
+          "type": "number"
+        }
+      },
+      "title": "RiskConstraints",
+      "type": "object"
+    },
+    "TraditionalLogic": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "traditional",
+          "default": "traditional",
+          "title": "Kind",
+          "type": "string"
+        },
+        "lookback_days": {
+          "maximum": 504,
+          "minimum": 20,
+          "title": "Lookback Days",
+          "type": "integer"
+        },
+        "signal": {
+          "enum": [
+            "momentum_rank",
+            "mean_reversion_rank"
+          ],
+          "title": "Signal",
+          "type": "string"
+        }
+      },
+      "required": [
+        "signal",
+        "lookback_days"
+      ],
+      "title": "TraditionalLogic",
+      "type": "object"
+    },
+    "UniverseSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "symbols": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 30,
+          "minItems": 10,
+          "title": "Symbols",
+          "type": "array"
+        },
+        "whitelist_version": {
+          "default": "whitelist_v1.0",
+          "title": "Whitelist Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "symbols"
+      ],
+      "title": "UniverseSpec",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Canonical strategy semantics; this is not the final external DSL.",
+  "properties": {
+    "candidate_type": {
+      "enum": [
+        "user",
+        "traditional",
+        "ml",
+        "hybrid"
+      ],
+      "title": "Candidate Type",
+      "type": "string"
+    },
+    "execution": {
+      "$ref": "#/$defs/ExecutionSpec"
+    },
+    "logic": {
+      "discriminator": {
+        "mapping": {
+          "hybrid": "#/$defs/HybridLogic",
+          "ml": "#/$defs/MLLogic",
+          "traditional": "#/$defs/TraditionalLogic"
+        },
+        "propertyName": "kind"
+      },
+      "oneOf": [
+        {
+          "$ref": "#/$defs/TraditionalLogic"
+        },
+        {
+          "$ref": "#/$defs/MLLogic"
+        },
+        {
+          "$ref": "#/$defs/HybridLogic"
+        }
+      ],
+      "title": "Logic"
+    },
+    "parent_strategy_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Parent Strategy Id"
+    },
+    "risk": {
+      "$ref": "#/$defs/RiskConstraints"
+    },
+    "schema_version": {
+      "const": "0.1-draft",
+      "default": "0.1-draft",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "strategy_id": {
+      "maxLength": 120,
+      "minLength": 3,
+      "pattern": "^[a-z0-9][a-z0-9_-]+$",
+      "title": "Strategy Id",
+      "type": "string"
+    },
+    "universe": {
+      "$ref": "#/$defs/UniverseSpec"
+    }
+  },
+  "required": [
+    "strategy_id",
+    "candidate_type",
+    "universe",
+    "execution",
+    "risk",
+    "logic"
+  ],
+  "title": "StrategySpec",
+  "type": "object"
+}

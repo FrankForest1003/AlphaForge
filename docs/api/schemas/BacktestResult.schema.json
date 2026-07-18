@@ -1,0 +1,126 @@
+{
+  "$defs": {
+    "BacktestMetrics": {
+      "additionalProperties": false,
+      "properties": {
+        "annual_volatility": {
+          "minimum": 0,
+          "title": "Annual Volatility",
+          "type": "number"
+        },
+        "cagr": {
+          "title": "Cagr",
+          "type": "number"
+        },
+        "max_drawdown": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Max Drawdown",
+          "type": "number"
+        },
+        "sharpe_ratio": {
+          "title": "Sharpe Ratio",
+          "type": "number"
+        },
+        "sortino_ratio": {
+          "title": "Sortino Ratio",
+          "type": "number"
+        },
+        "total_fees": {
+          "minimum": 0,
+          "title": "Total Fees",
+          "type": "number"
+        },
+        "turnover": {
+          "minimum": 0,
+          "title": "Turnover",
+          "type": "number"
+        }
+      },
+      "required": [
+        "cagr",
+        "sharpe_ratio",
+        "sortino_ratio",
+        "max_drawdown",
+        "annual_volatility",
+        "turnover",
+        "total_fees"
+      ],
+      "title": "BacktestMetrics",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "dataset_split": {
+      "enum": [
+        "train",
+        "validation",
+        "test"
+      ],
+      "title": "Dataset Split",
+      "type": "string"
+    },
+    "metrics": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/BacktestMetrics"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "provider": {
+      "title": "Provider",
+      "type": "string"
+    },
+    "run_id": {
+      "title": "Run Id",
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "completed",
+        "failed"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "strategy_id": {
+      "title": "Strategy Id",
+      "type": "string"
+    },
+    "strategy_role": {
+      "enum": [
+        "user",
+        "baseline_b1",
+        "baseline_b2",
+        "baseline_b3",
+        "baseline_b4",
+        "candidate"
+      ],
+      "title": "Strategy Role",
+      "type": "string"
+    },
+    "warnings": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Warnings",
+      "type": "array"
+    }
+  },
+  "required": [
+    "run_id",
+    "strategy_id",
+    "strategy_role",
+    "status",
+    "dataset_split",
+    "provider"
+  ],
+  "title": "BacktestResult",
+  "type": "object"
+}

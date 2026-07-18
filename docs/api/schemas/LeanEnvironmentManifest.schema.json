@@ -1,0 +1,60 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "brokerage_model": {
+      "title": "Brokerage Model",
+      "type": "string"
+    },
+    "data_version": {
+      "title": "Data Version",
+      "type": "string"
+    },
+    "fee_model": {
+      "title": "Fee Model",
+      "type": "string"
+    },
+    "lean_version": {
+      "title": "Lean Version",
+      "type": "string"
+    },
+    "normalization_mode": {
+      "const": "adjusted",
+      "default": "adjusted",
+      "title": "Normalization Mode",
+      "type": "string"
+    },
+    "provider": {
+      "enum": [
+        "local_lean",
+        "quantconnect_cloud",
+        "mock"
+      ],
+      "title": "Provider",
+      "type": "string"
+    },
+    "python_version": {
+      "title": "Python Version",
+      "type": "string"
+    },
+    "slippage_model": {
+      "title": "Slippage Model",
+      "type": "string"
+    },
+    "time_zone": {
+      "title": "Time Zone",
+      "type": "string"
+    }
+  },
+  "required": [
+    "provider",
+    "lean_version",
+    "python_version",
+    "data_version",
+    "brokerage_model",
+    "fee_model",
+    "slippage_model",
+    "time_zone"
+  ],
+  "title": "LeanEnvironmentManifest",
+  "type": "object"
+}

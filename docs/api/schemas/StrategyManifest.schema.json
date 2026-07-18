@@ -1,0 +1,80 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "data_requirements": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Data Requirements",
+      "type": "array"
+    },
+    "entry_file": {
+      "title": "Entry File",
+      "type": "string"
+    },
+    "parameters": {
+      "additionalProperties": true,
+      "title": "Parameters",
+      "type": "object"
+    },
+    "python_dependencies": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Python Dependencies",
+      "type": "array"
+    },
+    "random_seed": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Random Seed"
+    },
+    "resolution": {
+      "const": "daily",
+      "default": "daily",
+      "title": "Resolution",
+      "type": "string"
+    },
+    "spec_file": {
+      "title": "Spec File",
+      "type": "string"
+    },
+    "strategy_family": {
+      "enum": [
+        "user",
+        "traditional",
+        "ml",
+        "hybrid",
+        "benchmark"
+      ],
+      "title": "Strategy Family",
+      "type": "string"
+    },
+    "strategy_id": {
+      "title": "Strategy Id",
+      "type": "string"
+    },
+    "symbols_source": {
+      "title": "Symbols Source",
+      "type": "string"
+    }
+  },
+  "required": [
+    "strategy_id",
+    "strategy_family",
+    "entry_file",
+    "spec_file",
+    "symbols_source"
+  ],
+  "title": "StrategyManifest",
+  "type": "object"
+}

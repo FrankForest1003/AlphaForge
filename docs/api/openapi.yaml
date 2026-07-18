@@ -1,0 +1,118 @@
+openapi: 3.1.0
+info:
+  title: AlphaForge API
+  version: 0.1.0-draft
+  description: Draft transport contract; the Phase 1 implementation is in-process only.
+servers:
+  - url: /v1
+paths:
+  /optimisations:
+    post:
+      operationId: createOptimisation
+      parameters:
+        - in: header
+          name: Idempotency-Key
+          required: true
+          schema: {type: string, minLength: 8, maxLength: 128}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: ./schemas/OptimizationRequest.schema.json
+      responses:
+        "202":
+          description: Job accepted
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [optimization_id, status, status_url]
+                properties:
+                  optimization_id: {type: string}
+                  status: {const: queued}
+                  status_url: {type: string}
+        "422":
+          $ref: "#/components/responses/ContractError"
+        "409":
+          $ref: "#/components/responses/ContractError"
+  /optimisations/{optimization_id}:
+    get:
+      operationId: getOptimisation
+      parameters:
+        - in: path
+          name: optimization_id
+          required: true
+          schema: {type: string}
+      responses:
+        "200":
+          description: Current or completed job representation
+          content:
+            application/json:
+              schema:
+                $ref: ./schemas/OptimizationResult.schema.json
+        "404":
+          $ref: "#/components/responses/ContractError"
+  /backtests:
+    post:
+      operationId: createBacktest
+      parameters:
+        - in: header
+          name: Idempotency-Key
+          required: true
+          schema: {type: string, minLength: 8, maxLength: 128}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: ./schemas/BacktestSubmission.schema.json
+      responses:
+        "202":
+          description: Backtest accepted
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [run_id, status, status_url]
+                properties:
+                  run_id: {type: string}
+                  status: {const: queued}
+                  status_url: {type: string}
+        "422":
+          $ref: "#/components/responses/ContractError"
+  /backtests/{run_id}:
+    get:
+      operationId: getBacktest
+      parameters:
+        - in: path
+          name: run_id
+          required: true
+          schema: {type: string}
+      responses:
+        "200":
+          description: Normalised completed result
+          content:
+            application/json:
+              schema:
+                $ref: ./schemas/BacktestResult.schema.json
+        "404":
+          $ref: "#/components/responses/ContractError"
+components:
+  responses:
+    ContractError:
+      description: Contract or policy error
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [error]
+            properties:
+              error:
+                type: object
+                required: [code, message, request_id]
+                properties:
+                  code: {type: string}
+                  message: {type: string}
+                  request_id: {type: string}
+                  details: {type: array, items: {type: object}}
