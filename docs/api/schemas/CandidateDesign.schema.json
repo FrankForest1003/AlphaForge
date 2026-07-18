@@ -1,49 +1,24 @@
 {
   "$defs": {
-    "ExecutionSpec": {
+    "ExecutionChanges": {
       "additionalProperties": false,
       "properties": {
-        "end_date": {
-          "format": "date",
-          "title": "End Date",
-          "type": "string"
-        },
-        "initial_cash": {
-          "default": 100000,
-          "exclusiveMinimum": 0,
-          "title": "Initial Cash",
-          "type": "number"
-        },
-        "rebalance": {
-          "const": "monthly",
-          "default": "monthly",
-          "title": "Rebalance",
-          "type": "string"
-        },
-        "resolution": {
-          "const": "daily",
-          "default": "daily",
-          "title": "Resolution",
-          "type": "string"
-        },
-        "start_date": {
-          "format": "date",
-          "title": "Start Date",
-          "type": "string"
-        },
         "top_k": {
-          "default": 3,
-          "maximum": 10,
-          "minimum": 1,
-          "title": "Top K",
-          "type": "integer"
+          "anyOf": [
+            {
+              "maximum": 10,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Top K"
         }
       },
-      "required": [
-        "start_date",
-        "end_date"
-      ],
-      "title": "ExecutionSpec",
+      "title": "ExecutionChanges",
       "type": "object"
     },
     "HybridLogic": {
@@ -133,37 +108,11 @@
       "title": "MLLogic",
       "type": "object"
     },
-    "RiskConstraints": {
+    "RiskChanges": {
       "additionalProperties": false,
-      "properties": {
-        "long_only": {
-          "const": true,
-          "default": true,
-          "title": "Long Only",
-          "type": "boolean"
-        },
-        "max_drawdown_limit": {
-          "default": 0.25,
-          "exclusiveMinimum": 0,
-          "maximum": 1,
-          "title": "Max Drawdown Limit",
-          "type": "number"
-        },
-        "max_leverage": {
-          "const": 1.0,
-          "default": 1.0,
-          "title": "Max Leverage",
-          "type": "number"
-        },
-        "max_position_weight": {
-          "default": 0.35,
-          "exclusiveMinimum": 0,
-          "maximum": 0.35,
-          "title": "Max Position Weight",
-          "type": "number"
-        }
-      },
-      "title": "RiskConstraints",
+      "description": "No risk-policy changes are permitted in the first contract version.",
+      "properties": {},
+      "title": "RiskChanges",
       "type": "object"
     },
     "TraditionalLogic": {
@@ -196,38 +145,12 @@
       ],
       "title": "TraditionalLogic",
       "type": "object"
-    },
-    "UniverseSpec": {
-      "additionalProperties": false,
-      "properties": {
-        "symbols": {
-          "items": {
-            "type": "string"
-          },
-          "maxItems": 30,
-          "minItems": 10,
-          "title": "Symbols",
-          "type": "array"
-        },
-        "whitelist_version": {
-          "default": "whitelist_v1.0",
-          "title": "Whitelist Version",
-          "type": "string"
-        }
-      },
-      "required": [
-        "symbols"
-      ],
-      "title": "UniverseSpec",
-      "type": "object"
     }
   },
   "additionalProperties": false,
-  "description": "Canonical strategy semantics used by every downstream component.",
   "properties": {
     "candidate_type": {
       "enum": [
-        "user",
         "traditional",
         "ml",
         "hybrid"
@@ -235,8 +158,24 @@
       "title": "Candidate Type",
       "type": "string"
     },
-    "execution": {
-      "$ref": "#/$defs/ExecutionSpec"
+    "design_reasons": {
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1,
+      "title": "Design Reasons",
+      "type": "array"
+    },
+    "execution_changes": {
+      "$ref": "#/$defs/ExecutionChanges"
+    },
+    "expected_tradeoffs": {
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1,
+      "title": "Expected Tradeoffs",
+      "type": "array"
     },
     "logic": {
       "discriminator": {
@@ -260,46 +199,18 @@
       ],
       "title": "Logic"
     },
-    "parent_strategy_id": {
-      "anyOf": [
-        {
-          "type": "string"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "default": null,
-      "title": "Parent Strategy Id"
-    },
-    "risk": {
-      "$ref": "#/$defs/RiskConstraints"
-    },
-    "schema_version": {
-      "const": "1.0",
-      "default": "1.0",
-      "title": "Schema Version",
-      "type": "string"
-    },
-    "strategy_id": {
-      "maxLength": 120,
-      "minLength": 3,
-      "pattern": "^[a-z0-9][a-z0-9_-]+$",
-      "title": "Strategy Id",
-      "type": "string"
-    },
-    "universe": {
-      "$ref": "#/$defs/UniverseSpec"
+    "risk_changes": {
+      "$ref": "#/$defs/RiskChanges"
     }
   },
   "required": [
-    "strategy_id",
     "candidate_type",
-    "universe",
-    "execution",
-    "risk",
-    "logic"
+    "logic",
+    "execution_changes",
+    "risk_changes",
+    "design_reasons",
+    "expected_tradeoffs"
   ],
-  "title": "StrategySpec",
+  "title": "CandidateDesign",
   "type": "object"
 }

@@ -75,9 +75,9 @@ StrategyLogic = Annotated[
 
 
 class StrategySpec(StrictModel):
-    """Canonical strategy semantics; this is not the final external DSL."""
+    """Canonical strategy semantics used by every downstream component."""
 
-    schema_version: Literal["0.1-draft"] = "0.1-draft"
+    schema_version: Literal["1.0"] = "1.0"
     strategy_id: str = Field(min_length=3, max_length=120, pattern=r"^[a-z0-9][a-z0-9_-]+$")
     parent_strategy_id: str | None = None
     candidate_type: CandidateType

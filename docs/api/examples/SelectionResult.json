@@ -1,0 +1,43 @@
+{
+  "selected_strategy_id": "opt_001_hybrid_r1",
+  "eligible_strategy_ids": ["opt_001_hybrid_r1"],
+  "candidates": [
+    {
+      "strategy_id": "opt_001_hybrid_r1",
+      "eligible": true,
+      "checks": [
+        {
+          "name": "pipeline_eligible",
+          "passed": true,
+          "actual": "backtested_not_selected",
+          "required": "backtested_not_selected"
+        },
+        {
+          "name": "result_completed",
+          "passed": true,
+          "actual": "completed",
+          "required": "completed"
+        },
+        {
+          "name": "min_sharpe_improvement",
+          "passed": true,
+          "actual": 0.16,
+          "required": 0.05
+        },
+        {
+          "name": "max_drawdown_deterioration",
+          "passed": true,
+          "actual": -0.02,
+          "required": 0.02
+        },
+        {
+          "name": "max_drawdown_limit",
+          "passed": true,
+          "actual": 0.16,
+          "required": 0.25
+        }
+      ]
+    }
+  ],
+  "no_robust_improvement": false
+}

@@ -4,7 +4,14 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from alphaforge.schemas.agent_outputs import OptimizationResult
+from alphaforge.schemas.agent_outputs import (
+    CandidateDesign,
+    CodeRiskReview,
+    GeneratedCode,
+    OptimizationResult,
+    PostBacktestAnalysis,
+    SelectionResult,
+)
 from alphaforge.schemas.backtest import BacktestResult, BacktestSubmission
 from alphaforge.schemas.manifests import LeanEnvironmentManifest, StrategyManifest
 from alphaforge.schemas.optimisation import OptimizationRequest
@@ -16,6 +23,11 @@ def main() -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     models = (
         StrategySpec,
+        CandidateDesign,
+        GeneratedCode,
+        CodeRiskReview,
+        PostBacktestAnalysis,
+        SelectionResult,
         StrategyManifest,
         LeanEnvironmentManifest,
         BacktestSubmission,

@@ -2,79 +2,274 @@ from __future__ import annotations
 
 from typing import Literal
 
-from alphaforge.schemas.backtest import BacktestResult
-from alphaforge.schemas.strategy_spec import CandidateType, StrategySpec, StrictModel
+from pydantic import Field, model_validator
+
+from alphaforge.schemas.backtest import BacktestResult, SmokeTestResult
+from alphaforge.schemas.manifests import LeanEnvironmentManifest
+from alphaforge.schemas.strategy_spec import (
+    CandidateType,
+    StrategyLogic,
+    StrategySpec,
+    StrictModel,
+)
+
+MetricName = Literal[
+    "cagr",
+    "sharpe_ratio",
+    "sortino_ratio",
+    "max_drawdown",
+    "annual_volatility",
+    "turnover",
+    "total_fees",
+]
+RouteType = Literal["traditional", "ml", "hybrid"]
 
 
-class MetricObservation(StrictModel):
-    metric: str
-    strategy_id: str
-    value: float
-    interpretation: str
+class MetricComparison(StrictModel):
+    metric: MetricName
+    objective: Literal["higher", "lower"]
+    user_value: float
+    best_strategy_id: str
+    best_run_id: str
+    best_value: float
+    user_gap: float
 
 
-class BaselineAnalysis(StrictModel):
-    evidence_run_ids: tuple[str, ...]
-    observations: tuple[MetricObservation, ...]
-    design_priorities: tuple[str, ...]
+class EvidenceSummary(StrictModel):
+    evidence_run_ids: tuple[str, ...] = Field(min_length=5, max_length=5)
+    comparisons: tuple[MetricComparison, ...] = Field(min_length=7, max_length=7)
 
 
-class CandidateProposal(StrictModel):
-    candidate_type: Literal["traditional", "ml", "hybrid"]
+class ExecutionChanges(StrictModel):
+    top_k: int | None = Field(default=None, ge=1, le=10)
+
+
+class RiskChanges(StrictModel):
+    """No risk-policy changes are permitted in the first contract version."""
+
+
+class CandidateDesign(StrictModel):
+    candidate_type: RouteType
+    logic: StrategyLogic
+    execution_changes: ExecutionChanges
+    risk_changes: RiskChanges
+    design_reasons: tuple[str, ...] = Field(min_length=1)
+    expected_tradeoffs: tuple[str, ...] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def route_matches_logic(self) -> "CandidateDesign":
+        if self.logic.kind != self.candidate_type:
+            raise ValueError("candidate_type must match logic.kind")
+        return self
+
+
+class DesignRequest(StrictModel):
+    optimization_id: str
+    candidate_type: RouteType
+    parent_spec: StrategySpec
+    evidence_summary: EvidenceSummary
+
+
+class BuiltCandidate(StrictModel):
+    design: CandidateDesign
     spec: StrategySpec
     changed_paths: tuple[str, ...]
-    design_reasons: tuple[str, ...]
-    expected_tradeoffs: tuple[str, ...]
 
 
-class RiskReview(StrictModel):
-    verdict: Literal["approve", "reject"]
-    reason_codes: tuple[str, ...] = ()
-    reviewed_strategy_id: str
+class QCCodeGenerationRequest(StrictModel):
+    strategy_spec: StrategySpec
+    spec_sha256: str
+    lean_environment: LeanEnvironmentManifest
+    allowed_qc_api: tuple[str, ...] = Field(min_length=1)
+    template_version: str
 
 
 class GeneratedCode(StrictModel):
     strategy_id: str
     language: Literal["python"] = "python"
-    generator: str
+    entry_file: Literal["main.py"] = "main.py"
     source: str
-    sha256: str
+    source_sha256: str
     spec_sha256: str
+    used_qc_api: tuple[str, ...]
+    assumptions: tuple[str, ...]
+    generator_metadata: dict[str, str]
 
 
 class CodeValidationResult(StrictModel):
     valid: bool
     errors: tuple[str, ...] = ()
+    warnings: tuple[str, ...] = ()
+    observed_qc_api: tuple[str, ...] = ()
+
+
+class CodeRiskFinding(StrictModel):
+    code: str
+    severity: Literal["warning", "blocking"]
+    category: Literal[
+        "spec_drift",
+        "position_sizing",
+        "order_lifecycle",
+        "indicator_readiness",
+        "lookahead",
+        "ml_leakage",
+        "exposure",
+        "execution",
+    ]
+    code_location: str
+    evidence: str
+    risk: str
+    repair_instruction: str
+
+
+class CodeRiskReviewRequest(StrictModel):
+    strategy_spec: StrategySpec
+    generated_code: GeneratedCode
+    static_validation: CodeValidationResult
+    lean_environment: LeanEnvironmentManifest
+
+
+class CodeRiskReview(StrictModel):
+    strategy_id: str
+    reviewed_source_sha256: str
+    spec_sha256: str
+    verdict: Literal["approve", "repair_required", "reject"]
+    findings: tuple[CodeRiskFinding, ...] = ()
+
+    @model_validator(mode="after")
+    def verdict_matches_findings(self) -> "CodeRiskReview":
+        blocking = any(finding.severity == "blocking" for finding in self.findings)
+        if self.verdict == "approve" and blocking:
+            raise ValueError("approve cannot include blocking findings")
+        if self.verdict == "repair_required" and not blocking:
+            raise ValueError("repair_required needs at least one blocking finding")
+        return self
 
 
 class RepairRequest(StrictModel):
-    spec: StrategySpec
+    strategy_spec: StrategySpec
     failed_code: GeneratedCode
-    validation_errors: tuple[str, ...]
-    attempt: int
+    lean_environment: LeanEnvironmentManifest
+    failure_source: Literal["static_validation", "code_risk", "smoke_test"]
+    diagnostics: tuple[str, ...] = Field(min_length=1)
+    attempt: int = Field(ge=1, le=3)
 
 
-class CandidateDecision(StrictModel):
-    verdict: Literal["accept", "reject"]
-    reason_codes: tuple[str, ...]
+class RouteOutcome(StrictModel):
+    candidate_type: RouteType
+    state: Literal[
+        "rejected_by_design",
+        "rejected_by_spec",
+        "rejected_by_code_validation",
+        "rejected_by_code_risk",
+        "rejected_by_smoke_test",
+        "backtested_not_selected",
+        "selected",
+    ]
+    strategy_spec: StrategySpec | None = None
+    changed_paths: tuple[str, ...] = ()
+    backtest_result: BacktestResult | None = None
+    failure_reasons: tuple[str, ...] = ()
+
+
+class PostBacktestAnalysisRequest(StrictModel):
+    optimization_id: str
+    parent_spec: StrategySpec
+    evidence: tuple[BacktestResult, ...] = Field(min_length=5, max_length=5)
+    route_outcomes: tuple[RouteOutcome, ...] = Field(min_length=3, max_length=3)
+
+
+class MetricValue(StrictModel):
+    strategy_id: str
+    run_id: str
+    value: float
+
+
+class MetricAnalysis(StrictModel):
+    metric: MetricName
+    values: tuple[MetricValue, ...] = Field(min_length=1)
+    best_strategy_id: str
+    interpretation: str
+
+
+class CandidateAssessment(StrictModel):
+    strategy_id: str
+    strengths: tuple[str, ...] = Field(min_length=1)
+    weaknesses: tuple[str, ...] = Field(min_length=1)
+    tradeoffs: tuple[str, ...] = Field(min_length=1)
+    evidence_run_ids: tuple[str, ...] = Field(min_length=1)
+
+
+class PostBacktestAnalysis(StrictModel):
+    metric_analysis: tuple[MetricAnalysis, ...] = Field(min_length=7, max_length=7)
+    candidate_assessments: tuple[CandidateAssessment, ...]
+    recommended_strategy_ids: tuple[str, ...]
+    no_robust_improvement: bool
+    summary: str
+
+    @model_validator(mode="after")
+    def covers_every_metric_once(self) -> "PostBacktestAnalysis":
+        expected = {
+            "cagr",
+            "sharpe_ratio",
+            "sortino_ratio",
+            "max_drawdown",
+            "annual_volatility",
+            "turnover",
+            "total_fees",
+        }
+        observed = {analysis.metric for analysis in self.metric_analysis}
+        if observed != expected or len(observed) != len(self.metric_analysis):
+            raise ValueError("metric_analysis must contain each required metric exactly once")
+        return self
+
+
+class SelectionCheck(StrictModel):
+    name: Literal[
+        "pipeline_eligible",
+        "result_completed",
+        "min_sharpe_improvement",
+        "max_drawdown_deterioration",
+        "max_drawdown_limit",
+    ]
+    passed: bool
+    actual: float | str
+    required: float | str
+
+
+class CandidateSelection(StrictModel):
+    strategy_id: str
+    eligible: bool
+    checks: tuple[SelectionCheck, ...]
+
+
+class SelectionResult(StrictModel):
+    selected_strategy_id: str | None
+    eligible_strategy_ids: tuple[str, ...]
+    candidates: tuple[CandidateSelection, ...]
+    no_robust_improvement: bool
 
 
 class CandidateRun(StrictModel):
-    candidate_type: Literal["traditional", "ml", "hybrid"]
+    candidate_type: RouteType
     state: Literal[
-        "accepted",
-        "rejected_by_validation",
-        "rejected_by_risk",
-        "rejected_by_code",
-        "rejected_after_backtest",
+        "rejected_by_design",
+        "rejected_by_spec",
+        "rejected_by_code_validation",
+        "rejected_by_code_risk",
+        "rejected_by_smoke_test",
+        "backtested_not_selected",
+        "selected",
     ]
-    proposal: CandidateProposal
-    risk_review: RiskReview | None = None
+    design: CandidateDesign | None = None
+    strategy_spec: StrategySpec | None = None
+    changed_paths: tuple[str, ...] = ()
     generated_code: GeneratedCode | None = None
     code_validation: CodeValidationResult | None = None
+    code_risk_review: CodeRiskReview | None = None
+    smoke_test: SmokeTestResult | None = None
     backtest_result: BacktestResult | None = None
-    decision: CandidateDecision | None = None
-    validation_errors: tuple[str, ...] = ()
+    failure_reasons: tuple[str, ...] = ()
 
 
 class AuditEvent(StrictModel):
@@ -88,10 +283,13 @@ class AuditEvent(StrictModel):
 class OptimizationResult(StrictModel):
     optimization_id: str
     status: Literal["completed", "failed"]
-    analysis: BaselineAnalysis
-    candidates: tuple[CandidateRun, ...]
+    evidence_summary: EvidenceSummary
+    candidates: tuple[CandidateRun, ...] = Field(min_length=3, max_length=3)
+    post_backtest_analysis: PostBacktestAnalysis | None
+    selection: SelectionResult
+    analysis_error: str | None = None
     audit_log: tuple[AuditEvent, ...]
 
     @property
-    def accepted_types(self) -> tuple[CandidateType, ...]:
-        return tuple(c.candidate_type for c in self.candidates if c.state == "accepted")
+    def selected_types(self) -> tuple[CandidateType, ...]:
+        return tuple(c.candidate_type for c in self.candidates if c.state == "selected")

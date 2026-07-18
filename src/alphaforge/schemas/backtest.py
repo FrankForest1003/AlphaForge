@@ -30,6 +30,13 @@ class BacktestResult(StrictModel):
     warnings: tuple[str, ...] = ()
 
 
+class SmokeTestResult(StrictModel):
+    strategy_id: str
+    status: Literal["passed", "failed"]
+    diagnostics: tuple[str, ...] = ()
+    provider: str
+
+
 class BacktestSubmission(StrictModel):
     """Transport-safe request; code artefacts are referenced, never embedded paths."""
 

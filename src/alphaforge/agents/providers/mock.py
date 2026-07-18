@@ -1,145 +1,184 @@
 from __future__ import annotations
 
+import hashlib
+
+from alphaforge.codegen.code_validator import DEFAULT_ALLOWED_QC_API
 from alphaforge.schemas.agent_outputs import (
-    BaselineAnalysis,
-    CandidateDecision,
-    CandidateProposal,
+    CandidateAssessment,
+    CandidateDesign,
+    CodeRiskReview,
+    CodeRiskReviewRequest,
+    DesignRequest,
+    ExecutionChanges,
     GeneratedCode,
-    MetricObservation,
-    RiskReview,
+    MetricAnalysis,
+    MetricValue,
+    PostBacktestAnalysis,
+    PostBacktestAnalysisRequest,
+    QCCodeGenerationRequest,
+    RepairRequest,
+    RiskChanges,
 )
-from alphaforge.schemas.backtest import BacktestMetrics, BacktestResult
-from alphaforge.schemas.optimisation import OptimizationRequest
-from alphaforge.schemas.strategy_spec import (
-    CandidateType,
-    HybridLogic,
-    MLLogic,
-    StrategySpec,
-    TraditionalLogic,
-)
+from alphaforge.schemas.backtest import BacktestMetrics, BacktestResult, SmokeTestResult
+from alphaforge.schemas.strategy_spec import HybridLogic, MLLogic, TraditionalLogic
+from alphaforge.strategy_spec.versioning import strategy_spec_digest
 
 
-class MockAgentProvider:
-    """Deterministic Agent simulator with no model, network, or hidden market evidence."""
-
-    def analyze(self, request: OptimizationRequest) -> BaselineAnalysis:
-        complete = [r for r in request.evidence if r.metrics is not None]
-        best_sharpe = max(complete, key=lambda r: r.metrics.sharpe_ratio)  # type: ignore[union-attr]
-        lowest_drawdown = min(complete, key=lambda r: r.metrics.max_drawdown)  # type: ignore[union-attr]
-        return BaselineAnalysis(
-            evidence_run_ids=tuple(r.run_id for r in complete),
-            observations=(
-                MetricObservation(
-                    metric="sharpe_ratio",
-                    strategy_id=best_sharpe.strategy_id,
-                    value=best_sharpe.metrics.sharpe_ratio,  # type: ignore[union-attr]
-                    interpretation="highest validation Sharpe among supplied evidence",
-                ),
-                MetricObservation(
-                    metric="max_drawdown",
-                    strategy_id=lowest_drawdown.strategy_id,
-                    value=lowest_drawdown.metrics.max_drawdown,  # type: ignore[union-attr]
-                    interpretation="lowest validation drawdown among supplied evidence",
-                ),
-            ),
-            design_priorities=(
-                "preserve the approved universe and comparison period",
-                "improve risk-adjusted return without breaching the drawdown limit",
-                "keep traditional, ML and hybrid signal sources distinct",
-            ),
-        )
-
-    def propose(
-        self,
-        route: CandidateType,
-        request: OptimizationRequest,
-        analysis: BaselineAnalysis,
-    ) -> CandidateProposal:
-        if route not in ("traditional", "ml", "hybrid"):
-            raise ValueError(f"unsupported candidate route: {route}")
-
-        parent = request.parent_spec
+class MockStrategyDesigner:
+    def design(self, request: DesignRequest) -> CandidateDesign:
         traditional = TraditionalLogic(signal="momentum_rank", lookback_days=126)
         ml = MLLogic(
             model="gradient_boosting",
             task="relative_alpha_regression",
             training_window_days=756,
             prediction_horizon_days=21,
-            feature_set_version="features_v0_mock",
+            feature_set_version="features_v1",
             random_seed=42,
         )
         logic = {
             "traditional": traditional,
             "ml": ml,
             "hybrid": HybridLogic(traditional=traditional, ml=ml, traditional_weight=0.5),
-        }[route]
-
-        spec = parent.model_copy(
-            update={
-                "strategy_id": f"{request.optimization_id}_{route}_r1",
-                "parent_strategy_id": parent.strategy_id,
-                "candidate_type": route,
-                "logic": logic,
-            }
-        )
-        spec = StrategySpec.model_validate(spec.model_dump())
-        return CandidateProposal(
-            candidate_type=route,
-            spec=spec,
-            changed_paths=("/candidate_type", "/logic"),
-            design_reasons=(
-                f"construct an isolated {route} route from the same parent and evidence",
-                "use only validation metrics referenced by the baseline analysis",
-            ),
-            expected_tradeoffs=(
-                "the mock result is a plumbing test and is not evidence of investment performance",
-            ),
+        }[request.candidate_type]
+        return CandidateDesign(
+            candidate_type=request.candidate_type,
+            logic=logic,
+            execution_changes=ExecutionChanges(top_k=3),
+            risk_changes=RiskChanges(),
+            design_reasons=(f"create a distinct {request.candidate_type} candidate",),
+            expected_tradeoffs=("candidate complexity may increase implementation risk",),
         )
 
-    def review_risk(self, proposal: CandidateProposal) -> RiskReview:
-        reasons: list[str] = []
-        spec = proposal.spec
-        if spec.risk.max_position_weight > 0.35:
-            reasons.append("POSITION_CAP_EXCEEDED")
-        if not spec.risk.long_only or spec.risk.max_leverage != 1.0:
-            reasons.append("DIRECTION_OR_LEVERAGE_VIOLATION")
-        return RiskReview(
-            verdict="reject" if reasons else "approve",
-            reason_codes=tuple(reasons),
-            reviewed_strategy_id=spec.strategy_id,
+
+class MockQCCodeAgent:
+    def generate(self, request: QCCodeGenerationRequest) -> GeneratedCode:
+        spec = request.strategy_spec
+        symbols = ", ".join(repr(symbol) for symbol in spec.universe.symbols)
+        source = (
+            "from AlgorithmImports import *\n\n"
+            "class AlphaForgeAlgorithm(QCAlgorithm):\n"
+            "    def Initialize(self):\n"
+            f"        self.SetStartDate({spec.execution.start_date.year}, {spec.execution.start_date.month}, {spec.execution.start_date.day})\n"
+            f"        self.SetEndDate({spec.execution.end_date.year}, {spec.execution.end_date.month}, {spec.execution.end_date.day})\n"
+            f"        self.SetCash({spec.execution.initial_cash})\n"
+            f"        for ticker in [{symbols}]:\n"
+            "            self.AddEquity(ticker, Resolution.Daily)\n"
+        )
+        used = (
+            "QCAlgorithm",
+            "SetStartDate",
+            "SetEndDate",
+            "SetCash",
+            "AddEquity",
+            "Resolution.Daily",
+        )
+        return GeneratedCode(
+            strategy_id=spec.strategy_id,
+            source=source,
+            source_sha256=hashlib.sha256(source.encode("utf-8")).hexdigest(),
+            spec_sha256=request.spec_sha256,
+            used_qc_api=used,
+            assumptions=("daily adjusted equity data are available",),
+            generator_metadata={"agent": "mock_qc_code", "template_version": request.template_version},
         )
 
-    def decide(
-        self,
-        request: OptimizationRequest,
-        proposal: CandidateProposal,
-        result: BacktestResult,
-    ) -> CandidateDecision:
-        parent_result = next(r for r in request.evidence if r.strategy_role == "user")
-        if result.metrics is None or parent_result.metrics is None:
-            return CandidateDecision(verdict="reject", reason_codes=("MISSING_METRICS",))
 
-        reasons: list[str] = []
-        if result.metrics.sharpe_ratio < (
-            parent_result.metrics.sharpe_ratio + request.constraints.min_sharpe_improvement
-        ):
-            reasons.append("INSUFFICIENT_SHARPE_IMPROVEMENT")
-        if result.metrics.max_drawdown > (
-            parent_result.metrics.max_drawdown
-            + request.constraints.max_drawdown_deterioration
-        ):
-            reasons.append("DRAWDOWN_DETERIORATION")
-        if result.metrics.max_drawdown > proposal.spec.risk.max_drawdown_limit:
-            reasons.append("DRAWDOWN_LIMIT_BREACH")
-        return CandidateDecision(
-            verdict="reject" if reasons else "accept",
-            reason_codes=tuple(reasons) if reasons else ("VALIDATION_THRESHOLDS_MET",),
+class MockCodeRiskAgent:
+    def review(self, request: CodeRiskReviewRequest) -> CodeRiskReview:
+        return CodeRiskReview(
+            strategy_id=request.strategy_spec.strategy_id,
+            reviewed_source_sha256=request.generated_code.source_sha256,
+            spec_sha256=request.generated_code.spec_sha256,
+            verdict="approve",
+            findings=(),
+        )
+
+
+class MockRepairAgent:
+    def __init__(self) -> None:
+        self.generator = MockQCCodeAgent()
+
+    def repair(self, request: RepairRequest) -> GeneratedCode:
+        return self.generator.generate(
+            QCCodeGenerationRequest(
+                strategy_spec=request.strategy_spec,
+                spec_sha256=strategy_spec_digest(request.strategy_spec),
+                lean_environment=request.lean_environment,
+                allowed_qc_api=DEFAULT_ALLOWED_QC_API,
+                template_version="qc_template_v1",
+            )
+        )
+
+
+class MockPostBacktestAnalysisAgent:
+    OBJECTIVES = {
+        "cagr": "higher",
+        "sharpe_ratio": "higher",
+        "sortino_ratio": "higher",
+        "max_drawdown": "lower",
+        "annual_volatility": "lower",
+        "turnover": "lower",
+        "total_fees": "lower",
+    }
+
+    def analyze(self, request: PostBacktestAnalysisRequest) -> PostBacktestAnalysis:
+        completed = [
+            outcome.backtest_result
+            for outcome in request.route_outcomes
+            if outcome.backtest_result is not None and outcome.backtest_result.metrics is not None
+        ]
+        all_results = [*request.evidence, *completed]
+        metric_analysis: list[MetricAnalysis] = []
+        for metric, objective in self.OBJECTIVES.items():
+            available = [result for result in all_results if result.metrics is not None]
+            best = sorted(
+                available,
+                key=lambda result: getattr(result.metrics, metric),
+                reverse=objective == "higher",
+            )[0]
+            metric_analysis.append(
+                MetricAnalysis(
+                    metric=metric,
+                    values=tuple(
+                        MetricValue(
+                            strategy_id=result.strategy_id,
+                            run_id=result.run_id,
+                            value=float(getattr(result.metrics, metric)),
+                        )
+                        for result in available
+                    ),
+                    best_strategy_id=best.strategy_id,
+                    interpretation=f"{best.strategy_id} has the {objective}-preferred {metric}",
+                )
+            )
+        assessments = tuple(
+            CandidateAssessment(
+                strategy_id=result.strategy_id,
+                strengths=("completed the controlled validation run",),
+                weaknesses=("requires robustness testing before any research conclusion",),
+                tradeoffs=("return, risk, turnover, and fees must be considered together",),
+                evidence_run_ids=(result.run_id,),
+            )
+            for result in completed
+        )
+        ranking = tuple(
+            result.strategy_id
+            for result in sorted(
+                completed,
+                key=lambda result: result.metrics.sharpe_ratio,  # type: ignore[union-attr]
+                reverse=True,
+            )
+        )
+        return PostBacktestAnalysis(
+            metric_analysis=tuple(metric_analysis),
+            candidate_assessments=assessments,
+            recommended_strategy_ids=ranking,
+            no_robust_improvement=not completed,
+            summary="All completed candidates were compared using one normalized evidence set.",
         )
 
 
 class MockBacktestProvider:
-    """Fixed fixtures used only to prove orchestration and decision paths."""
-
     _METRICS = {
         "traditional": BacktestMetrics(
             cagr=0.13,
@@ -170,17 +209,22 @@ class MockBacktestProvider:
         ),
     }
 
-    def run(self, spec: StrategySpec, code: GeneratedCode) -> BacktestResult:
-        if code.strategy_id != spec.strategy_id:
-            raise ValueError("generated code strategy_id does not match spec")
-        metrics = self._METRICS[spec.candidate_type]
+    def smoke_test(self, spec, code) -> SmokeTestResult:
+        return SmokeTestResult(
+            strategy_id=spec.strategy_id,
+            status="passed",
+            diagnostics=(),
+            provider="mock_lean_smoke",
+        )
+
+    def run(self, spec, code) -> BacktestResult:
         return BacktestResult(
             run_id=f"mock-run-{spec.strategy_id}",
             strategy_id=spec.strategy_id,
             strategy_role="candidate",
             status="completed",
             dataset_split="validation",
-            provider="mock-backtest-v1",
-            metrics=metrics,
+            provider="mock_backtest",
+            metrics=self._METRICS[spec.candidate_type],
             warnings=("SIMULATED_RESULT_NOT_FINANCIAL_EVIDENCE",),
         )

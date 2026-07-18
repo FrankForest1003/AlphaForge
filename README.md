@@ -1,41 +1,47 @@
 # AlphaForge
 
-AlphaForge is a risk-aware multi-agent research platform that converts evidence from standardised backtests into three candidate strategy routes: traditional, machine learning, and hybrid. Strategy semantics are represented by a canonical typed model; generated LEAN code is an execution artefact, not the source of truth.
+AlphaForge is a risk-aware multi-agent research platform for designing, generating, validating, backtesting and comparing QuantConnect/LEAN trading strategies.
 
-This repository currently contains the Phase 1 Agent architecture and a deterministic mock vertical slice. It deliberately does **not** claim to run QuantConnect LEAN yet and does not use test-set evidence for optimisation.
-
-## Quick start
-
-```bash
-conda run -n ml_env python -m pip install -e '.[dev]'
-conda run -n ml_env python scripts/run_mock_optimisation.py
-conda run -n ml_env pytest
-```
-
-The mock run exercises:
+## Final pipeline
 
 ```text
-5 validation backtest results
-→ baseline analysis
-→ traditional / ML / hybrid proposals
-→ deterministic spec validation
-→ risk review
-→ deterministic code artefact generation
-→ mock backtest provider
-→ accept/reject decisions and audit trail
+Five normalized validation results
+→ deterministic evidence summary
+→ Traditional / ML / Hybrid Strategy Designers
+→ strict CandidateDesign validation
+→ deterministic SpecBuilder
+→ StrategySpec validation
+→ QC Code Agent
+→ static QC code validation
+→ Code Risk Agent
+→ bounded Repair Agent when required
+→ LEAN smoke test
+→ full backtest
+→ one unified post-backtest analysis
+→ deterministic candidate selection
 ```
 
-## Start here
+The Strategy Designer controls only strategy logic and explicitly allowed execution changes. The system owns strategy IDs, universe, dates, capital, execution protocol and hard risk policy.
 
-- `docs/context/ALPHAFORGE_TEAM_CONTEXT.md`: current frozen and open project decisions.
-- `docs/api/README.md`: interface-document index and stability rules.
-- `docs/architecture/SYSTEM_ARCHITECTURE.md`: dependency boundaries.
-- `docs/architecture/AGENT_ARCHITECTURE.md`: Agent state machine and mock scope.
-- `docs/decisions/ADR-0001-DRAFT-CANONICAL-SPEC-BOUNDARY.md`: how work continues before the final DSL is frozen.
+The Code Risk Agent reviews generated code before any backtest evidence exists. Its request type contains the StrategySpec, source code, static validation report and LEAN environment only.
 
-## Current limits
+The post-backtest analysis Agent compares all completed routes in one call. Final eligibility and selection remain deterministic.
 
-- All Agent and backtest behaviour is deterministic and local.
-- Generated Python is an auditable placeholder, not LEAN-compatible production code.
-- The HTTP API is a contract draft; no FastAPI transport is implemented yet.
-- No market data, API key, model binary, or investment advice is included.
+## Run the offline integration loop
+
+```bash
+conda run -n ml_env python -m pip install --no-build-isolation -e '.[dev]'
+conda run -n ml_env pytest
+conda run -n ml_env python scripts/run_mock_optimisation.py
+```
+
+Offline adapters use deterministic fixtures and do not constitute financial evidence. A Local LEAN provider can implement the same smoke-test and full-backtest ports.
+
+## Documentation
+
+- `docs/context/ALPHAFORGE_TEAM_CONTEXT.md`: authoritative project context.
+- `docs/architecture/SYSTEM_ARCHITECTURE.md`: system boundaries and dependency rules.
+- `docs/architecture/AGENT_ARCHITECTURE.md`: Agent responsibilities and state machine.
+- `docs/api/README.md`: contracts, schemas, examples and HTTP API.
+
+AlphaForge is an education and research system. It does not provide investment advice or guarantee strategy performance.

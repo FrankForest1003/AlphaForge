@@ -1,0 +1,102 @@
+{
+  "$defs": {
+    "CodeRiskFinding": {
+      "additionalProperties": false,
+      "properties": {
+        "category": {
+          "enum": [
+            "spec_drift",
+            "position_sizing",
+            "order_lifecycle",
+            "indicator_readiness",
+            "lookahead",
+            "ml_leakage",
+            "exposure",
+            "execution"
+          ],
+          "title": "Category",
+          "type": "string"
+        },
+        "code": {
+          "title": "Code",
+          "type": "string"
+        },
+        "code_location": {
+          "title": "Code Location",
+          "type": "string"
+        },
+        "evidence": {
+          "title": "Evidence",
+          "type": "string"
+        },
+        "repair_instruction": {
+          "title": "Repair Instruction",
+          "type": "string"
+        },
+        "risk": {
+          "title": "Risk",
+          "type": "string"
+        },
+        "severity": {
+          "enum": [
+            "warning",
+            "blocking"
+          ],
+          "title": "Severity",
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "severity",
+        "category",
+        "code_location",
+        "evidence",
+        "risk",
+        "repair_instruction"
+      ],
+      "title": "CodeRiskFinding",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "findings": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/CodeRiskFinding"
+      },
+      "title": "Findings",
+      "type": "array"
+    },
+    "reviewed_source_sha256": {
+      "title": "Reviewed Source Sha256",
+      "type": "string"
+    },
+    "spec_sha256": {
+      "title": "Spec Sha256",
+      "type": "string"
+    },
+    "strategy_id": {
+      "title": "Strategy Id",
+      "type": "string"
+    },
+    "verdict": {
+      "enum": [
+        "approve",
+        "repair_required",
+        "reject"
+      ],
+      "title": "Verdict",
+      "type": "string"
+    }
+  },
+  "required": [
+    "strategy_id",
+    "reviewed_source_sha256",
+    "spec_sha256",
+    "verdict"
+  ],
+  "title": "CodeRiskReview",
+  "type": "object"
+}

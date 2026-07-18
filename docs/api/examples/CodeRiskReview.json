@@ -1,0 +1,17 @@
+{
+  "strategy_id": "opt_001_hybrid_r1",
+  "reviewed_source_sha256": "5fcb8714cad863d7047b0bf2e1dd29a82e0a2c057ce8fb6de4f9c303ecf66693",
+  "spec_sha256": "430bdde885e14d355c393531f2c19e75dfadb168afeb20344c38ee850148f5a6",
+  "verdict": "repair_required",
+  "findings": [
+    {
+      "code": "MISSING_WEIGHT_NORMALIZATION",
+      "severity": "blocking",
+      "category": "exposure",
+      "code_location": "main.py:84",
+      "evidence": "Target weights are passed to SetHoldings without normalization.",
+      "risk": "The aggregate exposure can exceed the long-only, unlevered strategy specification.",
+      "repair_instruction": "Normalize positive target weights to sum to at most 1.0 before submitting holdings."
+    }
+  ]
+}

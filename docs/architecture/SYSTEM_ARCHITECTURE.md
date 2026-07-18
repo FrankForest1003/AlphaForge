@@ -1,55 +1,66 @@
 # System Architecture
 
-## Boundary view
+## Component flow
 
 ```mermaid
 flowchart TD
-  WEB["Streamlit Web"] --> API["FastAPI application layer"]
-  API --> SVC["Application services"]
-  SVC --> ORCH["Optimisation orchestrator"]
-  SVC --> BPORT["BacktestProvider port"]
-  ORCH --> APORT["AgentProvider port"]
-  ORCH --> VALID["Deterministic spec validator"]
-  ORCH --> CPORT["CodeGenerationProvider port"]
-  ORCH --> BPORT
-  DSL["Future external DSL"] --> CODEC["StrategyDocumentCodec"]
-  CODEC --> SPEC["Canonical StrategySpec"]
-  APORT --> SPEC
-  VALID --> SPEC
-  CPORT --> SPEC
-  BPORT --> RESULT["Standard BacktestResult"]
-  RESULT --> ORCH
-  LEAN["Local LEAN adapter"] -. "Phase 2" .-> BPORT
-  MOCK["Mock adapters"] --> APORT
-  MOCK --> BPORT
+  WEB["Streamlit Web"] --> API["FastAPI Application"]
+  API --> ORCH["Optimization Orchestrator"]
+  INPUT["Parent Spec + 5 Validation Results"] --> ORCH
+  ORCH --> SUMMARY["EvidenceSummarizer"]
+  SUMMARY --> DESIGN["Strategy Designer × 3"]
+  DESIGN --> BUILD["SpecBuilder"]
+  BUILD --> SPECVAL["StrategySpec Validator"]
+  SPECVAL --> CODE["QC Code Agent"]
+  CODE --> STATIC["Static QC Code Validator"]
+  STATIC --> RISK["Code Risk Agent"]
+  RISK -->|"repair required"| REPAIR["Repair Agent"]
+  REPAIR --> STATIC
+  RISK -->|"approved"| SMOKE["LEAN Smoke Test"]
+  SMOKE -->|"implementation failure"| REPAIR
+  SMOKE -->|"passed"| FULL["Full Backtest"]
+  FULL --> NORMAL["Normalized BacktestResult"]
+  NORMAL --> ANALYSIS["Unified Post-Backtest Analysis"]
+  ANALYSIS --> SELECT["Deterministic CandidateSelector"]
+  SELECT --> RESULT["OptimizationResult + Audit"]
 ```
 
-## Allowed dependencies
+## Dependency direction
 
 ```text
-Web → API → Services
-Services → Orchestrator / Backtest port / Repository port
-Orchestrator → ports / schemas / deterministic validators
-Adapters → ports / schemas / external systems
+Web → API → Orchestrator
+Orchestrator → ports + schemas + deterministic services
+Agent implementations → structured model client + schemas
+Execution implementations → BacktestProvider + schemas
+Schemas → Pydantic only
 ```
 
-Disallowed dependencies:
+## Trust boundaries
 
-- UI → LEAN;
-- Agent → market data directory;
-- Agent → Test results;
-- code generator → mutable StrategySpec;
-- Repair Agent → strategy semantics;
-- raw LEAN result → Web or Agent without normalisation;
-- notebook → production service.
+- Model output is untrusted until its exact Pydantic target validates.
+- CandidateDesign contains only fields the Designer owns.
+- SpecBuilder is the only component that creates a candidate StrategySpec.
+- StrategySpec and source digests bind design, code, review and repair artefacts.
+- Code Risk review receives no BacktestResult or performance metrics.
+- Backtest results are normalized before unified analysis.
+- Candidate selection is deterministic and independent of Agent ranking.
 
-## Ownership boundaries
+## Data ownership
 
-- Members A/B own strategy semantics and baseline code.
-- Member C owns LEAN execution and raw-result normalisation.
-- Member D owns Agent orchestration, codecs, deterministic policy and codegen architecture.
-- Cross-module schemas require review from the producer and consumer.
+| Data | Owner |
+|---|---|
+| CandidateDesign | Strategy Designer |
+| Strategy identity and frozen protocol | Orchestrator and SpecBuilder |
+| Canonical strategy semantics | StrategySpec |
+| QC implementation | QC Code Agent |
+| Code-risk findings | Code Risk Agent |
+| Raw execution output | LEAN provider |
+| Normalized metrics | BacktestResult parser/provider |
+| Comparative interpretation | Post-Backtest Analysis Agent |
+| Final eligibility and selection | CandidateSelector |
 
-## Current vertical slice
+## Runtime configuration
 
-The Phase 1 vertical slice uses deterministic Agent, generator and backtest adapters. It proves object flow, route separation, policy rejection, state transitions and auditability. It does not validate strategy profitability or LEAN compatibility.
+Agent providers read `API_KEY`, `MODEL` and `BASE_URL` from the runtime environment file. The client sends a target JSON Schema with every request, validates the response and permits one schema-directed correction attempt.
+
+LEAN environment details are carried in `LeanEnvironmentManifest`; local paths and credentials do not enter public contracts.

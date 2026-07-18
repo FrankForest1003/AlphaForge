@@ -1,0 +1,31 @@
+{
+  "candidate_type": "hybrid",
+  "logic": {
+    "kind": "hybrid",
+    "traditional": {
+      "kind": "traditional",
+      "signal": "momentum_rank",
+      "lookback_days": 126
+    },
+    "ml": {
+      "kind": "ml",
+      "model": "gradient_boosting",
+      "task": "relative_alpha_regression",
+      "training_window_days": 756,
+      "prediction_horizon_days": 21,
+      "feature_set_version": "features_v1",
+      "random_seed": 42
+    },
+    "traditional_weight": 0.6
+  },
+  "execution_changes": {
+    "top_k": 4
+  },
+  "risk_changes": {},
+  "design_reasons": [
+    "Combine a stable cross-sectional signal with a nonlinear alpha estimate."
+  ],
+  "expected_tradeoffs": [
+    "The model may improve ranking quality while increasing implementation complexity."
+  ]
+}

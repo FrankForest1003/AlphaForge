@@ -1,0 +1,23 @@
+{
+  "strategy_id": "opt_001_hybrid_r1",
+  "language": "python",
+  "entry_file": "main.py",
+  "source": "from AlgorithmImports import *\n\nclass AlphaForgeAlgorithm(QCAlgorithm):\n    def Initialize(self):\n        self.SetStartDate(2020, 1, 1)\n        self.SetEndDate(2024, 12, 31)\n        self.SetCash(100000)\n        self.AddEquity(\"SPY\", Resolution.Daily)\n",
+  "source_sha256": "5fcb8714cad863d7047b0bf2e1dd29a82e0a2c057ce8fb6de4f9c303ecf66693",
+  "spec_sha256": "430bdde885e14d355c393531f2c19e75dfadb168afeb20344c38ee850148f5a6",
+  "used_qc_api": [
+    "QCAlgorithm",
+    "SetStartDate",
+    "SetEndDate",
+    "SetCash",
+    "AddEquity",
+    "Resolution.Daily"
+  ],
+  "assumptions": [
+    "Adjusted daily equity data is available for every universe symbol."
+  ],
+  "generator_metadata": {
+    "template_version": "qc_template_v1",
+    "agent": "structured_qc_code"
+  }
+}

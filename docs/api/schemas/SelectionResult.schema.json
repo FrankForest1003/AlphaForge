@@ -1,0 +1,121 @@
+{
+  "$defs": {
+    "CandidateSelection": {
+      "additionalProperties": false,
+      "properties": {
+        "checks": {
+          "items": {
+            "$ref": "#/$defs/SelectionCheck"
+          },
+          "title": "Checks",
+          "type": "array"
+        },
+        "eligible": {
+          "title": "Eligible",
+          "type": "boolean"
+        },
+        "strategy_id": {
+          "title": "Strategy Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "strategy_id",
+        "eligible",
+        "checks"
+      ],
+      "title": "CandidateSelection",
+      "type": "object"
+    },
+    "SelectionCheck": {
+      "additionalProperties": false,
+      "properties": {
+        "actual": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "title": "Actual"
+        },
+        "name": {
+          "enum": [
+            "pipeline_eligible",
+            "result_completed",
+            "min_sharpe_improvement",
+            "max_drawdown_deterioration",
+            "max_drawdown_limit"
+          ],
+          "title": "Name",
+          "type": "string"
+        },
+        "passed": {
+          "title": "Passed",
+          "type": "boolean"
+        },
+        "required": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "title": "Required"
+        }
+      },
+      "required": [
+        "name",
+        "passed",
+        "actual",
+        "required"
+      ],
+      "title": "SelectionCheck",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "candidates": {
+      "items": {
+        "$ref": "#/$defs/CandidateSelection"
+      },
+      "title": "Candidates",
+      "type": "array"
+    },
+    "eligible_strategy_ids": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Eligible Strategy Ids",
+      "type": "array"
+    },
+    "no_robust_improvement": {
+      "title": "No Robust Improvement",
+      "type": "boolean"
+    },
+    "selected_strategy_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Selected Strategy Id"
+    }
+  },
+  "required": [
+    "selected_strategy_id",
+    "eligible_strategy_ids",
+    "candidates",
+    "no_robust_improvement"
+  ],
+  "title": "SelectionResult",
+  "type": "object"
+}

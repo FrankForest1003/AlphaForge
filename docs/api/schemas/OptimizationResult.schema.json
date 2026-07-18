@@ -158,66 +158,57 @@
       "title": "BacktestResult",
       "type": "object"
     },
-    "BaselineAnalysis": {
+    "CandidateAssessment": {
       "additionalProperties": false,
       "properties": {
-        "design_priorities": {
-          "items": {
-            "type": "string"
-          },
-          "title": "Design Priorities",
-          "type": "array"
-        },
         "evidence_run_ids": {
           "items": {
             "type": "string"
           },
+          "minItems": 1,
           "title": "Evidence Run Ids",
           "type": "array"
         },
-        "observations": {
-          "items": {
-            "$ref": "#/$defs/MetricObservation"
-          },
-          "title": "Observations",
-          "type": "array"
-        }
-      },
-      "required": [
-        "evidence_run_ids",
-        "observations",
-        "design_priorities"
-      ],
-      "title": "BaselineAnalysis",
-      "type": "object"
-    },
-    "CandidateDecision": {
-      "additionalProperties": false,
-      "properties": {
-        "reason_codes": {
+        "strategy_id": {
+          "title": "Strategy Id",
+          "type": "string"
+        },
+        "strengths": {
           "items": {
             "type": "string"
           },
-          "title": "Reason Codes",
+          "minItems": 1,
+          "title": "Strengths",
           "type": "array"
         },
-        "verdict": {
-          "enum": [
-            "accept",
-            "reject"
-          ],
-          "title": "Verdict",
-          "type": "string"
+        "tradeoffs": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Tradeoffs",
+          "type": "array"
+        },
+        "weaknesses": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Weaknesses",
+          "type": "array"
         }
       },
       "required": [
-        "verdict",
-        "reason_codes"
+        "strategy_id",
+        "strengths",
+        "weaknesses",
+        "tradeoffs",
+        "evidence_run_ids"
       ],
-      "title": "CandidateDecision",
+      "title": "CandidateAssessment",
       "type": "object"
     },
-    "CandidateProposal": {
+    "CandidateDesign": {
       "additionalProperties": false,
       "properties": {
         "candidate_type": {
@@ -229,39 +220,60 @@
           "title": "Candidate Type",
           "type": "string"
         },
-        "changed_paths": {
-          "items": {
-            "type": "string"
-          },
-          "title": "Changed Paths",
-          "type": "array"
-        },
         "design_reasons": {
           "items": {
             "type": "string"
           },
+          "minItems": 1,
           "title": "Design Reasons",
           "type": "array"
+        },
+        "execution_changes": {
+          "$ref": "#/$defs/ExecutionChanges"
         },
         "expected_tradeoffs": {
           "items": {
             "type": "string"
           },
+          "minItems": 1,
           "title": "Expected Tradeoffs",
           "type": "array"
         },
-        "spec": {
-          "$ref": "#/$defs/StrategySpec"
+        "logic": {
+          "discriminator": {
+            "mapping": {
+              "hybrid": "#/$defs/HybridLogic",
+              "ml": "#/$defs/MLLogic",
+              "traditional": "#/$defs/TraditionalLogic"
+            },
+            "propertyName": "kind"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/TraditionalLogic"
+            },
+            {
+              "$ref": "#/$defs/MLLogic"
+            },
+            {
+              "$ref": "#/$defs/HybridLogic"
+            }
+          ],
+          "title": "Logic"
+        },
+        "risk_changes": {
+          "$ref": "#/$defs/RiskChanges"
         }
       },
       "required": [
         "candidate_type",
-        "spec",
-        "changed_paths",
+        "logic",
+        "execution_changes",
+        "risk_changes",
         "design_reasons",
         "expected_tradeoffs"
       ],
-      "title": "CandidateProposal",
+      "title": "CandidateDesign",
       "type": "object"
     },
     "CandidateRun": {
@@ -287,6 +299,25 @@
           "title": "Candidate Type",
           "type": "string"
         },
+        "changed_paths": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Changed Paths",
+          "type": "array"
+        },
+        "code_risk_review": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CodeRiskReview"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "code_validation": {
           "anyOf": [
             {
@@ -298,16 +329,24 @@
           ],
           "default": null
         },
-        "decision": {
+        "design": {
           "anyOf": [
             {
-              "$ref": "#/$defs/CandidateDecision"
+              "$ref": "#/$defs/CandidateDesign"
             },
             {
               "type": "null"
             }
           ],
           "default": null
+        },
+        "failure_reasons": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Failure Reasons",
+          "type": "array"
         },
         "generated_code": {
           "anyOf": [
@@ -320,13 +359,10 @@
           ],
           "default": null
         },
-        "proposal": {
-          "$ref": "#/$defs/CandidateProposal"
-        },
-        "risk_review": {
+        "smoke_test": {
           "anyOf": [
             {
-              "$ref": "#/$defs/RiskReview"
+              "$ref": "#/$defs/SmokeTestResult"
             },
             {
               "type": "null"
@@ -336,30 +372,161 @@
         },
         "state": {
           "enum": [
-            "accepted",
-            "rejected_by_validation",
-            "rejected_by_risk",
-            "rejected_by_code",
-            "rejected_after_backtest"
+            "rejected_by_design",
+            "rejected_by_spec",
+            "rejected_by_code_validation",
+            "rejected_by_code_risk",
+            "rejected_by_smoke_test",
+            "backtested_not_selected",
+            "selected"
           ],
           "title": "State",
           "type": "string"
         },
-        "validation_errors": {
-          "default": [],
-          "items": {
-            "type": "string"
-          },
-          "title": "Validation Errors",
-          "type": "array"
+        "strategy_spec": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StrategySpec"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         }
       },
       "required": [
         "candidate_type",
-        "state",
-        "proposal"
+        "state"
       ],
       "title": "CandidateRun",
+      "type": "object"
+    },
+    "CandidateSelection": {
+      "additionalProperties": false,
+      "properties": {
+        "checks": {
+          "items": {
+            "$ref": "#/$defs/SelectionCheck"
+          },
+          "title": "Checks",
+          "type": "array"
+        },
+        "eligible": {
+          "title": "Eligible",
+          "type": "boolean"
+        },
+        "strategy_id": {
+          "title": "Strategy Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "strategy_id",
+        "eligible",
+        "checks"
+      ],
+      "title": "CandidateSelection",
+      "type": "object"
+    },
+    "CodeRiskFinding": {
+      "additionalProperties": false,
+      "properties": {
+        "category": {
+          "enum": [
+            "spec_drift",
+            "position_sizing",
+            "order_lifecycle",
+            "indicator_readiness",
+            "lookahead",
+            "ml_leakage",
+            "exposure",
+            "execution"
+          ],
+          "title": "Category",
+          "type": "string"
+        },
+        "code": {
+          "title": "Code",
+          "type": "string"
+        },
+        "code_location": {
+          "title": "Code Location",
+          "type": "string"
+        },
+        "evidence": {
+          "title": "Evidence",
+          "type": "string"
+        },
+        "repair_instruction": {
+          "title": "Repair Instruction",
+          "type": "string"
+        },
+        "risk": {
+          "title": "Risk",
+          "type": "string"
+        },
+        "severity": {
+          "enum": [
+            "warning",
+            "blocking"
+          ],
+          "title": "Severity",
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "severity",
+        "category",
+        "code_location",
+        "evidence",
+        "risk",
+        "repair_instruction"
+      ],
+      "title": "CodeRiskFinding",
+      "type": "object"
+    },
+    "CodeRiskReview": {
+      "additionalProperties": false,
+      "properties": {
+        "findings": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/CodeRiskFinding"
+          },
+          "title": "Findings",
+          "type": "array"
+        },
+        "reviewed_source_sha256": {
+          "title": "Reviewed Source Sha256",
+          "type": "string"
+        },
+        "spec_sha256": {
+          "title": "Spec Sha256",
+          "type": "string"
+        },
+        "strategy_id": {
+          "title": "Strategy Id",
+          "type": "string"
+        },
+        "verdict": {
+          "enum": [
+            "approve",
+            "repair_required",
+            "reject"
+          ],
+          "title": "Verdict",
+          "type": "string"
+        }
+      },
+      "required": [
+        "strategy_id",
+        "reviewed_source_sha256",
+        "spec_sha256",
+        "verdict"
+      ],
+      "title": "CodeRiskReview",
       "type": "object"
     },
     "CodeValidationResult": {
@@ -373,15 +540,81 @@
           "title": "Errors",
           "type": "array"
         },
+        "observed_qc_api": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Observed Qc Api",
+          "type": "array"
+        },
         "valid": {
           "title": "Valid",
           "type": "boolean"
+        },
+        "warnings": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Warnings",
+          "type": "array"
         }
       },
       "required": [
         "valid"
       ],
       "title": "CodeValidationResult",
+      "type": "object"
+    },
+    "EvidenceSummary": {
+      "additionalProperties": false,
+      "properties": {
+        "comparisons": {
+          "items": {
+            "$ref": "#/$defs/MetricComparison"
+          },
+          "maxItems": 7,
+          "minItems": 7,
+          "title": "Comparisons",
+          "type": "array"
+        },
+        "evidence_run_ids": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 5,
+          "minItems": 5,
+          "title": "Evidence Run Ids",
+          "type": "array"
+        }
+      },
+      "required": [
+        "evidence_run_ids",
+        "comparisons"
+      ],
+      "title": "EvidenceSummary",
+      "type": "object"
+    },
+    "ExecutionChanges": {
+      "additionalProperties": false,
+      "properties": {
+        "top_k": {
+          "anyOf": [
+            {
+              "maximum": 10,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Top K"
+        }
+      },
+      "title": "ExecutionChanges",
       "type": "object"
     },
     "ExecutionSpec": {
@@ -433,9 +666,25 @@
     "GeneratedCode": {
       "additionalProperties": false,
       "properties": {
-        "generator": {
-          "title": "Generator",
+        "assumptions": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Assumptions",
+          "type": "array"
+        },
+        "entry_file": {
+          "const": "main.py",
+          "default": "main.py",
+          "title": "Entry File",
           "type": "string"
+        },
+        "generator_metadata": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Generator Metadata",
+          "type": "object"
         },
         "language": {
           "const": "python",
@@ -443,12 +692,12 @@
           "title": "Language",
           "type": "string"
         },
-        "sha256": {
-          "title": "Sha256",
-          "type": "string"
-        },
         "source": {
           "title": "Source",
+          "type": "string"
+        },
+        "source_sha256": {
+          "title": "Source Sha256",
           "type": "string"
         },
         "spec_sha256": {
@@ -458,14 +707,23 @@
         "strategy_id": {
           "title": "Strategy Id",
           "type": "string"
+        },
+        "used_qc_api": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Used Qc Api",
+          "type": "array"
         }
       },
       "required": [
         "strategy_id",
-        "generator",
         "source",
-        "sha256",
-        "spec_sha256"
+        "source_sha256",
+        "spec_sha256",
+        "used_qc_api",
+        "assumptions",
+        "generator_metadata"
       ],
       "title": "GeneratedCode",
       "type": "object"
@@ -557,15 +815,110 @@
       "title": "MLLogic",
       "type": "object"
     },
-    "MetricObservation": {
+    "MetricAnalysis": {
       "additionalProperties": false,
       "properties": {
+        "best_strategy_id": {
+          "title": "Best Strategy Id",
+          "type": "string"
+        },
         "interpretation": {
           "title": "Interpretation",
           "type": "string"
         },
         "metric": {
+          "enum": [
+            "cagr",
+            "sharpe_ratio",
+            "sortino_ratio",
+            "max_drawdown",
+            "annual_volatility",
+            "turnover",
+            "total_fees"
+          ],
           "title": "Metric",
+          "type": "string"
+        },
+        "values": {
+          "items": {
+            "$ref": "#/$defs/MetricValue"
+          },
+          "minItems": 1,
+          "title": "Values",
+          "type": "array"
+        }
+      },
+      "required": [
+        "metric",
+        "values",
+        "best_strategy_id",
+        "interpretation"
+      ],
+      "title": "MetricAnalysis",
+      "type": "object"
+    },
+    "MetricComparison": {
+      "additionalProperties": false,
+      "properties": {
+        "best_run_id": {
+          "title": "Best Run Id",
+          "type": "string"
+        },
+        "best_strategy_id": {
+          "title": "Best Strategy Id",
+          "type": "string"
+        },
+        "best_value": {
+          "title": "Best Value",
+          "type": "number"
+        },
+        "metric": {
+          "enum": [
+            "cagr",
+            "sharpe_ratio",
+            "sortino_ratio",
+            "max_drawdown",
+            "annual_volatility",
+            "turnover",
+            "total_fees"
+          ],
+          "title": "Metric",
+          "type": "string"
+        },
+        "objective": {
+          "enum": [
+            "higher",
+            "lower"
+          ],
+          "title": "Objective",
+          "type": "string"
+        },
+        "user_gap": {
+          "title": "User Gap",
+          "type": "number"
+        },
+        "user_value": {
+          "title": "User Value",
+          "type": "number"
+        }
+      },
+      "required": [
+        "metric",
+        "objective",
+        "user_value",
+        "best_strategy_id",
+        "best_run_id",
+        "best_value",
+        "user_gap"
+      ],
+      "title": "MetricComparison",
+      "type": "object"
+    },
+    "MetricValue": {
+      "additionalProperties": false,
+      "properties": {
+        "run_id": {
+          "title": "Run Id",
           "type": "string"
         },
         "strategy_id": {
@@ -578,12 +931,63 @@
         }
       },
       "required": [
-        "metric",
         "strategy_id",
-        "value",
-        "interpretation"
+        "run_id",
+        "value"
       ],
-      "title": "MetricObservation",
+      "title": "MetricValue",
+      "type": "object"
+    },
+    "PostBacktestAnalysis": {
+      "additionalProperties": false,
+      "properties": {
+        "candidate_assessments": {
+          "items": {
+            "$ref": "#/$defs/CandidateAssessment"
+          },
+          "title": "Candidate Assessments",
+          "type": "array"
+        },
+        "metric_analysis": {
+          "items": {
+            "$ref": "#/$defs/MetricAnalysis"
+          },
+          "maxItems": 7,
+          "minItems": 7,
+          "title": "Metric Analysis",
+          "type": "array"
+        },
+        "no_robust_improvement": {
+          "title": "No Robust Improvement",
+          "type": "boolean"
+        },
+        "recommended_strategy_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Recommended Strategy Ids",
+          "type": "array"
+        },
+        "summary": {
+          "title": "Summary",
+          "type": "string"
+        }
+      },
+      "required": [
+        "metric_analysis",
+        "candidate_assessments",
+        "recommended_strategy_ids",
+        "no_robust_improvement",
+        "summary"
+      ],
+      "title": "PostBacktestAnalysis",
+      "type": "object"
+    },
+    "RiskChanges": {
+      "additionalProperties": false,
+      "description": "No risk-policy changes are permitted in the first contract version.",
+      "properties": {},
+      "title": "RiskChanges",
       "type": "object"
     },
     "RiskConstraints": {
@@ -619,40 +1023,137 @@
       "title": "RiskConstraints",
       "type": "object"
     },
-    "RiskReview": {
+    "SelectionCheck": {
       "additionalProperties": false,
       "properties": {
-        "reason_codes": {
+        "actual": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "title": "Actual"
+        },
+        "name": {
+          "enum": [
+            "pipeline_eligible",
+            "result_completed",
+            "min_sharpe_improvement",
+            "max_drawdown_deterioration",
+            "max_drawdown_limit"
+          ],
+          "title": "Name",
+          "type": "string"
+        },
+        "passed": {
+          "title": "Passed",
+          "type": "boolean"
+        },
+        "required": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "title": "Required"
+        }
+      },
+      "required": [
+        "name",
+        "passed",
+        "actual",
+        "required"
+      ],
+      "title": "SelectionCheck",
+      "type": "object"
+    },
+    "SelectionResult": {
+      "additionalProperties": false,
+      "properties": {
+        "candidates": {
+          "items": {
+            "$ref": "#/$defs/CandidateSelection"
+          },
+          "title": "Candidates",
+          "type": "array"
+        },
+        "eligible_strategy_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Eligible Strategy Ids",
+          "type": "array"
+        },
+        "no_robust_improvement": {
+          "title": "No Robust Improvement",
+          "type": "boolean"
+        },
+        "selected_strategy_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Selected Strategy Id"
+        }
+      },
+      "required": [
+        "selected_strategy_id",
+        "eligible_strategy_ids",
+        "candidates",
+        "no_robust_improvement"
+      ],
+      "title": "SelectionResult",
+      "type": "object"
+    },
+    "SmokeTestResult": {
+      "additionalProperties": false,
+      "properties": {
+        "diagnostics": {
           "default": [],
           "items": {
             "type": "string"
           },
-          "title": "Reason Codes",
+          "title": "Diagnostics",
           "type": "array"
         },
-        "reviewed_strategy_id": {
-          "title": "Reviewed Strategy Id",
+        "provider": {
+          "title": "Provider",
           "type": "string"
         },
-        "verdict": {
+        "status": {
           "enum": [
-            "approve",
-            "reject"
+            "passed",
+            "failed"
           ],
-          "title": "Verdict",
+          "title": "Status",
+          "type": "string"
+        },
+        "strategy_id": {
+          "title": "Strategy Id",
           "type": "string"
         }
       },
       "required": [
-        "verdict",
-        "reviewed_strategy_id"
+        "strategy_id",
+        "status",
+        "provider"
       ],
-      "title": "RiskReview",
+      "title": "SmokeTestResult",
       "type": "object"
     },
     "StrategySpec": {
       "additionalProperties": false,
-      "description": "Canonical strategy semantics; this is not the final external DSL.",
+      "description": "Canonical strategy semantics used by every downstream component.",
       "properties": {
         "candidate_type": {
           "enum": [
@@ -705,8 +1206,8 @@
           "$ref": "#/$defs/RiskConstraints"
         },
         "schema_version": {
-          "const": "0.1-draft",
-          "default": "0.1-draft",
+          "const": "1.0",
+          "default": "1.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -790,8 +1291,17 @@
   },
   "additionalProperties": false,
   "properties": {
-    "analysis": {
-      "$ref": "#/$defs/BaselineAnalysis"
+    "analysis_error": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Analysis Error"
     },
     "audit_log": {
       "items": {
@@ -804,12 +1314,30 @@
       "items": {
         "$ref": "#/$defs/CandidateRun"
       },
+      "maxItems": 3,
+      "minItems": 3,
       "title": "Candidates",
       "type": "array"
+    },
+    "evidence_summary": {
+      "$ref": "#/$defs/EvidenceSummary"
     },
     "optimization_id": {
       "title": "Optimization Id",
       "type": "string"
+    },
+    "post_backtest_analysis": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PostBacktestAnalysis"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "selection": {
+      "$ref": "#/$defs/SelectionResult"
     },
     "status": {
       "enum": [
@@ -823,8 +1351,10 @@
   "required": [
     "optimization_id",
     "status",
-    "analysis",
+    "evidence_summary",
     "candidates",
+    "post_backtest_analysis",
+    "selection",
     "audit_log"
   ],
   "title": "OptimizationResult",

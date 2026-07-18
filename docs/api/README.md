@@ -1,42 +1,32 @@
-# AlphaForge Interface Documents
+# AlphaForge API Contracts
 
-This directory defines the seams between the four workstreams. The purpose is to let Traditional, ML, LEAN and Agent work progress without importing one another's implementation details.
+本目录定义 AlphaForge 的领域、Python 组件和 HTTP 边界。
 
-## Source-of-truth order
+## 合同优先级
 
-1. Pydantic models under `src/alphaforge/schemas/` are the executable domain contract.
-2. Protocols in `src/alphaforge/ports.py` are the Python component contract.
-3. Generated JSON Schemas under `docs/api/schemas/` are exchange/validation artefacts.
-4. `openapi.yaml` is the transport contract draft.
-5. Examples and prose explain intent but do not override executable schemas.
+1. `src/alphaforge/schemas/`：可执行 Pydantic 合同。
+2. `src/alphaforge/ports.py`：组件 Protocol。
+3. `schemas/`：由 Pydantic 导出的 JSON Schema。
+4. `openapi.yaml`：HTTP 传输合同。
+5. `examples/`：通过 Pydantic 验证的格式化示例。
 
-When a contract changes, update the Pydantic model, tests, generated JSON Schema, OpenAPI document and example in the same pull request.
+未知字段统一拒绝。模型输出必须直接满足目标 Schema；结构错误只允许携带验证错误重试一次，第二次失败即终止该阶段。
 
-## Interface map
+## 组件接口图
 
-| Producer | Consumer | Contract | Owner / reviewers | Phase 1 implementation |
-|---|---|---|---|---|
-| Member A/B strategy code | Member C LEAN worker | Strategy Manifest + QC `main.py` | A/B + C | documented only |
-| Member C result parser | Member D Agent layer | `BacktestResult` | C + D | Pydantic + fixture |
-| Agent provider | Orchestrator | `AgentProvider` | D | deterministic mock |
-| Orchestrator | Spec validator | `StrategySpec` + `CandidateProposal` | all members | implemented |
-| Validated spec | Code generator | `StrategySpec → GeneratedCode` | D + C | deterministic placeholder |
-| Code generator | Backtest provider | `GeneratedCode` + `StrategySpec` | D + C | mock provider |
-| Backtest provider | Decision Agent | `BacktestResult` | C + D | mock provider |
-| Web client | Application service | HTTP `/v1/*` | later integration owner | OpenAPI draft only |
+| 生产者 | 消费者 | 合同 |
+|---|---|---|
+| `EvidenceSummarizer` | 三个 `StrategyDesigner` | `EvidenceSummary` / `DesignRequest` |
+| `StrategyDesigner` | `SpecBuilder` | `CandidateDesign` |
+| `SpecBuilder` | QC 代码阶段 | `BuiltCandidate` / `StrategySpec` |
+| `QCCodeAgent` | 静态校验器 | `GeneratedCode` |
+| 静态校验器 | `CodeRiskAgent` | `CodeValidationResult` |
+| `CodeRiskAgent` | 编排器或 `RepairAgent` | `CodeRiskReview` |
+| `RepairAgent` | 静态校验器 | `GeneratedCode` |
+| `BacktestProvider` | 编排器 | `SmokeTestResult` / `BacktestResult` |
+| `PostBacktestAnalysisAgent` | 编排器 | `PostBacktestAnalysis` |
+| `CandidateSelector` | `OptimizationResult` | `SelectionResult` |
 
-## Documents
+## 更新规则
 
-- `DOMAIN_CONTRACTS.md`: invariants and field semantics.
-- `PYTHON_PORTS.md`: provider protocols and dependency direction.
-- `HTTP_API.md`: transport behaviour, async jobs and error format.
-- `openapi.yaml`: machine-readable HTTP draft.
-- `schemas/`: generated JSON Schema snapshots.
-
-## Compatibility policy
-
-- `0.1-draft` is intentionally unstable while Phase 1 validates the four baselines.
-- Additive optional fields are allowed within `0.1-draft`.
-- Renames, removals, changed units or semantic changes require a Decision Log entry and a schema-version bump.
-- The final external DSL must be introduced as a new `StrategyDocumentCodec`; it must not leak into Agent or LEAN provider interfaces.
-- Unknown fields are rejected (`extra="forbid"`) so cross-team drift fails early.
+合同变更必须同时更新 Pydantic 模型、测试、JSON Schema、OpenAPI 和相应示例。Schema 使用 `1.0`；字段含义或单位变化需要提升版本。

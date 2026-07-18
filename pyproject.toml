@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "alphaforge"
 version = "0.1.0"
-description = "Risk-aware multi-agent strategy optimisation contracts and mock vertical slice"
+description = "Auditable multi-agent strategy optimisation pipeline for QuantConnect LEAN"
 requires-python = ">=3.11"
 dependencies = [
   "pydantic>=2.7,<3",

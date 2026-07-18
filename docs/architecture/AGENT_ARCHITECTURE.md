@@ -1,53 +1,69 @@
 # Agent Architecture
 
-## Roles represented in Phase 1
+## Agent interfaces
 
-The mock provider simulates four semantic capabilities behind one provider boundary:
+```text
+StrategyDesigner.design(DesignRequest) → CandidateDesign
+QCCodeAgent.generate(QCCodeGenerationRequest) → GeneratedCode
+CodeRiskAgent.review(CodeRiskReviewRequest) → CodeRiskReview
+RepairAgent.repair(RepairRequest) → GeneratedCode
+PostBacktestAnalysisAgent.analyze(PostBacktestAnalysisRequest) → PostBacktestAnalysis
+```
 
-1. Baseline Analyst reads exactly five normalised validation results.
-2. Traditional, ML and Hybrid Designers create three distinct canonical specs.
-3. Risk Reviewer can veto a proposal before code generation.
-4. Decision Agent accepts or rejects only after a provider result exists.
+Each interface has one responsibility and an exact Pydantic input/output contract.
 
-Code generation and backtesting remain separate providers because they have different security, reliability and ownership constraints.
-
-## State machine
+## Route state machine
 
 ```mermaid
 stateDiagram-v2
-  [*] --> Designed
-  Designed --> RejectedByValidation: schema/semantic/scope failure
-  Designed --> RiskReviewed: deterministic validation passes
-  RiskReviewed --> RejectedByRisk: veto
-  RiskReviewed --> CodeGenerated: approved
-  CodeGenerated --> Backtested
-  Backtested --> Accepted: thresholds pass
-  Backtested --> RejectedAfterBacktest: thresholds fail
-  Accepted --> [*]
-  RejectedByValidation --> [*]
-  RejectedByRisk --> [*]
-  RejectedAfterBacktest --> [*]
+  [*] --> Designing
+  Designing --> RejectedByDesign: invalid structured output
+  Designing --> BuildingSpec: CandidateDesign valid
+  BuildingSpec --> RejectedBySpec: build or semantic failure
+  BuildingSpec --> GeneratingCode: StrategySpec valid
+  GeneratingCode --> StaticValidation
+  StaticValidation --> Repairing: repairable implementation failure
+  StaticValidation --> RejectedByCodeValidation: attempts exhausted
+  StaticValidation --> CodeRiskReview: static validation passed
+  CodeRiskReview --> Repairing: repair_required
+  CodeRiskReview --> RejectedByCodeRisk: reject or attempts exhausted
+  Repairing --> StaticValidation
+  CodeRiskReview --> SmokeTest: approved
+  SmokeTest --> Repairing: implementation failure
+  SmokeTest --> RejectedBySmokeTest: attempts exhausted
+  SmokeTest --> FullBacktest: passed
+  FullBacktest --> BacktestedNotSelected
+  BacktestedNotSelected --> Selected: deterministic selector chooses route
+  RejectedByDesign --> [*]
+  RejectedBySpec --> [*]
+  RejectedByCodeValidation --> [*]
+  RejectedByCodeRisk --> [*]
+  RejectedBySmokeTest --> [*]
+  BacktestedNotSelected --> [*]
+  Selected --> [*]
 ```
 
-## Stop conditions
+## Code Risk isolation
 
-- Phase 1 runs one round; the contract permits at most two.
-- Exactly one primary candidate per route is produced each round.
-- Validation or risk rejection stops that route before code generation.
-- Missing, failed or Test-set evidence stops the entire optimisation.
-- Zero accepted routes is a valid result: `No robust improvement found under the current constraints.`
+`CodeRiskReviewRequest` contains:
 
-## Audit and evidence rules
+- immutable StrategySpec;
+- generated source and digests;
+- deterministic static validation result;
+- LEAN environment manifest.
 
-- Analysis stores evidence `run_id` values.
-- Every transition appends an ordered audit event.
-- Mock backtest results carry `SIMULATED_RESULT_NOT_FINANCIAL_EVIDENCE`.
-- Explanations must eventually reference a spec diff and real run IDs; this Phase 1 mock makes no causal or investment claim.
-- Future LLM prompts, model names and response digests must be versioned in provider metadata.
+It has no field for smoke-test output, full BacktestResult, return, volatility, drawdown or fees. Risk findings therefore describe implementation defects rather than observed strategy performance.
 
-## Replacing mocks
+## Repair invariants
 
-- Replace `MockAgentProvider` with an LLM adapter implementing `AgentProvider`.
-- Replace `DeterministicCodeGenerator` with a validated LEAN template/LLM adapter.
-- Replace `MockBacktestProvider` with Member C's `LocalLeanProvider`.
-- Keep the schemas, validator and orchestrator unchanged unless an interface review explicitly changes the contract.
+- The same immutable StrategySpec is supplied on every attempt.
+- `spec_sha256` must remain unchanged.
+- Static validation and Code Risk review repeat after every repair.
+- Smoke-test repairs also repeat static and risk checks before another smoke test.
+- The total repair count is shared across static, risk and smoke failures.
+
+## Unified analysis
+
+The Post-Backtest Analysis Agent is called once after all routes terminate. It compares the parent, four baselines and all successful candidate results in one evidence set. Failed routes remain visible through structured route outcomes.
+
+Its ranking is explanatory. The CandidateSelector independently applies hard checks and selects the eligible candidate with the highest Sharpe, then lower drawdown and lower fees as tie-breakers.

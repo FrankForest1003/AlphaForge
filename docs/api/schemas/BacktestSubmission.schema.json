@@ -308,7 +308,7 @@
     },
     "StrategySpec": {
       "additionalProperties": false,
-      "description": "Canonical strategy semantics; this is not the final external DSL.",
+      "description": "Canonical strategy semantics used by every downstream component.",
       "properties": {
         "candidate_type": {
           "enum": [
@@ -361,8 +361,8 @@
           "$ref": "#/$defs/RiskConstraints"
         },
         "schema_version": {
-          "const": "0.1-draft",
-          "default": "0.1-draft",
+          "const": "1.0",
+          "default": "1.0",
           "title": "Schema Version",
           "type": "string"
         },

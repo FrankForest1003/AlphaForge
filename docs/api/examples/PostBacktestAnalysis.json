@@ -1,0 +1,72 @@
+{
+  "metric_analysis": [
+    {
+      "metric": "cagr",
+      "values": [
+        {"strategy_id": "opt_001_hybrid_r1", "run_id": "run_hybrid_001", "value": 0.14}
+      ],
+      "best_strategy_id": "opt_001_hybrid_r1",
+      "interpretation": "The candidate delivered the highest annualized growth in the supplied runs."
+    },
+    {
+      "metric": "sharpe_ratio",
+      "values": [
+        {"strategy_id": "opt_001_hybrid_r1", "run_id": "run_hybrid_001", "value": 1.16}
+      ],
+      "best_strategy_id": "opt_001_hybrid_r1",
+      "interpretation": "The candidate had the strongest risk-adjusted return."
+    },
+    {
+      "metric": "sortino_ratio",
+      "values": [
+        {"strategy_id": "opt_001_hybrid_r1", "run_id": "run_hybrid_001", "value": 1.51}
+      ],
+      "best_strategy_id": "opt_001_hybrid_r1",
+      "interpretation": "The candidate had the strongest downside-risk-adjusted return."
+    },
+    {
+      "metric": "max_drawdown",
+      "values": [
+        {"strategy_id": "opt_001_hybrid_r1", "run_id": "run_hybrid_001", "value": 0.16}
+      ],
+      "best_strategy_id": "opt_001_hybrid_r1",
+      "interpretation": "The candidate had the lowest maximum drawdown."
+    },
+    {
+      "metric": "annual_volatility",
+      "values": [
+        {"strategy_id": "opt_001_hybrid_r1", "run_id": "run_hybrid_001", "value": 0.16}
+      ],
+      "best_strategy_id": "opt_001_hybrid_r1",
+      "interpretation": "Annualized volatility remained within the observed comparison range."
+    },
+    {
+      "metric": "turnover",
+      "values": [
+        {"strategy_id": "opt_001_hybrid_r1", "run_id": "run_hybrid_001", "value": 0.95}
+      ],
+      "best_strategy_id": "opt_001_hybrid_r1",
+      "interpretation": "Turnover implies moderate implementation activity."
+    },
+    {
+      "metric": "total_fees",
+      "values": [
+        {"strategy_id": "opt_001_hybrid_r1", "run_id": "run_hybrid_001", "value": 160.0}
+      ],
+      "best_strategy_id": "opt_001_hybrid_r1",
+      "interpretation": "Fees must be weighed against the risk-adjusted improvement."
+    }
+  ],
+  "candidate_assessments": [
+    {
+      "strategy_id": "opt_001_hybrid_r1",
+      "strengths": ["Improved Sharpe and Sortino in the supplied validation run."],
+      "weaknesses": ["Turnover and fees are higher than a passive comparison."],
+      "tradeoffs": ["Higher ranking complexity is exchanged for improved risk-adjusted return."],
+      "evidence_run_ids": ["run_hybrid_001"]
+    }
+  ],
+  "recommended_strategy_ids": ["opt_001_hybrid_r1"],
+  "no_robust_improvement": false,
+  "summary": "The hybrid candidate is the strongest explanatory recommendation, subject to deterministic eligibility checks."
+}

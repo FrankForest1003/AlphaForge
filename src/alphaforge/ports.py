@@ -3,51 +3,41 @@ from __future__ import annotations
 from typing import Protocol
 
 from alphaforge.schemas.agent_outputs import (
-    BaselineAnalysis,
-    CandidateDecision,
-    CandidateProposal,
+    CandidateDesign,
+    CodeRiskReview,
+    CodeRiskReviewRequest,
+    DesignRequest,
     GeneratedCode,
+    PostBacktestAnalysis,
+    PostBacktestAnalysisRequest,
+    QCCodeGenerationRequest,
     RepairRequest,
-    RiskReview,
 )
-from alphaforge.schemas.backtest import BacktestResult
-from alphaforge.schemas.optimisation import OptimizationRequest
-from alphaforge.schemas.strategy_spec import CandidateType, StrategySpec
+from alphaforge.schemas.backtest import BacktestResult, SmokeTestResult
+from alphaforge.schemas.strategy_spec import StrategySpec
 
 
-class AgentProvider(Protocol):
-    """Semantic Agent boundary; implementations may be LLM-backed or deterministic."""
-
-    def analyze(self, request: OptimizationRequest) -> BaselineAnalysis: ...
-
-    def propose(
-        self,
-        route: CandidateType,
-        request: OptimizationRequest,
-        analysis: BaselineAnalysis,
-    ) -> CandidateProposal: ...
-
-    def review_risk(self, proposal: CandidateProposal) -> RiskReview: ...
-
-    def decide(
-        self,
-        request: OptimizationRequest,
-        proposal: CandidateProposal,
-        result: BacktestResult,
-    ) -> CandidateDecision: ...
+class StrategyDesigner(Protocol):
+    def design(self, request: DesignRequest) -> CandidateDesign: ...
 
 
-class CodeGenerationProvider(Protocol):
-    def generate(self, spec: StrategySpec) -> GeneratedCode: ...
+class QCCodeAgent(Protocol):
+    def generate(self, request: QCCodeGenerationRequest) -> GeneratedCode: ...
+
+
+class CodeRiskAgent(Protocol):
+    def review(self, request: CodeRiskReviewRequest) -> CodeRiskReview: ...
+
+
+class RepairAgent(Protocol):
+    def repair(self, request: RepairRequest) -> GeneratedCode: ...
+
+
+class PostBacktestAnalysisAgent(Protocol):
+    def analyze(self, request: PostBacktestAnalysisRequest) -> PostBacktestAnalysis: ...
 
 
 class BacktestProvider(Protocol):
-    """Execution boundary shared by mock, Local LEAN and optional cloud providers."""
+    def smoke_test(self, spec: StrategySpec, code: GeneratedCode) -> SmokeTestResult: ...
 
     def run(self, spec: StrategySpec, code: GeneratedCode) -> BacktestResult: ...
-
-
-class RepairProvider(Protocol):
-    """Implementation repair boundary; the immutable input spec is authoritative."""
-
-    def repair(self, request: RepairRequest) -> GeneratedCode: ...

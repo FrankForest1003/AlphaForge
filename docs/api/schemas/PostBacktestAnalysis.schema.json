@@ -1,0 +1,163 @@
+{
+  "$defs": {
+    "CandidateAssessment": {
+      "additionalProperties": false,
+      "properties": {
+        "evidence_run_ids": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Evidence Run Ids",
+          "type": "array"
+        },
+        "strategy_id": {
+          "title": "Strategy Id",
+          "type": "string"
+        },
+        "strengths": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Strengths",
+          "type": "array"
+        },
+        "tradeoffs": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Tradeoffs",
+          "type": "array"
+        },
+        "weaknesses": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Weaknesses",
+          "type": "array"
+        }
+      },
+      "required": [
+        "strategy_id",
+        "strengths",
+        "weaknesses",
+        "tradeoffs",
+        "evidence_run_ids"
+      ],
+      "title": "CandidateAssessment",
+      "type": "object"
+    },
+    "MetricAnalysis": {
+      "additionalProperties": false,
+      "properties": {
+        "best_strategy_id": {
+          "title": "Best Strategy Id",
+          "type": "string"
+        },
+        "interpretation": {
+          "title": "Interpretation",
+          "type": "string"
+        },
+        "metric": {
+          "enum": [
+            "cagr",
+            "sharpe_ratio",
+            "sortino_ratio",
+            "max_drawdown",
+            "annual_volatility",
+            "turnover",
+            "total_fees"
+          ],
+          "title": "Metric",
+          "type": "string"
+        },
+        "values": {
+          "items": {
+            "$ref": "#/$defs/MetricValue"
+          },
+          "minItems": 1,
+          "title": "Values",
+          "type": "array"
+        }
+      },
+      "required": [
+        "metric",
+        "values",
+        "best_strategy_id",
+        "interpretation"
+      ],
+      "title": "MetricAnalysis",
+      "type": "object"
+    },
+    "MetricValue": {
+      "additionalProperties": false,
+      "properties": {
+        "run_id": {
+          "title": "Run Id",
+          "type": "string"
+        },
+        "strategy_id": {
+          "title": "Strategy Id",
+          "type": "string"
+        },
+        "value": {
+          "title": "Value",
+          "type": "number"
+        }
+      },
+      "required": [
+        "strategy_id",
+        "run_id",
+        "value"
+      ],
+      "title": "MetricValue",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "candidate_assessments": {
+      "items": {
+        "$ref": "#/$defs/CandidateAssessment"
+      },
+      "title": "Candidate Assessments",
+      "type": "array"
+    },
+    "metric_analysis": {
+      "items": {
+        "$ref": "#/$defs/MetricAnalysis"
+      },
+      "maxItems": 7,
+      "minItems": 7,
+      "title": "Metric Analysis",
+      "type": "array"
+    },
+    "no_robust_improvement": {
+      "title": "No Robust Improvement",
+      "type": "boolean"
+    },
+    "recommended_strategy_ids": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Recommended Strategy Ids",
+      "type": "array"
+    },
+    "summary": {
+      "title": "Summary",
+      "type": "string"
+    }
+  },
+  "required": [
+    "metric_analysis",
+    "candidate_assessments",
+    "recommended_strategy_ids",
+    "no_robust_improvement",
+    "summary"
+  ],
+  "title": "PostBacktestAnalysis",
+  "type": "object"
+}

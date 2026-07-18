@@ -1,8 +1,8 @@
 openapi: 3.1.0
 info:
   title: AlphaForge API
-  version: 0.1.0-draft
-  description: Draft transport contract; the Phase 1 implementation is in-process only.
+  version: 1.0.0
+  description: Auditable strategy optimisation and normalized backtest contracts.
 servers:
   - url: /v1
 paths:
@@ -10,10 +10,7 @@ paths:
     post:
       operationId: createOptimisation
       parameters:
-        - in: header
-          name: Idempotency-Key
-          required: true
-          schema: {type: string, minLength: 8, maxLength: 128}
+        - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
         required: true
         content:
@@ -22,45 +19,40 @@ paths:
               $ref: ./schemas/OptimizationRequest.schema.json
       responses:
         "202":
-          description: Job accepted
+          description: Optimisation job accepted.
           content:
             application/json:
               schema:
-                type: object
-                required: [optimization_id, status, status_url]
-                properties:
-                  optimization_id: {type: string}
-                  status: {const: queued}
-                  status_url: {type: string}
-        "422":
-          $ref: "#/components/responses/ContractError"
+                $ref: "#/components/schemas/OptimisationAccepted"
         "409":
+          $ref: "#/components/responses/ContractError"
+        "422":
           $ref: "#/components/responses/ContractError"
   /optimisations/{optimization_id}:
     get:
       operationId: getOptimisation
       parameters:
-        - in: path
-          name: optimization_id
+        - name: optimization_id
+          in: path
           required: true
-          schema: {type: string}
+          schema:
+            type: string
       responses:
         "200":
-          description: Current or completed job representation
+          description: Current job state or completed result.
           content:
             application/json:
               schema:
-                $ref: ./schemas/OptimizationResult.schema.json
+                oneOf:
+                  - $ref: "#/components/schemas/OptimisationStatus"
+                  - $ref: ./schemas/OptimizationResult.schema.json
         "404":
           $ref: "#/components/responses/ContractError"
   /backtests:
     post:
       operationId: createBacktest
       parameters:
-        - in: header
-          name: Idempotency-Key
-          required: true
-          schema: {type: string, minLength: 8, maxLength: 128}
+        - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
         required: true
         content:
@@ -69,50 +61,125 @@ paths:
               $ref: ./schemas/BacktestSubmission.schema.json
       responses:
         "202":
-          description: Backtest accepted
+          description: Backtest job accepted.
           content:
             application/json:
               schema:
-                type: object
-                required: [run_id, status, status_url]
-                properties:
-                  run_id: {type: string}
-                  status: {const: queued}
-                  status_url: {type: string}
+                $ref: "#/components/schemas/BacktestAccepted"
+        "409":
+          $ref: "#/components/responses/ContractError"
         "422":
           $ref: "#/components/responses/ContractError"
   /backtests/{run_id}:
     get:
       operationId: getBacktest
       parameters:
-        - in: path
-          name: run_id
+        - name: run_id
+          in: path
           required: true
-          schema: {type: string}
+          schema:
+            type: string
       responses:
         "200":
-          description: Normalised completed result
+          description: Current backtest state or normalized completed result.
           content:
             application/json:
               schema:
-                $ref: ./schemas/BacktestResult.schema.json
+                oneOf:
+                  - $ref: "#/components/schemas/BacktestStatus"
+                  - $ref: ./schemas/BacktestResult.schema.json
         "404":
           $ref: "#/components/responses/ContractError"
 components:
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema:
+        type: string
+        minLength: 8
+        maxLength: 128
+  schemas:
+    OptimisationAccepted:
+      type: object
+      additionalProperties: false
+      required: [optimization_id, status, status_url]
+      properties:
+        optimization_id:
+          type: string
+        status:
+          const: queued
+        status_url:
+          type: string
+    OptimisationStatus:
+      type: object
+      additionalProperties: false
+      required: [optimization_id, status]
+      properties:
+        optimization_id:
+          type: string
+        status:
+          enum:
+            - queued
+            - summarizing_evidence
+            - designing
+            - validating_spec
+            - generating_code
+            - validating_code
+            - reviewing_code_risk
+            - repairing
+            - smoke_testing
+            - backtesting
+            - post_backtest_analysis
+            - selecting
+        current_route:
+          enum: [traditional, ml, hybrid]
+    BacktestAccepted:
+      type: object
+      additionalProperties: false
+      required: [run_id, status, status_url]
+      properties:
+        run_id:
+          type: string
+        status:
+          const: queued
+        status_url:
+          type: string
+    BacktestStatus:
+      type: object
+      additionalProperties: false
+      required: [run_id, status]
+      properties:
+        run_id:
+          type: string
+        status:
+          enum: [queued, running]
+    ErrorEnvelope:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message, request_id]
+          properties:
+            code:
+              type: string
+            message:
+              type: string
+            request_id:
+              type: string
+            details:
+              type: array
+              items:
+                type: object
+                additionalProperties: true
   responses:
     ContractError:
-      description: Contract or policy error
+      description: Contract, idempotency, or policy error.
       content:
         application/json:
           schema:
-            type: object
-            required: [error]
-            properties:
-              error:
-                type: object
-                required: [code, message, request_id]
-                properties:
-                  code: {type: string}
-                  message: {type: string}
-                  request_id: {type: string}
-                  details: {type: array, items: {type: object}}
+            $ref: "#/components/schemas/ErrorEnvelope"

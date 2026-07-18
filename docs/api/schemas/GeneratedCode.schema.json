@@ -1,0 +1,65 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "assumptions": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Assumptions",
+      "type": "array"
+    },
+    "entry_file": {
+      "const": "main.py",
+      "default": "main.py",
+      "title": "Entry File",
+      "type": "string"
+    },
+    "generator_metadata": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "title": "Generator Metadata",
+      "type": "object"
+    },
+    "language": {
+      "const": "python",
+      "default": "python",
+      "title": "Language",
+      "type": "string"
+    },
+    "source": {
+      "title": "Source",
+      "type": "string"
+    },
+    "source_sha256": {
+      "title": "Source Sha256",
+      "type": "string"
+    },
+    "spec_sha256": {
+      "title": "Spec Sha256",
+      "type": "string"
+    },
+    "strategy_id": {
+      "title": "Strategy Id",
+      "type": "string"
+    },
+    "used_qc_api": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Used Qc Api",
+      "type": "array"
+    }
+  },
+  "required": [
+    "strategy_id",
+    "source",
+    "source_sha256",
+    "spec_sha256",
+    "used_qc_api",
+    "assumptions",
+    "generator_metadata"
+  ],
+  "title": "GeneratedCode",
+  "type": "object"
+}

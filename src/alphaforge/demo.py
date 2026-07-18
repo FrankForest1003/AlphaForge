@@ -4,6 +4,7 @@ from datetime import date
 
 from alphaforge.schemas.backtest import BacktestMetrics, BacktestResult
 from alphaforge.schemas.optimisation import OptimizationRequest
+from alphaforge.schemas.manifests import LeanEnvironmentManifest
 from alphaforge.schemas.strategy_spec import (
     ExecutionSpec,
     RiskConstraints,
@@ -66,4 +67,17 @@ def build_demo_request(*, include_test_evidence: bool = False) -> OptimizationRe
         optimization_id="demo_opt_001",
         parent_spec=parent,
         evidence=evidence,
+    )
+
+
+def build_demo_environment() -> LeanEnvironmentManifest:
+    return LeanEnvironmentManifest(
+        provider="mock",
+        lean_version="lean-test-v1",
+        python_version="3.11",
+        data_version="fixture-v1",
+        brokerage_model="cash-long-only",
+        fee_model="fixed-test-fees",
+        slippage_model="fixed-test-slippage",
+        time_zone="America/New_York",
     )
