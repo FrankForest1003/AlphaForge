@@ -1,0 +1,112 @@
+digraph AlphaForgeAgentOrchestration {
+  graph [
+    rankdir=TB,
+    newrank=true,
+    compound=true,
+    splines=ortho,
+    nodesep=0.38,
+    ranksep=0.6,
+    pad=0.28,
+    margin=0.08,
+    bgcolor="#071426",
+    color="#244966",
+    fontname="Arial",
+    fontcolor="#F5FBFF",
+    fontsize=30,
+    labelloc=t,
+    label="AlphaForge — Agent Orchestration\nNUS Summer Workshop"
+  ];
+
+  node [
+    shape=box,
+    style="rounded,filled",
+    fontname="Arial",
+    fontcolor="#F5FBFF",
+    fontsize=15,
+    penwidth=2.0,
+    margin="0.16,0.13",
+    height=1.12
+  ];
+
+  edge [
+    color="#D9EEFF",
+    fontname="Arial",
+    fontcolor="#D9EEFF",
+    fontsize=12,
+    penwidth=2.0,
+    arrowsize=0.78
+  ];
+
+  subgraph cluster_design {
+    label="DESIGN & IMPLEMENTATION";
+    color="#244966";
+    fontcolor="#7BD8FF";
+    fontsize=16;
+    penwidth=1.5;
+    style="rounded,filled";
+    fillcolor="#081B31";
+    margin=24;
+
+    N1 [group=1, width=1.75, color="#27C7F7", fillcolor="#0B3048", label="01\nNormalized Evidence\nParent + four baselines"];
+    N2 [group=2, width=1.85, color="#27C7F7", fillcolor="#0B3048", label="02\nEvidence Summarizer\nMetrics + run IDs"];
+    N3 [group=3, width=1.95, color="#A98AFF", fillcolor="#30245C", label="03\nStrategy Designers\nTraditional · ML · Hybrid"];
+    N4 [group=4, width=1.75, color="#27C7F7", fillcolor="#0B3048", label="04\nCandidateDesign\nStrict Pydantic Schema"];
+    N5 [group=5, width=2.15, color="#27C7F7", fillcolor="#0B3048", label="05\nSpecBuilder + Validation\nImmutable fields + diff"];
+    N6 [group=6, width=1.75, color="#A98AFF", fillcolor="#30245C", label="06\nQC Code Agent\nmain.py + bound digests"];
+    N7 [group=7, width=2.0, color="#FFC857", fillcolor="#453316", label="07\nStatic Code Validation\nAST · allowlist · digests"];
+
+    { rank=same; N1; N2; N3; N4; N5; N6; N7; }
+    N1 -> N2 -> N3 -> N4 -> N5 -> N6 -> N7 [weight=30];
+  }
+
+  subgraph cluster_execution {
+    label="SAFETY, EXECUTION & DECISION";
+    color="#244966";
+    fontcolor="#7BD8FF";
+    fontsize=16;
+    penwidth=1.5;
+    style="rounded,filled";
+    fillcolor="#081B31";
+    margin=24;
+
+    N8 [group=1, width=1.85, color="#A98AFF", fillcolor="#30245C", label="08\nCode Risk Agent\nNo Backtest Data"];
+    GATE [group=2, shape=diamond, width=1.35, height=0.82, margin="0.08,0.05", color="#FFC857", fillcolor="#453316", fontcolor="#FFF2C6", fontsize=11, label="PRE-BACKTEST\nSAFETY GATE"];
+    N9 [group=3, width=1.75, color="#64DEA4", fillcolor="#124436", label="09\nLEAN Smoke Test\nCompile + minimal runtime"];
+    N10 [group=4, width=1.72, color="#64DEA4", fillcolor="#124436", label="10\nFull Backtest\nNormalized result"];
+    N11 [group=5, width=2.35, color="#A98AFF", fillcolor="#30245C", label="11\nUnified Post-Backtest Analysis\nONE CALL · all routes"];
+    N12 [group=6, width=2.05, color="#27C7F7", fillcolor="#0B3048", label="12\nDeterministic Selector\nHard eligibility rules"];
+    N13 [group=7, width=2.15, color="#27C7F7", fillcolor="#0B3048", label="13\nOptimizationResult\nSelection + audit trail"];
+
+    { rank=same; N8; GATE; N9; N10; N11; N12; N13; }
+    N8 -> GATE [color="#FFC857", penwidth=2.5, weight=30];
+    GATE -> N9 [color="#FFC857", penwidth=2.5, weight=30];
+    N9 -> N10 -> N11 -> N12 -> N13 [weight=30];
+  }
+
+  REPAIR [
+    group=7,
+    width=3.7,
+    height=1.22,
+    color="#FFC857",
+    fillcolor="#342A27",
+    fontcolor="#FFF2C6",
+    penwidth=2.8,
+    label="Repair Agent\nTriggers: static · risk · smoke\nImplementation fixes only · immutable spec_sha256\nReturn: Static Code Validation"
+  ];
+
+  /* The main edge constrains the two workflow ranks. Repair edges never reorder them. */
+  /* Invisible column constraints align the two library-managed ranks. */
+  N1 -> N8 [style=invis, minlen=3, weight=50];
+  N2 -> GATE [style=invis, minlen=3, weight=50];
+  N3 -> N9 [style=invis, minlen=3, weight=50];
+  N4 -> N10 [style=invis, minlen=3, weight=50];
+  N5 -> N11 [style=invis, minlen=3, weight=50];
+  N6 -> N12 [style=invis, minlen=3, weight=50];
+  N7 -> N13 [style=invis, minlen=3, weight=50];
+
+  N7:s -> N8:n [constraint=false, ltail=cluster_design, lhead=cluster_execution, penwidth=2.4];
+  N7:sw -> REPAIR:nw [minlen=1, weight=12, style=dashed, color="#FFC857"];
+  N8:n -> REPAIR:w [constraint=false, style=dashed, color="#FFC857"];
+  N9:n -> REPAIR:w [constraint=false, style=dashed, color="#FFC857"];
+  REPAIR:ne -> N7:se [constraint=false, color="#FFC857", penwidth=3.0];
+}
