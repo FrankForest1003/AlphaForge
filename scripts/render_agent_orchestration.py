@@ -17,40 +17,70 @@ from matplotlib.patches import FancyArrowPatch, FancyBboxPatch
 ROOT = Path(__file__).resolve().parents[1]
 OUTPUT = ROOT / "docs" / "architecture" / "AlphaForge_Agent_Orchestration.png"
 
-BOX_WIDTH = 0.155
-BOX_HEIGHT = 0.095
 BLUE = "C0"
+AGENT_FILL = "#eaf2fb"
+EXECUTION_FILL = "#f2f2f2"
 
 
-def add_box(ax, x: float, y: float, title: str, detail: str = "") -> None:
-    left = x - BOX_WIDTH / 2
-    bottom = y - BOX_HEIGHT / 2
-    box = FancyBboxPatch(
-        (left, bottom),
-        BOX_WIDTH,
-        BOX_HEIGHT,
-        boxstyle="round,pad=0.012,rounding_size=0.012",
-        linewidth=1.4,
-        edgecolor=BLUE,
-        facecolor="white",
+def node(
+    ax,
+    x: float,
+    y: float,
+    text: str,
+    *,
+    width: float,
+    height: float = 0.075,
+    kind: str = "component",
+    fontsize: float = 13,
+) -> None:
+    if kind == "agent":
+        facecolor = AGENT_FILL
+        boxstyle = "round,pad=0.012,rounding_size=0.018"
+    elif kind == "execution":
+        facecolor = EXECUTION_FILL
+        boxstyle = "round,pad=0.012,rounding_size=0.035"
+    else:
+        facecolor = "white"
+        boxstyle = "square,pad=0.012"
+
+    ax.add_patch(
+        FancyBboxPatch(
+            (x - width / 2, y - height / 2),
+            width,
+            height,
+            boxstyle=boxstyle,
+            linewidth=1.5,
+            edgecolor=BLUE,
+            facecolor=facecolor,
+        )
     )
-    ax.add_patch(box)
-    ax.text(x, y + 0.014, title, ha="center", va="center", fontsize=10.5, weight="bold")
-    if detail:
-        ax.text(x, y - 0.022, detail, ha="center", va="center", fontsize=8.3, color="0.35")
+    ax.text(x, y, text, ha="center", va="center", fontsize=fontsize, weight="bold")
 
 
-def arrow(ax, start: tuple[float, float], end: tuple[float, float], **kwargs) -> None:
-    options = {
-        "arrowstyle": "-|>",
-        "mutation_scale": 12,
-        "linewidth": 1.25,
-        "color": "0.35",
-        "shrinkA": 0,
-        "shrinkB": 0,
-    }
-    options.update(kwargs)
-    ax.add_patch(FancyArrowPatch(start, end, **options))
+def arrow(
+    ax,
+    start: tuple[float, float],
+    end: tuple[float, float],
+    *,
+    color: str = "0.35",
+    linestyle: str = "-",
+    connectionstyle: str = "arc3",
+    linewidth: float = 1.3,
+) -> None:
+    ax.add_patch(
+        FancyArrowPatch(
+            start,
+            end,
+            arrowstyle="-|>",
+            mutation_scale=13,
+            linewidth=linewidth,
+            color=color,
+            linestyle=linestyle,
+            connectionstyle=connectionstyle,
+            shrinkA=0,
+            shrinkB=0,
+        )
+    )
 
 
 def main() -> None:
@@ -61,78 +91,85 @@ def main() -> None:
     ax.set_ylim(0, 1)
     ax.axis("off")
 
-    fig.suptitle("AlphaForge Agent Orchestration", fontsize=22, weight="bold", y=0.965)
-    ax.set_title("NUS Summer Workshop", fontsize=13, color="0.35", pad=16)
+    fig.suptitle("AlphaForge Agent Orchestration", fontsize=24, weight="bold", y=0.965)
+    ax.set_title("NUS Summer Workshop", fontsize=14, color="0.4", pad=14)
 
-    # Row 1: design, left to right.
-    row1 = [
-        (0.10, "Normalized Evidence", "Parent + four baselines"),
-        (0.29, "Evidence Summarizer", "Metrics + run IDs"),
-        (0.48, "Strategy Designers", "Traditional · ML · Hybrid"),
-        (0.67, "CandidateDesign", "Strict schema"),
-        (0.86, "SpecBuilder + Validation", "Immutable fields + diff"),
-    ]
-    for x, title, detail in row1:
-        add_box(ax, x, 0.78, title, detail)
-    for left, right in zip(row1, row1[1:]):
-        arrow(ax, (left[0] + BOX_WIDTH / 2, 0.78), (right[0] - BOX_WIDTH / 2, 0.78))
+    # Input and shared evidence.
+    node(ax, 0.30, 0.85, "Strategy + Baselines", width=0.18, fontsize=14)
+    node(ax, 0.60, 0.85, "Evidence Summary", width=0.18, fontsize=14)
+    arrow(ax, (0.39, 0.85), (0.51, 0.85))
 
-    # Row 2: implementation and execution, right to left.
-    row2 = [
-        (0.86, "QC Code Agent", "main.py + digests"),
-        (0.67, "Static Code Validation", "AST + API allowlist"),
-        (0.48, "Code Risk Agent", "No backtest data"),
-        (0.29, "LEAN Smoke Test", "Compile + minimal run"),
-        (0.10, "Full Backtest", "Normalized result"),
-    ]
-    for x, title, detail in row2:
-        add_box(ax, x, 0.50, title, detail)
-    arrow(ax, (0.86, 0.78 - BOX_HEIGHT / 2), (0.86, 0.50 + BOX_HEIGHT / 2))
-    for right, left in zip(row2, row2[1:]):
-        arrow(ax, (right[0] - BOX_WIDTH / 2, 0.50), (left[0] + BOX_WIDTH / 2, 0.50))
-
-    # Explicit pre-backtest boundary: Code Risk must approve before smoke testing.
-    ax.plot([0.385, 0.385], [0.425, 0.575], linestyle="--", linewidth=1.1, color="0.5")
-    ax.text(
-        0.385,
-        0.595,
-        "PRE-BACKTEST SAFETY GATE",
-        ha="center",
-        va="bottom",
-        fontsize=8.5,
-        color="0.35",
+    # Three strategy designers run in parallel.
+    designers = (
+        (0.32, "Traditional\nDesigner"),
+        (0.50, "ML\nDesigner"),
+        (0.68, "Hybrid\nDesigner"),
     )
+    for x, label in designers:
+        node(ax, x, 0.68, label, width=0.14, kind="agent", fontsize=13)
+        arrow(
+            ax,
+            (0.60, 0.85 - 0.0375),
+            (x, 0.68 + 0.0375),
+        )
 
-    # Repair is local to code validation, code risk and smoke failures.
-    add_box(ax, 0.48, 0.32, "Repair Agent", "Implementation fixes only")
-    failure_style = {"linestyle": "--", "color": "0.5", "linewidth": 1.0}
-    arrow(ax, (0.67, 0.50 - BOX_HEIGHT / 2), (0.54, 0.32 + BOX_HEIGHT / 2), **failure_style)
-    arrow(ax, (0.48, 0.50 - BOX_HEIGHT / 2), (0.48, 0.32 + BOX_HEIGHT / 2), **failure_style)
-    arrow(ax, (0.29, 0.50 - BOX_HEIGHT / 2), (0.42, 0.32 + BOX_HEIGHT / 2), **failure_style)
+    # A shared pipeline is executed independently for every design.
+    pipeline_y = 0.46
+    pipeline = (
+        (0.09, "Spec\nBuilder", "component"),
+        (0.255, "QC Code\nAgent", "agent"),
+        (0.42, "Static\nCheck", "component"),
+        (0.585, "Code Risk\nAgent", "agent"),
+        (0.75, "LEAN Smoke\nTest", "execution"),
+        (0.915, "Backtest", "execution"),
+    )
+    for x, label, kind in pipeline:
+        node(ax, x, pipeline_y, label, width=0.125, kind=kind, fontsize=12.5)
+    for left, right in zip(pipeline, pipeline[1:]):
+        arrow(ax, (left[0] + 0.0625, pipeline_y), (right[0] - 0.0625, pipeline_y))
+
+    # The three designer outputs feed the same per-candidate pipeline contract.
+    bus_y = 0.58
+    for x, _ in designers:
+        ax.plot([x, x], [0.68 - 0.0375, bus_y], color="0.5", linewidth=1.1)
+    ax.plot([0.09, 0.68], [bus_y, bus_y], color="0.5", linewidth=1.1)
+    arrow(ax, (0.09, bus_y), (0.09, pipeline_y + 0.0375))
+
+    # Repair is a small local loop around implementation checks.
+    node(ax, 0.585, 0.295, "Repair Agent", width=0.15, kind="agent", fontsize=13)
+    for source_x, target_x in ((0.42, 0.54), (0.585, 0.585), (0.75, 0.63)):
+        arrow(
+            ax,
+            (source_x, pipeline_y - 0.0375),
+            (target_x, 0.295 + 0.0375),
+            color="0.55",
+            linestyle="--",
+            linewidth=1.0,
+        )
     arrow(
         ax,
-        (0.48 + BOX_WIDTH / 2, 0.32),
-        (0.67, 0.50 - BOX_HEIGHT / 2),
-        connectionstyle="arc3,rad=-0.28",
+        (0.585 - 0.075, 0.295),
+        (0.42, pipeline_y - 0.0375),
         color=BLUE,
+        connectionstyle="arc3,rad=-0.25",
     )
-    ax.text(0.61, 0.355, "re-validate", fontsize=8.3, color=BLUE, ha="center")
 
-    # Row 3: one analysis call followed by deterministic selection.
-    row3 = [
-        (0.18, "Unified Post-Backtest\nAnalysis", "One call · all route outcomes"),
-        (0.50, "Deterministic Selector", "Hard eligibility rules"),
-        (0.82, "OptimizationResult", "Selection + audit trail"),
-    ]
-    for x, title, detail in row3:
-        add_box(ax, x, 0.13, title, detail)
-    arrow(ax, (0.10, 0.50 - BOX_HEIGHT / 2), (0.18, 0.13 + BOX_HEIGHT / 2), connectionstyle="arc3,rad=0.12")
-    for left, right in zip(row3, row3[1:]):
-        arrow(ax, (left[0] + BOX_WIDTH / 2, 0.13), (right[0] - BOX_WIDTH / 2, 0.13))
+    # All candidate results are considered together, then selected and returned.
+    final_y = 0.12
+    final = (
+        (0.23, "Post-Backtest\nAnalysis Agent", "agent", 0.18),
+        (0.50, "Candidate\nSelector", "component", 0.16),
+        (0.77, "Result", "component", 0.16),
+    )
+    for x, label, kind, width in final:
+        node(ax, x, final_y, label, width=width, kind=kind, fontsize=13.5)
+    arrow(ax, (0.23 + 0.09, final_y), (0.50 - 0.08, final_y))
+    arrow(ax, (0.50 + 0.08, final_y), (0.77 - 0.08, final_y))
 
-    ax.text(0.10, 0.875, "DESIGN", fontsize=10, weight="bold", color="0.45")
-    ax.text(0.10, 0.595, "CODE & EXECUTION", fontsize=10, weight="bold", color="0.45")
-    ax.text(0.10, 0.225, "ANALYSIS & SELECTION", fontsize=10, weight="bold", color="0.45")
+    # Row transition from the final pipeline stage to post-backtest analysis.
+    ax.plot([0.915, 0.915], [pipeline_y - 0.0375, 0.205], color="0.35", linewidth=1.3)
+    ax.plot([0.915, 0.23], [0.205, 0.205], color="0.35", linewidth=1.3)
+    arrow(ax, (0.23, 0.205), (0.23, final_y + 0.0375))
 
     fig.savefig(OUTPUT, facecolor="white")
     plt.close(fig)
