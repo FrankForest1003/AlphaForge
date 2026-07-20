@@ -94,3 +94,54 @@
 - completion marker 精确正确
 
 最终只输出完整、可执行的 Python 代码。
+
+在生成代码前，必须先判断模型是否适合在 LEAN 内训练。
+
+允许直接训练：
+- Linear/Ridge/Lasso/ElasticNet
+- Logistic Regression
+- Random Forest
+- Extra Trees
+- Gradient Boosting
+- HistGradientBoosting
+- XGBoost CPU
+- LightGBM CPU
+- PCA
+- KMeans
+- Gaussian Mixture
+- Isolation Forest
+- 小型在线学习模型
+
+限制使用：
+- SVM
+- KNN
+- 大型 Random Forest
+- 大型 Boosting
+- HMM
+
+只允许离线训练、LEAN 推理：
+- LSTM
+- GRU
+- Transformer
+- Temporal Fusion Transformer
+- FinBERT
+- 图神经网络
+- 大型神经网络
+- 大型模型集成
+- 强化学习 policy
+
+当前禁止：
+- 在 LEAN 中训练 PPO/DQN/SAC 等强化学习模型
+- AutoML
+- GridSearchCV/Optuna/Hyperopt 大规模参数搜索
+- CUDA/GPU 模型
+- 回测时调用外部 LLM 或外部预测 API
+- 在 OnData 中反复训练复杂模型
+- 使用当前 Runtime 未安装的库
+
+当用户要求不适合的模型时，不得强行生成代码。
+必须返回以下三种处理之一：
+
+1. 改用当前受支持的替代模型；
+2. 将模型改为离线训练、LEAN 只加载推理；
+3. 明确标记当前 Runtime 不支持，并说明需要增加的依赖和运行环境。
