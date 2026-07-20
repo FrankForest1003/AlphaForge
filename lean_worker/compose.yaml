@@ -1,0 +1,42 @@
+name: alphaforge-local-runtime
+
+services:
+  backtest-runtime:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        LEAN_REF: ${LEAN_REF:-0269115d3cfbf691c7a0b7cfcc9ed412cafb91f6}
+        RUNTIME_VERSION: ${RUNTIME_VERSION:-1.1.3}
+    image: alphaforge/local-lean-runtime:${RUNTIME_VERSION:-1.1.3}
+    platform: linux/amd64
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${ALPHAFORGE_PORT:-18081}:8081"
+    environment:
+      ALPHAFORGE_API_TOKEN: ${ALPHAFORGE_API_TOKEN:-local-dev-token}
+      ALPHAFORGE_WORKER_CONFIG: /app/config/worker.json
+      ALPHAFORGE_UNIVERSE_CONFIG: /app/config/universe_whitelist_v1.0.json
+      TIINGO_API_TOKEN: ${TIINGO_API_TOKEN:-}
+      TIINGO_START_DATE: ${TIINGO_START_DATE:-2014-01-01}
+      ALPHAFORGE_AUTO_GENERATE_SAMPLE_DATA: ${ALPHAFORGE_AUTO_GENERATE_SAMPLE_DATA:-false}
+      ALPHAFORGE_RUNTIME_VERSION: ${RUNTIME_VERSION:-1.1.3}
+      PYTHONHASHSEED: "0"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+      NUMEXPR_NUM_THREADS: "1"
+    volumes:
+      - ./workspace/data:/data
+      - ./workspace/results:/runtime/results
+      - ./workspace/jobs:/runtime/jobs
+      - ./workspace/service:/runtime/service
+      - ./workspace/models:/runtime/models
+      - ./workspace/locks:/runtime/locks
+      - ./strategies:/strategies:ro
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8081/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 60s

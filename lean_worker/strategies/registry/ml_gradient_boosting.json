@@ -1,0 +1,24 @@
+{
+  "strategy_id": "ml_gradient_boosting_v1",
+  "strategy_family": "machine_learning",
+  "entry_file": "approved/ml_gradient_boosting/main.py",
+  "algorithm_class": "MLGradientBoostingStrategy",
+  "expected_marker": "ALPHAFORGE_ML_GRADIENT_BOOSTING_COMPLETED",
+  "supports_ml": true,
+  "required_symbols": [
+    "AAPL",
+    "MSFT",
+    "SPY"
+  ],
+  "default_parameters": {
+    "start_date": "2021-01-04",
+    "end_date": "latest",
+    "initial_cash": "100000",
+    "training_bars": "420",
+    "forecast_horizon": "21",
+    "target_weight": "0.95",
+    "random_seed": "42"
+  },
+  "description": "Monthly walk-forward scikit-learn GradientBoostingRegressor strategy; retained as a compact compatibility example.",
+  "requires_real_data": true
+}

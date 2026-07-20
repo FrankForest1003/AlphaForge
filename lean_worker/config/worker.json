@@ -1,0 +1,11 @@
+{
+  "lean_root": "/opt/lean",
+  "runtime_root": "/runtime",
+  "dotnet_executable": "/usr/bin/dotnet",
+  "data_folder": "/data/lean",
+  "strategy_root": "/strategies",
+  "runtime_support_file": "/app/runtime_support/alphaforge_base.py",
+  "default_timeout_seconds": 3600,
+  "lock_wait_seconds": 60,
+  "strict_data_quality": true
+}

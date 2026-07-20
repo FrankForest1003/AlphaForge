@@ -1,0 +1,24 @@
+{
+  "strategy_id": "classic_30_stock_top3_momentum_v1",
+  "strategy_family": "classic",
+  "entry_file": "approved/classic_30_stock_top3_momentum/main.py",
+  "algorithm_class": "ClassicThirtyStockTop3Momentum",
+  "expected_marker": "ALPHAFORGE_CLASSIC_30_TOP3_MOMENTUM_COMPLETED",
+  "supports_ml": false,
+  "requires_real_data": true,
+  "universe_id": "alphaforge_us_equity_30_v1.0",
+  "required_symbols": ["MSFT","AAPL","NVDA","GOOGL","AMZN","META","AVGO","ASML","AMD","ORCL","JPM","BRK.B","V","LLY","JNJ","ABBV","TMO","WMT","COST","PG","KO","MCD","CAT","HON","UNP","ETN","XOM","LIN","NEE","PLD","SPY","QQQ"],
+  "default_parameters": {
+    "start_date": "2015-01-02",
+    "end_date": "latest",
+    "initial_cash": "100000",
+    "symbols": "MSFT,AAPL,NVDA,GOOGL,AMZN,META,AVGO,ASML,AMD,ORCL,JPM,BRK.B,V,LLY,JNJ,ABBV,TMO,WMT,COST,PG,KO,MCD,CAT,HON,UNP,ETN,XOM,LIN,NEE,PLD",
+    "lookback": "126",
+    "top_k": "3",
+    "target_gross": "0.95",
+    "max_position_weight": "0.35",
+    "risk_filter_enabled": "true",
+    "risk_sma_period": "200"
+  },
+  "description": "Monthly long-only Top-3 momentum rotation across the frozen AlphaForge 30-stock universe, with QQQ 200-day SMA risk filter."
+}

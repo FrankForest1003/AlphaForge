@@ -1,0 +1,22 @@
+AlphaForge Local LEAN Runtime v1.1.3 validation
+
+Completed in the package build environment:
+- Python compile validation: PASS
+- Pytest: 18 tests passed
+- Package static validation: PASS
+- Docker Compose YAML validation: PASS
+- Shell syntax validation: PASS
+- 30-stock whitelist and SPY/QQQ dependency validation: PASS
+- Daily-only benchmark regression validation: PASS
+- Staged sell/reduce-before-buy source regression validation: PASS
+- Partial-history Classic/ML universe regression validation: PASS
+- ML History MultiIndex missing-symbol regression validation: PASS
+- No real market-data ZIP files packaged: PASS
+- No .env secret file packaged: PASS
+
+Not completed in this build environment:
+- Docker daemon image build
+- Tiingo download using the user's token
+- Windows/macOS end-to-end LEAN execution
+
+Run scripts/test.ps1 or scripts/test.sh after applying the release.

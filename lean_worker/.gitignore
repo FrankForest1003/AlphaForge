@@ -1,0 +1,13 @@
+.env
+workspace/data/*
+workspace/results/*
+workspace/jobs/*
+workspace/service/*
+workspace/models/*
+workspace/locks/*
+!workspace/**/.gitkeep
+__pycache__/
+*.pyc
+.DS_Store
+workspace/backups/*
+!workspace/backups/.gitkeep

@@ -1,0 +1,38 @@
+# AlphaForge root-level local configuration
+.env
+.env.*
+!.env.example
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Generated artifacts and licensed/local data
+artifacts/
+data/
+models/
+logs/
+*.log
+experiments/**/raw/
+experiments/**/artifacts/
+
+# Keep the runtime's own nested .gitignore in effect
+lean_worker/workspace/data/*
+lean_worker/workspace/results/*
+lean_worker/workspace/jobs/*
+lean_worker/workspace/service/*
+lean_worker/workspace/models/*
+lean_worker/workspace/locks/*
+lean_worker/workspace/backups/*
+!lean_worker/workspace/**/.gitkeep
