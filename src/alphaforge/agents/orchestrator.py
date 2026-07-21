@@ -374,6 +374,20 @@ class OptimisationOrchestrator:
 
         result = self.backtest_provider.run(built.spec, code)
         self._audit(audit, "full_backtest", built.spec.strategy_id, result.status, result.run_id)
+        if result.status != "completed" or result.metrics is None:
+            reasons = result.warnings or ("BACKTEST_RESULT_INCOMPLETE",)
+            return self._code_failure(
+                route=route,
+                state="rejected_by_backtest",
+                built=built,
+                code=code,
+                validation=code_validation,
+                risk_review=code_risk_review,
+                smoke=smoke,
+                reasons=reasons,
+                audit=audit,
+                backtest_result=result,
+            )
         return CandidateRun(
             candidate_type=route,
             state="backtested_not_selected",
@@ -418,6 +432,7 @@ class OptimisationOrchestrator:
         smoke,
         reasons,
         audit,
+        backtest_result=None,
     ):
         self._audit(audit, state, built.spec.strategy_id, "rejected", ",".join(reasons))
         return CandidateRun(
@@ -430,6 +445,7 @@ class OptimisationOrchestrator:
             code_validation=validation,
             code_risk_review=risk_review,
             smoke_test=smoke,
+            backtest_result=backtest_result,
             failure_reasons=reasons,
         )
 

@@ -2,20 +2,22 @@
 
 ```mermaid
 flowchart TD
-  INPUT["Parent Spec + validation evidence"] --> SUMMARY["EvidenceSummarizer"]
+  INPUT["Parent Spec + baseline definitions"] --> EVIDENCE["Local LEAN ValidationEvidenceRunner"]
+  EVIDENCE --> SUMMARY["EvidenceSummarizer"]
   SUMMARY --> DESIGN["Three Strategy Designers"]
   DESIGN --> SPEC["SpecBuilder + Spec validation"]
   SPEC --> COMPILE["Deterministic StrategyCompiler"]
   COMPILE --> STATIC["Static Code Validator"]
   STATIC --> RISK["Three route-specific Code Risk Agents"]
-  RISK -->|approve| SMOKE["LEAN Smoke Test"]
-  SMOKE --> FULL["Full Backtest"]
+  RISK -->|approve| DEPLOY["Worker digest-bound deployment"]
+  DEPLOY --> SMOKE["Local LEAN Smoke Test"]
+  SMOKE --> FULL["Local LEAN full backtest"]
   FULL --> ANALYSIS["Unified Post-Backtest Analysis"]
   ANALYSIS --> SELECT["Deterministic CandidateSelector"]
   SELECT --> RESULT["OptimizationResult"]
 ```
 
-Traditional, ML and Hybrid pipelines execute in a fixed three-worker pool. Each route terminates immediately on Spec, compilation, static validation, Code Risk or Smoke failure. All three outcomes are joined before the single analysis request is built.
+The parent and four baselines are first executed under one Local LEAN contract; their normalized results form the design evidence. Traditional, ML and Hybrid pipelines then execute in a fixed three-worker pool through code-risk review. The Local LEAN Worker serializes actual LEAN jobs through one FIFO executor because the engine configuration and licensed data are shared. Each route terminates immediately on Spec, compilation, static validation, Code Risk, Smoke or full-backtest failure. All three outcomes are joined before the single analysis request is built.
 
 ## Dependency direction
 
@@ -37,5 +39,7 @@ schemas → Pydantic
 - Post-backtest analysis can explain and rank evidence but cannot override selection rules.
 - Context bundles can read only registered English prompt files.
 - Credentials and provider configuration remain runtime-only.
+- Worker deployment validates the source and Spec digests before accepting a generated strategy.
+- Only completed, data-complete Worker results can enter deterministic selection.
 
 `LeanEnvironmentManifest` declares the target environment, allowed imports, Python dependencies, QC API profile and compatible templates. Unsupported combinations fail compilation explicitly; the compiler never substitutes another strategy.

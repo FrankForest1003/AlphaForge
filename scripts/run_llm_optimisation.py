@@ -4,9 +4,12 @@ from __future__ import annotations
 import argparse
 import json
 from datetime import datetime, timezone
+import os
 from pathlib import Path
 import threading
 from typing import Any
+
+from pydantic import TypeAdapter
 
 from alphaforge.agents.orchestrator import OptimisationOrchestrator
 from alphaforge.agents.providers.llm import (
@@ -18,6 +21,13 @@ from alphaforge.agents.providers.mock import MockBacktestProvider
 from alphaforge.agents.providers.structured import StructuredModelClient
 from alphaforge.config import load_model_settings
 from alphaforge.demo import build_demo_environment, build_demo_request
+from alphaforge.schemas.backtest import BacktestResult
+from backend.app.services import (
+    LeanWorkerClient,
+    LocalLeanBacktestProvider,
+    ValidationEvidenceRunner,
+    local_lean_environment_manifest,
+)
 
 
 class ReadableTrace:
@@ -202,8 +212,8 @@ class ReadableTrace:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Run the real structured LLM Agent pipeline with the deterministic demo "
-            "backtest provider."
+            "Run the structured LLM Agent pipeline with Local LEAN or the offline "
+            "deterministic backtest fixture."
         )
     )
     parser.add_argument(
@@ -211,6 +221,41 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=Path(".env"),
         help="Path to API_KEY, MODEL and BASE_URL settings.",
+    )
+    parser.add_argument(
+        "--backtest-provider",
+        choices=("local-lean", "mock"),
+        default="local-lean",
+        help="Execution backend; Local LEAN is the production integration path.",
+    )
+    parser.add_argument(
+        "--worker-url",
+        default="http://127.0.0.1:18081",
+        help="Local LEAN Worker URL.",
+    )
+    parser.add_argument(
+        "--worker-env-file",
+        type=Path,
+        default=Path("lean_worker/.env"),
+        help="File containing ALPHAFORGE_API_TOKEN; the value is never logged.",
+    )
+    parser.add_argument(
+        "--evidence-input",
+        type=Path,
+        default=None,
+        help="Reuse five validated Local LEAN evidence results instead of rerunning them.",
+    )
+    parser.add_argument(
+        "--evidence-output",
+        type=Path,
+        default=Path("artifacts/debug_runs/latest/validation_evidence.json"),
+        help="Where to write the five normalized pre-design validation results.",
+    )
+    parser.add_argument(
+        "--model-timeout-seconds",
+        type=int,
+        default=240,
+        help="Per-request model transport timeout; Schema retry rules are unchanged.",
     )
     parser.add_argument(
         "--output",
@@ -227,25 +272,84 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _worker_token(path: Path) -> str:
+    environment_token = os.environ.get("ALPHAFORGE_API_TOKEN", "")
+    if environment_token:
+        return environment_token
+    if not path.is_file():
+        return ""
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        if key.strip() == "ALPHAFORGE_API_TOKEN":
+            return value.strip().strip('"').strip("'")
+    return ""
+
+
 def main() -> None:
     args = parse_args()
     trace = ReadableTrace()
     client = StructuredModelClient(
         load_model_settings(args.env_file),
+        timeout_seconds=args.model_timeout_seconds,
         trace_sink=trace.record,
     )
+    if args.backtest_provider == "local-lean":
+        backtest_provider = LocalLeanBacktestProvider(
+            LeanWorkerClient(
+                base_url=args.worker_url,
+                token=_worker_token(args.worker_env_file),
+            )
+        )
+        lean_environment = local_lean_environment_manifest()
+        demo_request = build_demo_request()
+        if args.evidence_input is not None:
+            evidence = TypeAdapter(tuple[BacktestResult, ...]).validate_python(
+                json.loads(args.evidence_input.read_text(encoding="utf-8"))
+            )
+            if len(evidence) != 5 or any(
+                result.provider != "local_lean_worker_v1.1.3" for result in evidence
+            ):
+                raise ValueError(
+                    "reused evidence must contain five Local LEAN Worker results"
+                )
+            print(f"validation evidence: reused {args.evidence_input}", flush=True)
+        else:
+            evidence = ValidationEvidenceRunner(
+                backtest_provider=backtest_provider,
+                lean_environment=lean_environment,
+                progress=lambda message: print(message, flush=True),
+            ).run(demo_request.parent_spec)
+        request = demo_request.model_copy(update={"evidence": evidence})
+        args.evidence_output.parent.mkdir(parents=True, exist_ok=True)
+        args.evidence_output.write_text(
+            json.dumps(
+                [result.model_dump(mode="json") for result in evidence],
+                ensure_ascii=False,
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+    else:
+        backtest_provider = MockBacktestProvider()
+        lean_environment = build_demo_environment()
+        request = build_demo_request()
+
     orchestrator = OptimisationOrchestrator(
         designer=LLMStrategyDesigner(client),
         code_risk_agent=LLMCodeRiskAgent(client),
-        backtest_provider=MockBacktestProvider(),
+        backtest_provider=backtest_provider,
         analysis_agent=LLMPostBacktestAnalysisAgent(client),
-        lean_environment=build_demo_environment(),
+        lean_environment=lean_environment,
         audit_sink=trace.record_audit,
     )
     result = None
     run_error = None
     try:
-        result = orchestrator.run(build_demo_request())
+        result = orchestrator.run(request)
     except Exception as exc:
         run_error = f"{type(exc).__name__}: {exc}"
         raise
@@ -269,7 +373,7 @@ def main() -> None:
                     for candidate in result.candidates
                 },
                 "output": str(args.output),
-                "backtest_mode": "deterministic_fixture",
+                "backtest_mode": args.backtest_provider,
             },
             ensure_ascii=False,
             indent=2,

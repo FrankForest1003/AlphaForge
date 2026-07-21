@@ -7,7 +7,7 @@ from alphaforge.agents.context import ContextAssembler
 
 
 ROOT = Path(__file__).resolve().parents[1]
-ASSETS = ROOT / "src" / "alphaforge" / "agents" / "context_assets"
+ASSETS = ROOT / "agent"
 ZH_PROMPTS = ASSETS / "prompts" / "zh-CN"
 OUTPUT = ROOT / "docs" / "context" / "CURRENT_AGENT_CONTEXT.md"
 

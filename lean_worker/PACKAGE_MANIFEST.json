@@ -1,0 +1,29 @@
+{
+  "name": "AlphaForge Local LEAN Runtime",
+  "version": "1.1.3",
+  "release_date": "2026-07-20",
+  "platform": "linux/amd64 via Docker Desktop on Windows and macOS",
+  "lean_ref": "0269115d3cfbf691c7a0b7cfcc9ed412cafb91f6",
+  "python": "3.11.11",
+  "data": {
+    "provider_adapter": "Tiingo End-of-Day Prices API",
+    "included_real_market_data": false,
+    "bring_your_own_token": true,
+    "start_date": "2014-01-01",
+    "end_date": "latest complete provider trading day",
+    "tradable_symbols": 30,
+    "analysis_dependencies": [
+      "SPY",
+      "QQQ"
+    ]
+  },
+  "strategies": [
+    "classic_30_stock_top3_momentum_v1",
+    "ml_30_stock_gradient_boosting_v1",
+    "classic_two_stock_momentum_v1",
+    "ml_gradient_boosting_v1"
+  ],
+  "service_bind": "127.0.0.1",
+  "default_port": 18081,
+  "execution_model": "FIFO; one LEAN backtest at a time; staged sell/reduce-before-buy rebalancing; missing-history ML symbols skipped safely"
+}

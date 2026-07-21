@@ -15,7 +15,7 @@ from alphaforge.agents.providers.mock import (
 from alphaforge.codegen.compiler import DeterministicStrategyCompiler
 from alphaforge.demo import build_demo_environment, build_demo_request
 from alphaforge.schemas.agent_outputs import CodeRiskFinding, CodeRiskReview
-from alphaforge.schemas.backtest import SmokeTestResult
+from alphaforge.schemas.backtest import BacktestResult, SmokeTestResult
 from alphaforge.services.analysis_validator import validate_post_backtest_analysis
 from alphaforge.services.candidate_selector import CandidateSelector
 
@@ -260,6 +260,28 @@ def test_smoke_failure_terminates_route_without_retry() -> None:
     assert traditional.backtest_result is None
     assert provider.smoke_calls == 3
     assert provider.run_calls == 2
+
+
+class FullBacktestFails(MockBacktestProvider):
+    def run(self, spec, code):
+        return BacktestResult(
+            run_id=f"failed-{spec.strategy_id}",
+            strategy_id=spec.strategy_id,
+            strategy_role="candidate",
+            status="failed",
+            dataset_split="validation",
+            provider="mock_lean",
+            metrics=None,
+            warnings=("LEAN_RUNTIME_FAILURE",),
+        )
+
+
+def test_failed_full_backtest_is_not_marked_as_completed_candidate() -> None:
+    result = build_orchestrator(backtest=FullBacktestFails()).run(build_demo_request())
+    assert all(candidate.state == "rejected_by_backtest" for candidate in result.candidates)
+    assert all(candidate.backtest_result is not None for candidate in result.candidates)
+    assert all(candidate.failure_reasons == ("LEAN_RUNTIME_FAILURE",) for candidate in result.candidates)
+    assert result.selection.selected_strategy_id is None
 
 
 def test_test_set_evidence_is_rejected_before_design() -> None:

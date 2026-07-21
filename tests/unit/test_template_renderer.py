@@ -50,13 +50,18 @@ def test_deterministic_compiler_uses_strict_route_template(route: str) -> None:
     generated = DeterministicStrategyCompiler().compile(_generation_request(route))
     renderer = QCTemplateRenderer()
     assert tuple(region.name for region in generated.regions) == renderer.REQUIRED_REGIONS[route]
-    assert "class AlphaForgeAlgorithm(QCAlgorithm)" in generated.source
-    assert "def Rebalance(self):" in generated.source
+    assert "(AlphaForgeBaseAlgorithm):" in generated.source
+    assert "def initialize_strategy(self):" in generated.source
+    assert "def rebalance(self):" in generated.source
+    assert "DataNormalizationMode.RAW" in generated.source
+    assert "self.af_rebalance_to_weights(" in generated.source
     assert "max_drawdown_limit" not in generated.source
-    assert generated.compiler_metadata["component"] == "deterministic_strategy_compiler"
+    assert generated.compiler_metadata["component"] == "strategy_engine.compiler"
+    assert generated.compiler_metadata["runtime_contract"] == "local_lean_v1.1.3"
     if route in {"ml", "hybrid"}:
         assert "GradientBoostingRegressor" in generated.source
-        assert "price.iloc[-127]" in generated.source
+        assert 'features["return_126d"] = close.pct_change(126)' in generated.source
+        assert 'dataset.dropna(subset=[*columns, "label"])' in generated.source
 
 
 def test_renderer_rejects_missing_unknown_and_digest_mismatched_regions() -> None:

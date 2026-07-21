@@ -26,8 +26,8 @@
       "type": "string"
     },
     "normalization_mode": {
-      "const": "adjusted",
-      "default": "adjusted",
+      "const": "raw",
+      "default": "raw",
       "title": "Normalization Mode",
       "type": "string"
     },

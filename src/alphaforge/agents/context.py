@@ -59,7 +59,7 @@ class ContextAssembler:
     """Select exactly one allowlisted, versioned English prompt for a model call."""
 
     BUNDLE_VERSION = "agent_context_v2"
-    _ASSET_ROOT = Path(__file__).with_name("context_assets")
+    _ASSET_ROOT = Path(__file__).parents[3] / "agent"
     _PROMPT_ROOT = _ASSET_ROOT / "prompts" / "en"
     _PROMPTS: dict[tuple[AgentRole, RouteType | None], str] = {
         ("strategy_designer", "traditional"): "strategy_designer_traditional_v2",

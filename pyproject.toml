@@ -19,16 +19,15 @@ dev = [
 ]
 
 [tool.setuptools.packages.find]
-where = ["src"]
+where = ["src", "."]
+include = ["alphaforge*", "agent*", "strategy_engine*", "backend*"]
 
 [tool.setuptools.package-data]
-"alphaforge.agents" = [
-  "context_assets/*.md",
-  "context_assets/references/*.md",
-  "context_assets/templates/*.tpl",
-  "context_assets/prompts/en/*.md",
-  "context_assets/prompts/zh-CN/*.md",
+"agent" = [
+  "prompts/en/*.md",
+  "prompts/zh-CN/*.md",
 ]
+"strategy_engine" = ["templates/*.tpl"]
 
 [tool.pytest.ini_options]
 addopts = "-q"

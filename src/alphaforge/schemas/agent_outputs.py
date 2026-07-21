@@ -168,6 +168,7 @@ class RouteOutcome(StrictModel):
         "rejected_by_code_validation",
         "rejected_by_code_risk",
         "rejected_by_smoke_test",
+        "rejected_by_backtest",
         "backtested_not_selected",
         "selected",
     ]
@@ -263,6 +264,7 @@ class CandidateRun(StrictModel):
         "rejected_by_code_validation",
         "rejected_by_code_risk",
         "rejected_by_smoke_test",
+        "rejected_by_backtest",
         "backtested_not_selected",
         "selected",
     ]

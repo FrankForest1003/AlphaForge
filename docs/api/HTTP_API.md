@@ -38,6 +38,22 @@ queued
 
 处理中返回状态；完成后返回标准化 `BacktestResult`。
 
+## Local LEAN Worker API
+
+平台通过 `backend.app.services.LeanWorkerClient` 访问仅监听 localhost 的 Worker。除健康检查外，请求使用独立的 `X-Worker-Token`。
+
+```text
+GET  /health
+GET  /v1/data/status
+POST /v1/strategies/generated
+POST /v1/jobs
+GET  /v1/jobs/{run_id}
+GET  /v1/jobs/{run_id}/result
+GET  /v1/jobs/{run_id}/artifacts
+```
+
+生成策略部署必须携带完整源码、算法类名、完成标志、源码 SHA-256、Spec SHA-256、默认参数和必需 Symbol。Worker 再次执行 AST 与运行时合同检查，并使用原子替换写入被 Git 忽略的运行目录。只有 `completed` 且 `evaluation.eligible_for_comparison=true` 的结果会被归一化为可选候选。
+
 ## 错误格式
 
 ```json

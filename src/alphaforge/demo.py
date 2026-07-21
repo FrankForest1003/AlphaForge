@@ -80,8 +80,20 @@ def build_demo_environment() -> LeanEnvironmentManifest:
         fee_model="fixed-test-fees",
         slippage_model="fixed-test-slippage",
         time_zone="America/New_York",
-        allowed_imports=("AlgorithmImports", "numpy", "pandas", "sklearn"),
+        normalization_mode="raw",
+        allowed_imports=(
+            "AlgorithmImports",
+            "alphaforge_base",
+            "datetime",
+            "numpy",
+            "pandas",
+            "sklearn",
+        ),
         python_dependencies=("numpy", "pandas", "scikit-learn"),
         qc_api_profile="qc_api_v1",
-        template_compatibility=("traditional_v1", "ml_v1", "hybrid_v1"),
+        template_compatibility=(
+            "traditional_local_lean_v1",
+            "ml_local_lean_v1",
+            "hybrid_local_lean_v1",
+        ),
     )

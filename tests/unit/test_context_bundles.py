@@ -54,10 +54,7 @@ def test_bundle_is_exact_prompt_file_without_hidden_text() -> None:
     )
     prompt_path = (
         Path(__file__).parents[2]
-        / "src"
-        / "alphaforge"
-        / "agents"
-        / "context_assets"
+        / "agent"
         / bundle.source_paths[0]
     )
     raw = prompt_path.read_bytes()
@@ -99,11 +96,22 @@ def test_risk_prompt_has_route_checklist_without_result_payload(route: str) -> N
     prompt = ContextAssembler().build(
         agent_role="code_risk", candidate_type=route, template_version=f"{route}_v1"
     ).render()
-    assert "receive no performance results" in prompt
+    assert "receive no returns, portfolio metrics, or backtest result" in prompt
     assert "BacktestResult" not in prompt
     assert "code_location" in prompt
     assert "required_correction" in prompt
-    assert "no model is invoked to edit the code" in prompt
+    assert "request a model to edit source" in prompt
+
+
+@pytest.mark.parametrize("route", ["ml", "hybrid"])
+def test_ml_risk_prompt_requires_realized_sample_proof_for_leakage(route: str) -> None:
+    prompt = ContextAssembler().build(
+        agent_role="code_risk", candidate_type=route, template_version=f"{route}_v1"
+    ).render()
+    assert "A negative shift is not by itself" in prompt
+    assert "concrete retained" in prompt
+    assert "dropna" in prompt
+    assert "NaN" in prompt
 
 
 def test_analysis_prompt_is_evidence_only() -> None:
@@ -111,6 +119,8 @@ def test_analysis_prompt_is_evidence_only() -> None:
     assert "mock" in prompt
     assert "simulated" in prompt
     assert "seven metrics" in prompt
+    assert "reproducible historical backtest" in prompt
+    assert "it is not live trading" in prompt
     for forbidden in ("generated code", "code template", "repair agent"):
         assert forbidden not in prompt
 
@@ -127,7 +137,7 @@ def test_removed_code_writing_roles_are_rejected() -> None:
 
 def test_chinese_translations_match_runtime_prompt_inventory() -> None:
     root = Path(__file__).parents[2]
-    prompt_root = root / "src" / "alphaforge" / "agents" / "context_assets" / "prompts"
+    prompt_root = root / "agent" / "prompts"
     english_files = sorted((prompt_root / "en").glob("*.md"))
     chinese_files = sorted((prompt_root / "zh-CN").glob("*.md"))
     assert [path.name for path in english_files] == [path.name for path in chinese_files]
@@ -150,10 +160,7 @@ def test_expanded_review_contains_every_full_bilingual_prompt() -> None:
     for bundle in all_bundles():
         chinese_path = (
             root
-            / "src"
-            / "alphaforge"
-            / "agents"
-            / "context_assets"
+            / "agent"
             / "prompts"
             / "zh-CN"
             / f"{bundle.prompt_id}.md"

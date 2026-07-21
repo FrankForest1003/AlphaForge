@@ -39,13 +39,13 @@ Run the offline closed loop:
 uv run python scripts/run_mock_optimisation.py
 ```
 
-For real model-backed design, risk review and analysis, configure the generic variables in `.env` and run:
+For real model-backed design, risk review and analysis with the configured Local LEAN Worker, configure the generic model variables in `.env`, configure the Worker token in `lean_worker/.env`, and run:
 
 ```bash
 uv run python scripts/run_llm_optimisation.py
 ```
 
-The current backtest provider in that script is deterministic test infrastructure, not financial evidence. Readable traces are written under `artifacts/debug_runs/latest/` and omit credentials and model reasoning content.
+The command first compiles and backtests the parent plus four fixed baselines on the same Local LEAN environment. Those five normalized validation results become the only design evidence. It then deploys each digest-bound candidate source, performs a short Smoke Test, and runs the full validation backtest. Use `--evidence-input <validation_evidence.json>` to reuse an audited evidence set, or `--backtest-provider mock` only for offline pipeline testing. Readable traces are written under `artifacts/debug_runs/latest/` and omit credentials and model reasoning content.
 
 ## Documentation
 

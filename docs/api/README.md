@@ -16,13 +16,14 @@
 
 | 生产者 | 消费者 | 合同 |
 |---|---|---|
+| `ValidationEvidenceRunner` | `EvidenceSummarizer` | 父策略与四基线的五份同口径 `BacktestResult` |
 | `EvidenceSummarizer` | 三个 `StrategyDesigner` | `EvidenceSummary` / `DesignRequest` |
 | `StrategyDesigner` | `SpecBuilder` | `CandidateDesign` |
 | `SpecBuilder` | `StrategyCompiler` | `BuiltCandidate` / `StrategySpec` |
 | `StrategyCompiler` | 静态校验器 | `StrategyCompilationRequest` / `GeneratedCode` |
 | 静态校验器 | `CodeRiskAgent` | `CodeValidationResult` |
 | `CodeRiskAgent` | 编排器 | `CodeRiskReview` |
-| `BacktestProvider` | 编排器 | `SmokeTestResult` / `BacktestResult` |
+| `LocalLeanBacktestProvider` | 编排器 | `SmokeTestResult` / `BacktestResult` |
 | `PostBacktestAnalysisAgent` | 编排器 | `PostBacktestAnalysis` |
 | `CandidateSelector` | `OptimizationResult` | `SelectionResult` |
 
@@ -30,6 +31,6 @@
 
 ## 失败语义
 
-每条路线可在设计、Spec、代码校验、代码风险或 Smoke 阶段被拒绝。系统不会让模型修改失败代码；失败原因和必要工程修正写入该路线的审计记录。全部路线结束后仍只调用一次统一分析。
+每条路线可在设计、Spec、代码校验、代码风险、Smoke 或完整回测阶段被拒绝。系统不会让模型修改失败代码；失败原因和必要工程修正写入该路线的审计记录。全部路线结束后仍只调用一次统一分析。
 
 合同变更必须同步更新 Pydantic 模型、测试、JSON Schema、OpenAPI 和示例。

@@ -25,7 +25,7 @@ class LeanEnvironmentManifest(StrictModel):
     lean_version: str
     python_version: str
     data_version: str
-    normalization_mode: Literal["adjusted"] = "adjusted"
+    normalization_mode: Literal["raw"] = "raw"
     brokerage_model: str
     fee_model: str
     slippage_model: str

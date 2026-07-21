@@ -133,9 +133,10 @@ class MockBacktestProvider:
         return SmokeTestResult(strategy_id=spec.strategy_id, status="passed", diagnostics=(), provider="mock_lean_smoke")
 
     def run(self, spec, code) -> BacktestResult:
+        route = spec.logic.kind
         return BacktestResult(
             run_id=f"mock-run-{spec.strategy_id}", strategy_id=spec.strategy_id,
             strategy_role="candidate", status="completed", dataset_split="validation",
-            provider="mock_backtest", metrics=self._METRICS[spec.candidate_type],
+            provider="mock_backtest", metrics=self._METRICS[route],
             warnings=("SIMULATED_RESULT_NOT_FINANCIAL_EVIDENCE",),
         )
