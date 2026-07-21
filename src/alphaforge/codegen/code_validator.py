@@ -23,16 +23,18 @@ DEFAULT_ALLOWED_QC_API = (
     "DateRules.MonthStart",
     "TimeRules",
     "TimeRules.AfterMarketOpen",
+    "Time.date",
     "Resolution.Daily",
     "SetWarmUp",
 )
+
+DEFAULT_ALLOWED_IMPORTS = ("AlgorithmImports", "numpy", "pandas", "sklearn")
 
 _FORBIDDEN_IMPORTS = {"os", "subprocess", "socket", "requests", "urllib", "pathlib"}
 _FORBIDDEN_PATTERNS = {
     r"\bopen\s*\(": "FORBIDDEN_FILE_ACCESS",
     r"\beval\s*\(": "FORBIDDEN_EVAL",
     r"\bexec\s*\(": "FORBIDDEN_EXEC",
-    r"\.shift\s*\(\s*-": "POTENTIAL_LOOKAHEAD_SHIFT",
 }
 
 
@@ -53,6 +55,7 @@ def validate_generated_code(
     code: GeneratedCode,
     *,
     allowed_qc_api: tuple[str, ...] = DEFAULT_ALLOWED_QC_API,
+    allowed_imports: tuple[str, ...] = DEFAULT_ALLOWED_IMPORTS,
 ) -> CodeValidationResult:
     errors: list[str] = []
     warnings: list[str] = []
@@ -76,6 +79,7 @@ def validate_generated_code(
     if tree is not None:
         has_qc_class = False
         has_initialize = False
+        has_rebalance = False
         for node in ast.walk(tree):
             if isinstance(node, (ast.Import, ast.ImportFrom)):
                 names = (
@@ -86,8 +90,12 @@ def validate_generated_code(
                 forbidden = sorted(name for name in names if name in _FORBIDDEN_IMPORTS)
                 if forbidden:
                     errors.append("FORBIDDEN_IMPORT:" + ",".join(forbidden))
-                if isinstance(node, ast.ImportFrom) and node.module not in {"AlgorithmImports"}:
-                    errors.append(f"IMPORT_NOT_ALLOWED:{node.module}")
+                imported_roots = {(node.module or "").split(".")[0]} if isinstance(node, ast.ImportFrom) else {
+                    alias.name.split(".")[0] for alias in node.names
+                }
+                disallowed = sorted(imported_roots - set(allowed_imports))
+                if disallowed:
+                    errors.append("IMPORT_NOT_ALLOWED:" + ",".join(disallowed))
             if isinstance(node, ast.ClassDef):
                 bases = {base.id for base in node.bases if isinstance(base, ast.Name)}
                 if "QCAlgorithm" in bases:
@@ -96,6 +104,11 @@ def validate_generated_code(
                     has_initialize = any(
                         isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
                         and child.name == "Initialize"
+                        for child in node.body
+                    )
+                    has_rebalance = any(
+                        isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
+                        and child.name == "Rebalance"
                         for child in node.body
                     )
             if isinstance(node, ast.Call):
@@ -111,13 +124,32 @@ def validate_generated_code(
                     else:
                         observed.add(node.func.attr)
                 elif isinstance(node.func, ast.Name):
-                    observed.add(node.func.id)
-            if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
+                    if node.func.id == "QCAlgorithm":
+                        observed.add(node.func.id)
+            if (
+                isinstance(node, ast.Attribute)
+                and isinstance(node.value, ast.Name)
+                and node.value.id in {"Resolution", "DateRules", "TimeRules"}
+            ):
                 observed.add(f"{node.value.id}.{node.attr}")
         if not has_qc_class:
             errors.append("MISSING_QCALGORITHM_CLASS")
         if not has_initialize:
             errors.append("MISSING_INITIALIZE_METHOD")
+        if not has_rebalance:
+            errors.append("MISSING_REBALANCE_METHOD")
+        for function in (node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)):
+            for call in (node for node in ast.walk(function) if isinstance(node, ast.Call)):
+                if not (
+                    isinstance(call.func, ast.Attribute)
+                    and call.func.attr == "shift"
+                    and call.args
+                    and isinstance(call.args[0], ast.UnaryOp)
+                    and isinstance(call.args[0].op, ast.USub)
+                ):
+                    continue
+                if function.name != "build_training_set":
+                    errors.append("POTENTIAL_LOOKAHEAD_SHIFT")
 
     for pattern, code_name in _FORBIDDEN_PATTERNS.items():
         if re.search(pattern, code.source):

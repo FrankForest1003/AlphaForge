@@ -267,13 +267,6 @@
           "title": "Max Drawdown Deterioration",
           "type": "number"
         },
-        "max_repair_attempts": {
-          "default": 2,
-          "maximum": 3,
-          "minimum": 0,
-          "title": "Max Repair Attempts",
-          "type": "integer"
-        },
         "max_rounds": {
           "default": 1,
           "maximum": 2,
@@ -468,7 +461,6 @@
       "$ref": "#/$defs/OptimizationConstraints",
       "default": {
         "max_drawdown_deterioration": 0.02,
-        "max_repair_attempts": 2,
         "max_rounds": 1,
         "min_sharpe_improvement": 0.05
       }

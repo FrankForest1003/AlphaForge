@@ -1,0 +1,63 @@
+{
+  "$defs": {
+    "TemplateCapabilityRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "candidate_type": {
+          "enum": [
+            "traditional",
+            "ml",
+            "hybrid"
+          ],
+          "title": "Candidate Type",
+          "type": "string"
+        },
+        "reasons": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Reasons",
+          "type": "array"
+        },
+        "status": {
+          "enum": [
+            "rendered",
+            "cannot_implement",
+            "template_error"
+          ],
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "candidate_type",
+        "status"
+      ],
+      "title": "TemplateCapabilityRecord",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "records": {
+      "items": {
+        "$ref": "#/$defs/TemplateCapabilityRecord"
+      },
+      "maxItems": 3,
+      "minItems": 3,
+      "title": "Records",
+      "type": "array"
+    },
+    "template_version": {
+      "title": "Template Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "template_version",
+    "records"
+  ],
+  "title": "TemplateCapabilityReport",
+  "type": "object"
+}

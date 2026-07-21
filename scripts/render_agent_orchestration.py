@@ -142,10 +142,10 @@ def main() -> None:
         )
 
     # A shared pipeline is executed independently for every design.
-    pipeline_y = 0.44
+    pipeline_y = 0.46
     pipeline = (
         (0.09, "Spec\nBuilder", "component"),
-        (0.255, "QC Code\nAgent", "agent"),
+        (0.255, "Strategy\nCompiler", "component"),
         (0.42, "Static\nCheck", "component"),
         (0.585, "Code Risk\nAgent", "agent"),
         (0.75, "LEAN Smoke\nTest", "execution"),
@@ -163,27 +163,8 @@ def main() -> None:
     ax.plot([0.09, 0.68], [bus_y, bus_y], color="0.5", linewidth=1.1)
     arrow(ax, (0.09, bus_y), (0.09, pipeline_y + NODE_HEIGHT / 2))
 
-    # Repair is a small local loop around implementation checks.
-    node(ax, 0.585, 0.265, "Repair Agent", width=0.165, kind="agent", fontsize=14.5)
-    for source_x, target_x in ((0.42, 0.54), (0.585, 0.585), (0.75, 0.63)):
-        arrow(
-            ax,
-            (source_x, pipeline_y - NODE_HEIGHT / 2),
-            (target_x, 0.265 + NODE_HEIGHT / 2),
-            color="0.55",
-            linestyle="--",
-            linewidth=1.0,
-        )
-    arrow(
-        ax,
-        (0.585 - 0.0825, 0.265),
-        (0.42, pipeline_y - NODE_HEIGHT / 2),
-        color=BLUE,
-        connectionstyle="arc3,rad=-0.25",
-    )
-
     # All candidate results are considered together, then selected and returned.
-    final_y = 0.085
+    final_y = 0.16
     final = (
         (0.23, "Post-Backtest\nAnalysis Agent", "agent", 0.20),
         (0.50, "Candidate\nSelector", "component", 0.18),
@@ -195,9 +176,9 @@ def main() -> None:
     arrow(ax, (0.50 + 0.09, final_y), (0.77 - 0.09, final_y))
 
     # Row transition from the final pipeline stage to post-backtest analysis.
-    ax.plot([0.915, 0.915], [pipeline_y - NODE_HEIGHT / 2, 0.17], color="0.35", linewidth=1.3)
-    ax.plot([0.915, 0.23], [0.17, 0.17], color="0.35", linewidth=1.3)
-    arrow(ax, (0.23, 0.17), (0.23, final_y + NODE_HEIGHT / 2))
+    ax.plot([0.915, 0.915], [pipeline_y - NODE_HEIGHT / 2, 0.27], color="0.35", linewidth=1.3)
+    ax.plot([0.915, 0.23], [0.27, 0.27], color="0.35", linewidth=1.3)
+    arrow(ax, (0.23, 0.27), (0.23, final_y + NODE_HEIGHT / 2))
 
     fig.savefig(OUTPUT, facecolor="white")
     plt.close(fig)

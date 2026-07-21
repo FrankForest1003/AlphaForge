@@ -30,3 +30,7 @@ class LeanEnvironmentManifest(StrictModel):
     fee_model: str
     slippage_model: str
     time_zone: str
+    allowed_imports: tuple[str, ...] = Field(min_length=1)
+    python_dependencies: tuple[str, ...] = ()
+    qc_api_profile: str
+    template_compatibility: tuple[str, ...] = Field(min_length=1)

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 from alphaforge.schemas.agent_outputs import PostBacktestAnalysis, PostBacktestAnalysisRequest
 
 
@@ -32,7 +34,10 @@ def validate_post_backtest_analysis(
             (value.strategy_id, value.run_id): value.value
             for value in metric_analysis.values
         }
-        if observed != expected:
+        if observed.keys() != expected.keys() or any(
+            not math.isclose(observed[key], expected[key], rel_tol=1e-9, abs_tol=1e-12)
+            for key in expected
+        ):
             errors.append(f"METRIC_VALUES_MISMATCH:{metric_analysis.metric}")
         objective = "higher" if metric_analysis.metric in {
             "cagr",

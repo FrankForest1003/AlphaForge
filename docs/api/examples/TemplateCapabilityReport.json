@@ -1,0 +1,24 @@
+{
+  "template_version": "route_templates_v1",
+  "records": [
+    {
+      "candidate_type": "traditional",
+      "status": "rendered",
+      "reasons": []
+    },
+    {
+      "candidate_type": "ml",
+      "status": "cannot_implement",
+      "reasons": [
+        "CANNOT_IMPLEMENT:scikit-learn:dependency is not declared"
+      ]
+    },
+    {
+      "candidate_type": "hybrid",
+      "status": "template_error",
+      "reasons": [
+        "region mismatch"
+      ]
+    }
+  ]
+}

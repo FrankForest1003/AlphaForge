@@ -429,6 +429,32 @@
       "title": "CandidateSelection",
       "type": "object"
     },
+    "CodeRegion": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "source": {
+          "minLength": 1,
+          "title": "Source",
+          "type": "string"
+        },
+        "source_sha256": {
+          "title": "Source Sha256",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "source",
+        "source_sha256"
+      ],
+      "title": "CodeRegion",
+      "type": "object"
+    },
     "CodeRiskFinding": {
       "additionalProperties": false,
       "properties": {
@@ -458,8 +484,8 @@
           "title": "Evidence",
           "type": "string"
         },
-        "repair_instruction": {
-          "title": "Repair Instruction",
+        "required_correction": {
+          "title": "Required Correction",
           "type": "string"
         },
         "risk": {
@@ -482,7 +508,7 @@
         "code_location",
         "evidence",
         "risk",
-        "repair_instruction"
+        "required_correction"
       ],
       "title": "CodeRiskFinding",
       "type": "object"
@@ -513,7 +539,7 @@
         "verdict": {
           "enum": [
             "approve",
-            "repair_required",
+            "changes_required",
             "reject"
           ],
           "title": "Verdict",
@@ -673,23 +699,44 @@
           "title": "Assumptions",
           "type": "array"
         },
+        "compiler_metadata": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Compiler Metadata",
+          "type": "object"
+        },
+        "compiler_sha256": {
+          "title": "Compiler Sha256",
+          "type": "string"
+        },
+        "compiler_version": {
+          "title": "Compiler Version",
+          "type": "string"
+        },
         "entry_file": {
           "const": "main.py",
           "default": "main.py",
           "title": "Entry File",
           "type": "string"
         },
-        "generator_metadata": {
-          "additionalProperties": {
-            "type": "string"
-          },
-          "title": "Generator Metadata",
-          "type": "object"
-        },
         "language": {
           "const": "python",
           "default": "python",
           "title": "Language",
+          "type": "string"
+        },
+        "regions": {
+          "items": {
+            "$ref": "#/$defs/CodeRegion"
+          },
+          "minItems": 1,
+          "title": "Regions",
+          "type": "array"
+        },
+        "semantics_version": {
+          "const": "qc_semantics_v1",
+          "title": "Semantics Version",
           "type": "string"
         },
         "source": {
@@ -708,6 +755,14 @@
           "title": "Strategy Id",
           "type": "string"
         },
+        "template_sha256": {
+          "title": "Template Sha256",
+          "type": "string"
+        },
+        "template_version": {
+          "title": "Template Version",
+          "type": "string"
+        },
         "used_qc_api": {
           "items": {
             "type": "string"
@@ -723,7 +778,13 @@
         "spec_sha256",
         "used_qc_api",
         "assumptions",
-        "generator_metadata"
+        "compiler_metadata",
+        "template_version",
+        "template_sha256",
+        "compiler_version",
+        "compiler_sha256",
+        "semantics_version",
+        "regions"
       ],
       "title": "GeneratedCode",
       "type": "object"
@@ -1233,6 +1294,67 @@
       "title": "StrategySpec",
       "type": "object"
     },
+    "TemplateCapabilityRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "candidate_type": {
+          "enum": [
+            "traditional",
+            "ml",
+            "hybrid"
+          ],
+          "title": "Candidate Type",
+          "type": "string"
+        },
+        "reasons": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Reasons",
+          "type": "array"
+        },
+        "status": {
+          "enum": [
+            "rendered",
+            "cannot_implement",
+            "template_error"
+          ],
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "candidate_type",
+        "status"
+      ],
+      "title": "TemplateCapabilityRecord",
+      "type": "object"
+    },
+    "TemplateCapabilityReport": {
+      "additionalProperties": false,
+      "properties": {
+        "records": {
+          "items": {
+            "$ref": "#/$defs/TemplateCapabilityRecord"
+          },
+          "maxItems": 3,
+          "minItems": 3,
+          "title": "Records",
+          "type": "array"
+        },
+        "template_version": {
+          "title": "Template Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "template_version",
+        "records"
+      ],
+      "title": "TemplateCapabilityReport",
+      "type": "object"
+    },
     "TraditionalLogic": {
       "additionalProperties": false,
       "properties": {
@@ -1346,6 +1468,9 @@
       ],
       "title": "Status",
       "type": "string"
+    },
+    "template_capability_report": {
+      "$ref": "#/$defs/TemplateCapabilityReport"
     }
   },
   "required": [
@@ -1355,7 +1480,8 @@
     "candidates",
     "post_backtest_analysis",
     "selection",
-    "audit_log"
+    "audit_log",
+    "template_capability_report"
   ],
   "title": "OptimizationResult",
   "type": "object"

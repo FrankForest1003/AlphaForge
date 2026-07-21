@@ -1,66 +1,41 @@
 # System Architecture
 
-## Component flow
-
 ```mermaid
 flowchart TD
-  WEB["Streamlit Web"] --> API["FastAPI Application"]
-  API --> ORCH["Optimization Orchestrator"]
-  INPUT["Parent Spec + 5 Validation Results"] --> ORCH
-  ORCH --> SUMMARY["EvidenceSummarizer"]
-  SUMMARY --> DESIGN["Strategy Designer × 3"]
-  DESIGN --> BUILD["SpecBuilder"]
-  BUILD --> SPECVAL["StrategySpec Validator"]
-  SPECVAL --> CODE["QC Code Agent"]
-  CODE --> STATIC["Static QC Code Validator"]
-  STATIC --> RISK["Code Risk Agent"]
-  RISK -->|"repair required"| REPAIR["Repair Agent"]
-  REPAIR --> STATIC
-  RISK -->|"approved"| SMOKE["LEAN Smoke Test"]
-  SMOKE -->|"implementation failure"| REPAIR
-  SMOKE -->|"passed"| FULL["Full Backtest"]
-  FULL --> NORMAL["Normalized BacktestResult"]
-  NORMAL --> ANALYSIS["Unified Post-Backtest Analysis"]
+  INPUT["Parent Spec + validation evidence"] --> SUMMARY["EvidenceSummarizer"]
+  SUMMARY --> DESIGN["Three Strategy Designers"]
+  DESIGN --> SPEC["SpecBuilder + Spec validation"]
+  SPEC --> COMPILE["Deterministic StrategyCompiler"]
+  COMPILE --> STATIC["Static Code Validator"]
+  STATIC --> RISK["Three route-specific Code Risk Agents"]
+  RISK -->|approve| SMOKE["LEAN Smoke Test"]
+  SMOKE --> FULL["Full Backtest"]
+  FULL --> ANALYSIS["Unified Post-Backtest Analysis"]
   ANALYSIS --> SELECT["Deterministic CandidateSelector"]
-  SELECT --> RESULT["OptimizationResult + Audit"]
+  SELECT --> RESULT["OptimizationResult"]
 ```
+
+Traditional, ML and Hybrid pipelines execute in a fixed three-worker pool. Each route terminates immediately on Spec, compilation, static validation, Code Risk or Smoke failure. All three outcomes are joined before the single analysis request is built.
 
 ## Dependency direction
 
 ```text
-Web → API → Orchestrator
-Orchestrator → ports + schemas + deterministic services
-Agent implementations → structured model client + schemas
-Execution implementations → BacktestProvider + schemas
-Schemas → Pydantic only
+entrypoints → orchestrator → ports, schemas, deterministic services
+model adapters → structured client, context assembler, schemas
+strategy compiler → template renderer, StrategySpec
+schemas → Pydantic
 ```
 
 ## Trust boundaries
 
-- Model output is untrusted until its exact Pydantic target validates.
-- CandidateDesign contains only fields the Designer owns.
-- SpecBuilder is the only component that creates a candidate StrategySpec.
-- StrategySpec and source digests bind design, code, review and repair artefacts.
-- Code Risk review receives no BacktestResult or performance metrics.
-- Backtest results are normalized before unified analysis.
-- Candidate selection is deterministic and independent of Agent ranking.
+- `SpecBuilder` is the only component that constructs candidate Specs.
+- `DeterministicStrategyCompiler` is the only runtime component that produces strategy source.
+- Lifecycle, scheduling, liquidation, position caps and route semantics are versioned code, not model output.
+- Generated source binds the exact Spec, template, semantics and compiler digests.
+- Static validation checks syntax, imports, QC API use, lifecycle methods and obvious lookahead patterns.
+- Code Risk can block a route but cannot edit source or receive backtest results.
+- Post-backtest analysis can explain and rank evidence but cannot override selection rules.
+- Context bundles can read only registered English prompt files.
+- Credentials and provider configuration remain runtime-only.
 
-## Data ownership
-
-| Data | Owner |
-|---|---|
-| CandidateDesign | Strategy Designer |
-| Strategy identity and frozen protocol | Orchestrator and SpecBuilder |
-| Canonical strategy semantics | StrategySpec |
-| QC implementation | QC Code Agent |
-| Code-risk findings | Code Risk Agent |
-| Raw execution output | LEAN provider |
-| Normalized metrics | BacktestResult parser/provider |
-| Comparative interpretation | Post-Backtest Analysis Agent |
-| Final eligibility and selection | CandidateSelector |
-
-## Runtime configuration
-
-Agent providers read `API_KEY`, `MODEL` and `BASE_URL` from the runtime environment file. The client sends a target JSON Schema with every request, validates the response and permits one schema-directed correction attempt.
-
-LEAN environment details are carried in `LeanEnvironmentManifest`; local paths and credentials do not enter public contracts.
+`LeanEnvironmentManifest` declares the target environment, allowed imports, Python dependencies, QC API profile and compatible templates. Unsupported combinations fail compilation explicitly; the compiler never substitutes another strategy.

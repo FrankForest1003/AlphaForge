@@ -10,8 +10,7 @@ from alphaforge.schemas.agent_outputs import (
     GeneratedCode,
     PostBacktestAnalysis,
     PostBacktestAnalysisRequest,
-    QCCodeGenerationRequest,
-    RepairRequest,
+    StrategyCompilationRequest,
 )
 from alphaforge.schemas.backtest import BacktestResult, SmokeTestResult
 from alphaforge.schemas.strategy_spec import StrategySpec
@@ -21,16 +20,12 @@ class StrategyDesigner(Protocol):
     def design(self, request: DesignRequest) -> CandidateDesign: ...
 
 
-class QCCodeAgent(Protocol):
-    def generate(self, request: QCCodeGenerationRequest) -> GeneratedCode: ...
+class StrategyCompiler(Protocol):
+    def compile(self, request: StrategyCompilationRequest) -> GeneratedCode: ...
 
 
 class CodeRiskAgent(Protocol):
     def review(self, request: CodeRiskReviewRequest) -> CodeRiskReview: ...
-
-
-class RepairAgent(Protocol):
-    def repair(self, request: RepairRequest) -> GeneratedCode: ...
 
 
 class PostBacktestAnalysisAgent(Protocol):

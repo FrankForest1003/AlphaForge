@@ -1,0 +1,136 @@
+{
+  "$defs": {
+    "ContextSection": {
+      "additionalProperties": false,
+      "properties": {
+        "content": {
+          "title": "Content",
+          "type": "string"
+        },
+        "section_id": {
+          "title": "Section Id",
+          "type": "string"
+        },
+        "source_path": {
+          "title": "Source Path",
+          "type": "string"
+        },
+        "source_sha256": {
+          "title": "Source Sha256",
+          "type": "string"
+        },
+        "source_version": {
+          "title": "Source Version",
+          "type": "string"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "required": [
+        "section_id",
+        "title",
+        "source_path",
+        "source_version",
+        "source_sha256",
+        "content"
+      ],
+      "title": "ContextSection",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "agent_role": {
+      "enum": [
+        "strategy_designer",
+        "code_risk",
+        "post_backtest_analysis"
+      ],
+      "title": "Agent Role",
+      "type": "string"
+    },
+    "bundle_id": {
+      "title": "Bundle Id",
+      "type": "string"
+    },
+    "bundle_sha256": {
+      "title": "Bundle Sha256",
+      "type": "string"
+    },
+    "bundle_version": {
+      "const": "agent_context_v2",
+      "title": "Bundle Version",
+      "type": "string"
+    },
+    "candidate_type": {
+      "anyOf": [
+        {
+          "enum": [
+            "traditional",
+            "ml",
+            "hybrid"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Candidate Type"
+    },
+    "character_count": {
+      "minimum": 1,
+      "title": "Character Count",
+      "type": "integer"
+    },
+    "prompt_id": {
+      "title": "Prompt Id",
+      "type": "string"
+    },
+    "sections": {
+      "items": {
+        "$ref": "#/$defs/ContextSection"
+      },
+      "maxItems": 1,
+      "minItems": 1,
+      "title": "Sections",
+      "type": "array"
+    },
+    "source_paths": {
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 1,
+      "minItems": 1,
+      "title": "Source Paths",
+      "type": "array"
+    },
+    "template_version": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Template Version"
+    }
+  },
+  "required": [
+    "bundle_id",
+    "bundle_version",
+    "prompt_id",
+    "agent_role",
+    "candidate_type",
+    "template_version",
+    "sections",
+    "bundle_sha256",
+    "character_count",
+    "source_paths"
+  ],
+  "title": "AgentContextBundle",
+  "type": "object"
+}

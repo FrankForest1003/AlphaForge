@@ -16,8 +16,20 @@
   "assumptions": [
     "Adjusted daily equity data is available for every universe symbol."
   ],
-  "generator_metadata": {
-    "template_version": "qc_template_v1",
-    "agent": "structured_qc_code"
-  }
+  "compiler_metadata": {
+    "component": "deterministic_strategy_compiler",
+    "output_mode": "validated_template_regions"
+  },
+  "template_version": "traditional_v1",
+  "template_sha256": "ca1f6042d95f89d4d6e9325f7354e808c5631fe401849a616d15c79a220e07ad",
+  "compiler_version": "deterministic_strategy_compiler_v1",
+  "compiler_sha256": "94b0f12886ea7f1279c8775da0d1acfa71b52a88f06004935ae3c0813a17a125",
+  "semantics_version": "qc_semantics_v1",
+  "regions": [
+    {
+      "name": "compute_traditional_scores",
+      "source": "def compute_traditional_scores(self):\n    return {}",
+      "source_sha256": "82789d06422bbc8bcad39edac5a6835699f1e43cf3cf2cc9a76a105d2b69c327"
+    }
+  ]
 }

@@ -14,3 +14,4 @@ def test_model_settings_use_generic_environment_names(tmp_path, monkeypatch) -> 
     assert settings.api_key == "file-key"
     assert settings.model == "runtime-model"
     assert settings.base_url == "https://file.invalid"
+    assert settings.thinking_enabled

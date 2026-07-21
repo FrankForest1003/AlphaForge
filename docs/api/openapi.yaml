@@ -125,10 +125,9 @@ components:
             - summarizing_evidence
             - designing
             - validating_spec
-            - generating_code
+            - compiling_strategy
             - validating_code
             - reviewing_code_risk
-            - repairing
             - smoke_testing
             - backtesting
             - post_backtest_analysis

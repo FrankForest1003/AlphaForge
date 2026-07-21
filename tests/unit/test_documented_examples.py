@@ -11,7 +11,9 @@ from alphaforge.schemas.agent_outputs import (
     GeneratedCode,
     PostBacktestAnalysis,
     SelectionResult,
+    TemplateCapabilityReport,
 )
+from alphaforge.agents.context import AgentContextBundle
 
 
 EXAMPLES = Path(__file__).resolve().parents[2] / "docs" / "api" / "examples"
@@ -25,6 +27,8 @@ EXAMPLES = Path(__file__).resolve().parents[2] / "docs" / "api" / "examples"
         ("CodeRiskReview.json", CodeRiskReview),
         ("PostBacktestAnalysis.json", PostBacktestAnalysis),
         ("SelectionResult.json", SelectionResult),
+        ("AgentContextBundle.json", AgentContextBundle),
+        ("TemplateCapabilityReport.json", TemplateCapabilityReport),
     ),
 )
 def test_documented_json_examples_match_their_schema(filename, model) -> None:

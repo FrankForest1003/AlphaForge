@@ -67,4 +67,13 @@ def validate_strategy_spec(
                     "candidate changed a field outside the allowlist",
                 )
             )
+    ml_logic = spec.logic.ml if spec.logic.kind == "hybrid" else spec.logic
+    if ml_logic.kind == "ml" and ml_logic.feature_set_version != "price_volume_v1":
+        issues.append(
+            ValidationIssue(
+                "UNKNOWN_FEATURE_SET",
+                "/logic/feature_set_version",
+                "qc_semantics_v1 supports only price_volume_v1",
+            )
+        )
     return tuple(issues)

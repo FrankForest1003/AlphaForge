@@ -1,69 +1,50 @@
 # Agent Architecture
 
-## Agent interfaces
+AlphaForge has seven runtime model roles:
+
+| Role | Instances | Output | Authority |
+|---|---:|---|---|
+| Strategy Designer | 3 | `CandidateDesign` | Propose route-specific logic and allowed `top_k` changes |
+| Code Risk | 3 | `CodeRiskReview` | Audit deterministic code against its Spec and implementation-risk checklist |
+| Post-Backtest Analysis | 1 | `PostBacktestAnalysis` | Compare normalized evidence and provide a non-binding ranking |
+
+Source code is produced by `DeterministicStrategyCompiler`, which is a normal Python component rather than a model role.
+
+## Interfaces
 
 ```text
 StrategyDesigner.design(DesignRequest) → CandidateDesign
-QCCodeAgent.generate(QCCodeGenerationRequest) → GeneratedCode
+StrategyCompiler.compile(StrategyCompilationRequest) → GeneratedCode
 CodeRiskAgent.review(CodeRiskReviewRequest) → CodeRiskReview
-RepairAgent.repair(RepairRequest) → GeneratedCode
 PostBacktestAnalysisAgent.analyze(PostBacktestAnalysisRequest) → PostBacktestAnalysis
 ```
 
-Each interface has one responsibility and an exact Pydantic input/output contract.
+## Prompt routing
 
-## Route state machine
+| Role | Traditional | ML | Hybrid |
+|---|---|---|---|
+| Strategy Designer | `strategy_designer_traditional_v2` | `strategy_designer_ml_v2` | `strategy_designer_hybrid_v2` |
+| Code Risk | `code_risk_traditional_v2` | `code_risk_ml_v2` | `code_risk_hybrid_v2` |
+| Post-Backtest Analysis | `post_backtest_analysis_v2` | `post_backtest_analysis_v2` | `post_backtest_analysis_v2` |
 
-```mermaid
-stateDiagram-v2
-  [*] --> Designing
-  Designing --> RejectedByDesign: invalid structured output
-  Designing --> BuildingSpec: CandidateDesign valid
-  BuildingSpec --> RejectedBySpec: build or semantic failure
-  BuildingSpec --> GeneratingCode: StrategySpec valid
-  GeneratingCode --> StaticValidation
-  StaticValidation --> Repairing: repairable implementation failure
-  StaticValidation --> RejectedByCodeValidation: attempts exhausted
-  StaticValidation --> CodeRiskReview: static validation passed
-  CodeRiskReview --> Repairing: repair_required
-  CodeRiskReview --> RejectedByCodeRisk: reject or attempts exhausted
-  Repairing --> StaticValidation
-  CodeRiskReview --> SmokeTest: approved
-  SmokeTest --> Repairing: implementation failure
-  SmokeTest --> RejectedBySmokeTest: attempts exhausted
-  SmokeTest --> FullBacktest: passed
-  FullBacktest --> BacktestedNotSelected
-  BacktestedNotSelected --> Selected: deterministic selector chooses route
-  RejectedByDesign --> [*]
-  RejectedBySpec --> [*]
-  RejectedByCodeValidation --> [*]
-  RejectedByCodeRisk --> [*]
-  RejectedBySmokeTest --> [*]
-  BacktestedNotSelected --> [*]
-  Selected --> [*]
-```
+Each System message is exactly one registered English prompt file. Chinese translations are human-review documents and never enter requests.
 
-## Code Risk isolation
+## Code Risk boundary
 
-`CodeRiskReviewRequest` contains:
+`CodeRiskReviewRequest` contains only `StrategySpec`, `GeneratedCode`, `CodeValidationResult` and `LeanEnvironmentManifest`. It has no result-series or performance-metric field. Findings require a code location, concrete evidence, risk statement and required engineering correction.
 
-- immutable StrategySpec;
-- generated source and digests;
-- deterministic static validation result;
-- LEAN environment manifest.
+An `approve` verdict permits Smoke testing. Any other verdict terminates the route. The audit recommendation cannot mutate the Spec, compiler output or template.
 
-It has no field for smoke-test output, full BacktestResult, return, volatility, drawdown or fees. Risk findings therefore describe implementation defects rather than observed strategy performance.
+## Analysis boundary
 
-## Repair invariants
+One analysis call compares the parent, four baselines and every successful candidate across CAGR, Sharpe, Sortino, maximum drawdown, annualized volatility, turnover and fees. It cites run IDs and identifies mock or simulated evidence. `CandidateSelector` independently enforces the deterministic admission rules.
 
-- The same immutable StrategySpec is supplied on every attempt.
-- `spec_sha256` must remain unchanged.
-- Static validation and Code Risk review repeat after every repair.
-- Smoke-test repairs also repeat static and risk checks before another smoke test.
-- The total repair count is shared across static, risk and smoke failures.
+## Model policies
 
-## Unified analysis
+| Operation | Reasoning effort | Output ceiling |
+|---|---:|---:|
+| Strategy design | high | 6,000 |
+| Code risk review | high | 10,000 |
+| Post-backtest analysis | high | 10,000 |
 
-The Post-Backtest Analysis Agent is called once after all routes terminate. It compares the parent, four baselines and all successful candidate results in one evidence set. Failed routes remain visible through structured route outcomes.
-
-Its ranking is explanatory. The CandidateSelector independently applies hard checks and selects the eligible candidate with the highest Sharpe, then lower drawdown and lower fees as tie-breakers.
+Every response must satisfy its Pydantic schema. One validation-directed retry is allowed. Traces store sanitized requests and final structured replies, but not credentials or reasoning content.

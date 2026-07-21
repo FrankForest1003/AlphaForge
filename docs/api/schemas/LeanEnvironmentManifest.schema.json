@@ -1,6 +1,14 @@
 {
   "additionalProperties": false,
   "properties": {
+    "allowed_imports": {
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1,
+      "title": "Allowed Imports",
+      "type": "array"
+    },
     "brokerage_model": {
       "title": "Brokerage Model",
       "type": "string"
@@ -32,13 +40,33 @@
       "title": "Provider",
       "type": "string"
     },
+    "python_dependencies": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Python Dependencies",
+      "type": "array"
+    },
     "python_version": {
       "title": "Python Version",
+      "type": "string"
+    },
+    "qc_api_profile": {
+      "title": "Qc Api Profile",
       "type": "string"
     },
     "slippage_model": {
       "title": "Slippage Model",
       "type": "string"
+    },
+    "template_compatibility": {
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1,
+      "title": "Template Compatibility",
+      "type": "array"
     },
     "time_zone": {
       "title": "Time Zone",
@@ -53,7 +81,10 @@
     "brokerage_model",
     "fee_model",
     "slippage_model",
-    "time_zone"
+    "time_zone",
+    "allowed_imports",
+    "qc_api_profile",
+    "template_compatibility"
   ],
   "title": "LeanEnvironmentManifest",
   "type": "object"

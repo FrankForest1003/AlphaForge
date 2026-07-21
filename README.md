@@ -1,47 +1,58 @@
 # AlphaForge
 
-AlphaForge is a risk-aware multi-agent research platform for designing, generating, validating, backtesting and comparing QuantConnect/LEAN trading strategies.
+AlphaForge is an auditable multi-Agent research pipeline for designing, validating, backtesting and comparing QuantConnect/LEAN strategies.
 
-## Final pipeline
+## Pipeline
 
 ```text
 Five normalized validation results
-→ deterministic evidence summary
-→ Traditional / ML / Hybrid Strategy Designers
+→ deterministic EvidenceSummarizer
+→ Traditional / ML / Hybrid Strategy Designers (parallel)
 → strict CandidateDesign validation
 → deterministic SpecBuilder
 → StrategySpec validation
-→ QC Code Agent
-→ static QC code validation
-→ Code Risk Agent
-→ bounded Repair Agent when required
+→ deterministic StrategyCompiler
+→ static source validation
+→ route-specific Code Risk Agents
 → LEAN smoke test
 → full backtest
-→ one unified post-backtest analysis
-→ deterministic candidate selection
+→ one Post-Backtest Analysis Agent
+→ deterministic CandidateSelector
 ```
 
-The Strategy Designer controls only strategy logic and explicitly allowed execution changes. The system owns strategy IDs, universe, dates, capital, execution protocol and hard risk policy.
+Models make research judgments where explanation and semantic review are useful. They do not write or patch source code. The compiler deterministically maps every supported `StrategySpec` into versioned QC templates. A compilation, static-validation, risk-review or Smoke failure terminates that route.
 
-The Code Risk Agent reviews generated code before any backtest evidence exists. Its request type contains the StrategySpec, source code, static validation report and LEAN environment only.
+The three route pipelines run concurrently. Unified analysis starts once all routes have completed or failed. The analysis ranking is explanatory; eligibility and final selection are deterministic.
 
-The post-backtest analysis Agent compares all completed routes in one call. Final eligibility and selection remain deterministic.
+## Environment
 
-## Run the offline integration loop
+The project uses [uv](https://docs.astral.sh/uv/) with `.python-version`, `pyproject.toml` and `uv.lock`.
 
 ```bash
-conda run -n ml_env python -m pip install --no-build-isolation -e '.[dev]'
-conda run -n ml_env pytest
-conda run -n ml_env python scripts/run_mock_optimisation.py
+uv sync --dev
+uv run pytest
 ```
 
-Offline adapters use deterministic fixtures and do not constitute financial evidence. A Local LEAN provider can implement the same smoke-test and full-backtest ports.
+Run the offline closed loop:
+
+```bash
+uv run python scripts/run_mock_optimisation.py
+```
+
+For real model-backed design, risk review and analysis, configure the generic variables in `.env` and run:
+
+```bash
+uv run python scripts/run_llm_optimisation.py
+```
+
+The current backtest provider in that script is deterministic test infrastructure, not financial evidence. Readable traces are written under `artifacts/debug_runs/latest/` and omit credentials and model reasoning content.
 
 ## Documentation
 
-- `docs/context/ALPHAFORGE_TEAM_CONTEXT.md`: authoritative project context.
-- `docs/architecture/SYSTEM_ARCHITECTURE.md`: system boundaries and dependency rules.
-- `docs/architecture/AGENT_ARCHITECTURE.md`: Agent responsibilities and state machine.
-- `docs/api/README.md`: contracts, schemas, examples and HTTP API.
+- `docs/context/ALPHAFORGE_TEAM_CONTEXT.md`: project context and component boundaries.
+- `docs/context/CURRENT_AGENT_CONTEXT.md`: all seven English prompts and complete Chinese translations.
+- `docs/architecture/SYSTEM_ARCHITECTURE.md`: execution and trust boundaries.
+- `docs/architecture/AGENT_ARCHITECTURE.md`: model roles and policies.
+- `docs/api/README.md`: contracts, schemas and examples.
 
-AlphaForge is an education and research system. It does not provide investment advice or guarantee strategy performance.
+AlphaForge is an education and research system. It does not provide investment advice or guarantee performance.

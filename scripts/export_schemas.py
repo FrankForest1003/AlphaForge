@@ -11,7 +11,10 @@ from alphaforge.schemas.agent_outputs import (
     OptimizationResult,
     PostBacktestAnalysis,
     SelectionResult,
+    StrategyCompilationRequest,
+    TemplateCapabilityReport,
 )
+from alphaforge.agents.context import AgentContextBundle
 from alphaforge.schemas.backtest import BacktestResult, BacktestSubmission
 from alphaforge.schemas.manifests import LeanEnvironmentManifest, StrategyManifest
 from alphaforge.schemas.optimisation import OptimizationRequest
@@ -34,6 +37,9 @@ def main() -> None:
         BacktestResult,
         OptimizationRequest,
         OptimizationResult,
+        StrategyCompilationRequest,
+        TemplateCapabilityReport,
+        AgentContextBundle,
     )
     for model in models:
         path = output_dir / f"{model.__name__}.schema.json"

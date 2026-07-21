@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
+import threading
+
 from alphaforge.codegen.code_validator import DEFAULT_ALLOWED_QC_API, validate_generated_code
+from alphaforge.codegen.compiler import DeterministicStrategyCompiler
+from alphaforge.codegen.template_renderer import QCTemplateRenderer
 from alphaforge.ports import (
     BacktestProvider,
     CodeRiskAgent,
     PostBacktestAnalysisAgent,
-    QCCodeAgent,
-    RepairAgent,
+    StrategyCompiler,
     StrategyDesigner,
 )
 from alphaforge.schemas.agent_outputs import (
@@ -15,9 +20,10 @@ from alphaforge.schemas.agent_outputs import (
     CodeRiskReviewRequest,
     OptimizationResult,
     PostBacktestAnalysisRequest,
-    QCCodeGenerationRequest,
-    RepairRequest,
     RouteOutcome,
+    StrategyCompilationRequest,
+    TemplateCapabilityRecord,
+    TemplateCapabilityReport,
 )
 from alphaforge.schemas.manifests import LeanEnvironmentManifest
 from alphaforge.schemas.optimisation import OptimizationRequest
@@ -39,30 +45,33 @@ class OptimisationOrchestrator:
         self,
         *,
         designer: StrategyDesigner,
-        qc_code_agent: QCCodeAgent,
+        strategy_compiler: StrategyCompiler | None = None,
         code_risk_agent: CodeRiskAgent,
-        repair_agent: RepairAgent,
         backtest_provider: BacktestProvider,
         analysis_agent: PostBacktestAnalysisAgent,
         lean_environment: LeanEnvironmentManifest,
         allowed_qc_api: tuple[str, ...] = DEFAULT_ALLOWED_QC_API,
-        template_version: str = "qc_template_v1",
+        template_renderer: QCTemplateRenderer | None = None,
         evidence_summarizer: EvidenceSummarizer | None = None,
         spec_builder: SpecBuilder | None = None,
         selector: CandidateSelector | None = None,
+        audit_sink: Callable[[AuditEvent], None] | None = None,
     ) -> None:
         self.designer = designer
-        self.qc_code_agent = qc_code_agent
+        self.template_renderer = template_renderer or QCTemplateRenderer()
+        self.strategy_compiler = strategy_compiler or DeterministicStrategyCompiler(
+            self.template_renderer
+        )
         self.code_risk_agent = code_risk_agent
-        self.repair_agent = repair_agent
         self.backtest_provider = backtest_provider
         self.analysis_agent = analysis_agent
         self.lean_environment = lean_environment
         self.allowed_qc_api = allowed_qc_api
-        self.template_version = template_version
         self.evidence_summarizer = evidence_summarizer or EvidenceSummarizer()
         self.spec_builder = spec_builder or SpecBuilder()
         self.selector = selector or CandidateSelector()
+        self.audit_sink = audit_sink
+        self._audit_lock = threading.Lock()
 
     def run(self, request: OptimizationRequest) -> OptimizationResult:
         self._validate_request_evidence(request)
@@ -76,15 +85,19 @@ class OptimisationOrchestrator:
             "seven metrics summarized from five validation runs",
         )
 
-        candidates = tuple(
-            self._run_route(
-                route=route,
-                request=request,
-                evidence_summary=evidence_summary,
-                audit=audit,
-            )
-            for route in self.ROUTES
-        )
+        with ThreadPoolExecutor(max_workers=3, thread_name_prefix="alphaforge-route") as executor:
+            futures = {
+                route: executor.submit(
+                    self._run_route,
+                    route=route,
+                    request=request,
+                    evidence_summary=evidence_summary,
+                    audit=audit,
+                )
+                for route in self.ROUTES
+            }
+            candidates_by_route = {route: future.result() for route, future in futures.items()}
+        candidates = tuple(candidates_by_route[route] for route in self.ROUTES)
         route_outcomes = tuple(
             RouteOutcome(
                 candidate_type=candidate.candidate_type,
@@ -118,6 +131,7 @@ class OptimisationOrchestrator:
                 "all route outcomes analyzed in one call",
             )
         except Exception as exc:
+            analysis = None
             analysis_error = f"{type(exc).__name__}: {exc}"
             self._audit(
                 audit,
@@ -161,6 +175,7 @@ class OptimisationOrchestrator:
             selection=selection,
             analysis_error=analysis_error,
             audit_log=tuple(audit),
+            template_capability_report=self._capability_report(finalized),
         )
 
     def _run_route(
@@ -216,18 +231,21 @@ class OptimisationOrchestrator:
             )
         self._audit(audit, "spec_validation", built.spec.strategy_id, "completed", "spec approved")
 
-        generation_request = QCCodeGenerationRequest(
+        template_version = self.template_renderer.template_version(route)
+        compilation_request = StrategyCompilationRequest(
             strategy_spec=built.spec,
             spec_sha256=strategy_spec_digest(built.spec),
             lean_environment=self.lean_environment,
             allowed_qc_api=self.allowed_qc_api,
-            template_version=self.template_version,
+            template_version=template_version,
+            template_sha256=self.template_renderer.template_sha256(route),
+            semantics_version=self.template_renderer.SEMANTICS_VERSION,
         )
         try:
-            code = self.qc_code_agent.generate(generation_request)
+            code = self.strategy_compiler.compile(compilation_request)
         except Exception as exc:
             reason = f"{type(exc).__name__}: {exc}"
-            self._audit(audit, "qc_code_generation", built.spec.strategy_id, "failed", reason)
+            self._audit(audit, "strategy_compilation", built.spec.strategy_id, "failed", reason)
             return CandidateRun(
                 candidate_type=route,
                 state="rejected_by_code_validation",
@@ -236,209 +254,123 @@ class OptimisationOrchestrator:
                 changed_paths=built.changed_paths,
                 failure_reasons=(reason,),
             )
-        self._audit(audit, "qc_code_generation", built.spec.strategy_id, "completed", code.source_sha256)
+        self._audit(audit, "strategy_compilation", built.spec.strategy_id, "completed", code.source_sha256)
 
-        attempts = 0
-        code_validation = None
-        code_risk_review = None
-        smoke = None
-        while True:
-            code_validation = validate_generated_code(
-                built.spec,
-                code,
-                allowed_qc_api=self.allowed_qc_api,
+        code_validation = validate_generated_code(
+            built.spec,
+            code,
+            allowed_qc_api=self.allowed_qc_api,
+            allowed_imports=self.lean_environment.allowed_imports,
+        )
+        if not code_validation.valid:
+            return self._code_failure(
+                route=route,
+                state="rejected_by_code_validation",
+                built=built,
+                code=code,
+                validation=code_validation,
+                risk_review=None,
+                smoke=None,
+                reasons=code_validation.errors,
+                audit=audit,
             )
-            if not code_validation.valid:
-                if attempts >= request.constraints.max_repair_attempts:
-                    return self._code_failure(
-                        route=route,
-                        state="rejected_by_code_validation",
-                        built=built,
-                        code=code,
-                        validation=code_validation,
-                        risk_review=code_risk_review,
-                        smoke=smoke,
-                        reasons=code_validation.errors,
-                        audit=audit,
-                    )
-                attempts += 1
-                code = self._repair(
-                    spec=built.spec,
-                    code=code,
-                    source="static_validation",
-                    diagnostics=code_validation.errors,
-                    attempt=attempts,
-                    audit=audit,
-                )
-                if code is None:
-                    return self._code_failure(
-                        route=route,
-                        state="rejected_by_code_validation",
-                        built=built,
-                        code=None,
-                        validation=code_validation,
-                        risk_review=code_risk_review,
-                        smoke=smoke,
-                        reasons=("REPAIR_FAILED",),
-                        audit=audit,
-                    )
-                continue
 
-            try:
-                code_risk_review = self.code_risk_agent.review(
-                    CodeRiskReviewRequest(
-                        strategy_spec=built.spec,
-                        generated_code=code,
-                        static_validation=code_validation,
-                        lean_environment=self.lean_environment,
-                    )
+        try:
+            code_risk_review = self.code_risk_agent.review(
+                CodeRiskReviewRequest(
+                    strategy_spec=built.spec,
+                    generated_code=code,
+                    static_validation=code_validation,
+                    lean_environment=self.lean_environment,
                 )
-            except Exception as exc:
-                return self._code_failure(
-                    route=route,
-                    state="rejected_by_code_risk",
-                    built=built,
-                    code=code,
-                    validation=code_validation,
-                    risk_review=None,
-                    smoke=smoke,
-                    reasons=(f"{type(exc).__name__}: {exc}",),
-                    audit=audit,
-                )
-            self._audit(
-                audit,
-                "code_risk_review",
-                built.spec.strategy_id,
-                code_risk_review.verdict,
-                ",".join(finding.code for finding in code_risk_review.findings) or "no findings",
             )
-            review_binding_errors = tuple(
-                error
-                for condition, error in (
-                    (
-                        code_risk_review.strategy_id != built.spec.strategy_id,
-                        "RISK_REVIEW_STRATEGY_ID_MISMATCH",
-                    ),
-                    (
-                        code_risk_review.spec_sha256 != generation_request.spec_sha256,
-                        "RISK_REVIEW_SPEC_DIGEST_MISMATCH",
-                    ),
-                    (
-                        code_risk_review.reviewed_source_sha256 != code.source_sha256,
-                        "RISK_REVIEW_SOURCE_DIGEST_MISMATCH",
-                    ),
-                )
-                if condition
+        except Exception as exc:
+            return self._code_failure(
+                route=route,
+                state="rejected_by_code_risk",
+                built=built,
+                code=code,
+                validation=code_validation,
+                risk_review=None,
+                smoke=None,
+                reasons=(f"{type(exc).__name__}: {exc}",),
+                audit=audit,
             )
-            if review_binding_errors:
-                return self._code_failure(
-                    route=route,
-                    state="rejected_by_code_risk",
-                    built=built,
-                    code=code,
-                    validation=code_validation,
-                    risk_review=code_risk_review,
-                    smoke=smoke,
-                    reasons=review_binding_errors,
-                    audit=audit,
-                )
-            if code_risk_review.verdict == "reject":
-                return self._code_failure(
-                    route=route,
-                    state="rejected_by_code_risk",
-                    built=built,
-                    code=code,
-                    validation=code_validation,
-                    risk_review=code_risk_review,
-                    smoke=smoke,
-                    reasons=tuple(finding.code for finding in code_risk_review.findings) or ("CODE_RISK_REJECTED",),
-                    audit=audit,
-                )
-            if code_risk_review.verdict == "repair_required":
-                diagnostics = tuple(
-                    f"{finding.code}:{finding.repair_instruction}"
-                    for finding in code_risk_review.findings
-                    if finding.severity == "blocking"
-                )
-                if attempts >= request.constraints.max_repair_attempts:
-                    return self._code_failure(
-                        route=route,
-                        state="rejected_by_code_risk",
-                        built=built,
-                        code=code,
-                        validation=code_validation,
-                        risk_review=code_risk_review,
-                        smoke=smoke,
-                        reasons=diagnostics,
-                        audit=audit,
-                    )
-                attempts += 1
-                code = self._repair(
-                    spec=built.spec,
-                    code=code,
-                    source="code_risk",
-                    diagnostics=diagnostics,
-                    attempt=attempts,
-                    audit=audit,
-                )
-                if code is None:
-                    return self._code_failure(
-                        route=route,
-                        state="rejected_by_code_risk",
-                        built=built,
-                        code=None,
-                        validation=code_validation,
-                        risk_review=code_risk_review,
-                        smoke=smoke,
-                        reasons=("REPAIR_FAILED",),
-                        audit=audit,
-                    )
-                continue
+        self._audit(
+            audit,
+            "code_risk_review",
+            built.spec.strategy_id,
+            code_risk_review.verdict,
+            ",".join(finding.code for finding in code_risk_review.findings) or "no findings",
+        )
+        review_binding_errors = tuple(
+            error
+            for condition, error in (
+                (
+                    code_risk_review.strategy_id != built.spec.strategy_id,
+                    "RISK_REVIEW_STRATEGY_ID_MISMATCH",
+                ),
+                (
+                    code_risk_review.spec_sha256 != compilation_request.spec_sha256,
+                    "RISK_REVIEW_SPEC_DIGEST_MISMATCH",
+                ),
+                (
+                    code_risk_review.reviewed_source_sha256 != code.source_sha256,
+                    "RISK_REVIEW_SOURCE_DIGEST_MISMATCH",
+                ),
+            )
+            if condition
+        )
+        if review_binding_errors:
+            return self._code_failure(
+                route=route,
+                state="rejected_by_code_risk",
+                built=built,
+                code=code,
+                validation=code_validation,
+                risk_review=code_risk_review,
+                smoke=None,
+                reasons=review_binding_errors,
+                audit=audit,
+            )
+        if code_risk_review.verdict != "approve":
+            reasons = tuple(
+                f"{finding.code}:{finding.required_correction}"
+                for finding in code_risk_review.findings
+                if finding.severity == "blocking"
+            ) or ("CODE_RISK_REJECTED",)
+            return self._code_failure(
+                route=route,
+                state="rejected_by_code_risk",
+                built=built,
+                code=code,
+                validation=code_validation,
+                risk_review=code_risk_review,
+                smoke=None,
+                reasons=reasons,
+                audit=audit,
+            )
 
-            smoke = self.backtest_provider.smoke_test(built.spec, code)
-            self._audit(
-                audit,
-                "lean_smoke_test",
-                built.spec.strategy_id,
-                smoke.status,
-                ",".join(smoke.diagnostics) or "smoke test passed",
+        smoke = self.backtest_provider.smoke_test(built.spec, code)
+        self._audit(
+            audit,
+            "lean_smoke_test",
+            built.spec.strategy_id,
+            smoke.status,
+            ",".join(smoke.diagnostics) or "smoke test passed",
+        )
+        if smoke.status == "failed":
+            return self._code_failure(
+                route=route,
+                state="rejected_by_smoke_test",
+                built=built,
+                code=code,
+                validation=code_validation,
+                risk_review=code_risk_review,
+                smoke=smoke,
+                reasons=smoke.diagnostics or ("LEAN_SMOKE_FAILED",),
+                audit=audit,
             )
-            if smoke.status == "failed":
-                if attempts >= request.constraints.max_repair_attempts:
-                    return self._code_failure(
-                        route=route,
-                        state="rejected_by_smoke_test",
-                        built=built,
-                        code=code,
-                        validation=code_validation,
-                        risk_review=code_risk_review,
-                        smoke=smoke,
-                        reasons=smoke.diagnostics,
-                        audit=audit,
-                    )
-                attempts += 1
-                code = self._repair(
-                    spec=built.spec,
-                    code=code,
-                    source="smoke_test",
-                    diagnostics=smoke.diagnostics or ("LEAN_SMOKE_FAILED",),
-                    attempt=attempts,
-                    audit=audit,
-                )
-                if code is None:
-                    return self._code_failure(
-                        route=route,
-                        state="rejected_by_smoke_test",
-                        built=built,
-                        code=None,
-                        validation=code_validation,
-                        risk_review=code_risk_review,
-                        smoke=smoke,
-                        reasons=("REPAIR_FAILED",),
-                        audit=audit,
-                    )
-                continue
-            break
 
         result = self.backtest_provider.run(built.spec, code)
         self._audit(audit, "full_backtest", built.spec.strategy_id, result.status, result.run_id)
@@ -464,24 +396,6 @@ class OptimisationOrchestrator:
             parent_spec=request.parent_spec,
             evidence_summary=evidence_summary,
         )
-
-    def _repair(self, *, spec, code, source, diagnostics, attempt, audit):
-        try:
-            repaired = self.repair_agent.repair(
-                RepairRequest(
-                    strategy_spec=spec,
-                    failed_code=code,
-                    lean_environment=self.lean_environment,
-                    failure_source=source,
-                    diagnostics=diagnostics,
-                    attempt=attempt,
-                )
-            )
-            self._audit(audit, "code_repair", spec.strategy_id, "completed", f"attempt={attempt}; source={source}")
-            return repaired
-        except Exception as exc:
-            self._audit(audit, "code_repair", spec.strategy_id, "failed", f"{type(exc).__name__}: {exc}")
-            return None
 
     def _design_failure(self, route, exc, audit):
         reason = f"{type(exc).__name__}: {exc}"
@@ -530,14 +444,35 @@ class OptimisationOrchestrator:
         if any(result.status != "completed" or result.metrics is None for result in request.evidence):
             raise ValueError("all five evidence results must be completed and contain metrics")
 
-    @staticmethod
-    def _audit(events, stage, subject_id, outcome, detail) -> None:
-        events.append(
-            AuditEvent(
+    def _capability_report(self, candidates) -> TemplateCapabilityReport:
+        records = []
+        for candidate in candidates:
+            reasons = candidate.failure_reasons
+            if candidate.generated_code is not None:
+                status = "rendered"
+                reasons = ()
+            elif any("CANNOT_IMPLEMENT" in reason for reason in reasons):
+                status = "cannot_implement"
+            else:
+                status = "template_error"
+            records.append(
+                TemplateCapabilityRecord(
+                    candidate_type=candidate.candidate_type,
+                    status=status,
+                    reasons=reasons,
+                )
+            )
+        return TemplateCapabilityReport(template_version="route_templates_v1", records=tuple(records))
+
+    def _audit(self, events, stage, subject_id, outcome, detail) -> None:
+        with self._audit_lock:
+            event = AuditEvent(
                 sequence=len(events) + 1,
                 stage=stage,
                 subject_id=subject_id,
                 outcome=outcome,
                 detail=detail,
             )
-        )
+            events.append(event)
+            if self.audit_sink is not None:
+                self.audit_sink(event)

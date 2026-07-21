@@ -2,135 +2,72 @@
 
 ## Purpose
 
-AlphaForge is a risk-aware multi-agent platform for controlled trading-strategy research. It creates one Traditional, one ML and one Hybrid candidate from a user strategy and standardized validation evidence, produces QuantConnect/LEAN-compatible Python, performs code-risk review before backtesting, runs candidates under a common execution protocol and compares all completed results together.
+AlphaForge is an auditable multi-Agent research pipeline that proposes one Traditional, one ML and one Hybrid QuantConnect/LEAN candidate from an immutable parent `StrategySpec` and five normalized validation results. It is an educational research system and does not connect to live capital.
 
-The system is designed for education, research and decision support. It does not connect to live capital, guarantee returns or provide investment advice.
-
-## End-to-end workflow
+## Workflow
 
 ```text
-User StrategySpec + S_user/B1/B2/B3/B4 validation results
-→ EvidenceSummarizer
-→ three Strategy Designer calls
-→ CandidateDesign Schema
-→ SpecBuilder
-→ StrategySpec validation
-→ QC Code Agent
-→ deterministic static validation
-→ Code Risk Agent
-→ bounded Repair loop when required
-→ LEAN smoke test
-→ full LEAN backtest
-→ one Post-Backtest Analysis Agent call
+EvidenceSummarizer
+→ Strategy Designer × 3
+→ deterministic SpecBuilder
+→ deterministic StrategyCompiler × 3 routes
+→ static source validation
+→ Code Risk Agent × 3
+→ LEAN smoke interface
+→ backtest interface
+→ one Post-Backtest Analysis Agent
 → deterministic CandidateSelector
-→ OptimizationResult and audit trail
 ```
 
-## Strategy routes
+The three route pipelines execute concurrently. Unified analysis begins only after all three routes have succeeded or terminated.
 
-| Route | Required signal structure |
+## Model roles
+
+There are seven runtime prompts:
+
+| Role | Authority |
 |---|---|
-| Traditional | Technical or statistical signal only |
-| ML | Model prediction signal only |
-| Hybrid | Explicit Traditional and ML components plus fusion weight |
+| Traditional Designer | Traditional signal, lookback and optional `top_k` |
+| ML Designer | Estimator, task, training window, horizon, feature version, seed and optional `top_k` |
+| Hybrid Designer | Both components, fusion weight and optional `top_k` |
+| Traditional Code Risk | Audit traditional source against its Spec and route checklist |
+| ML Code Risk | Audit feature, label, estimator and exposure behavior |
+| Hybrid Code Risk | Audit both components, common Symbol set and percentile fusion |
+| Post-Backtest Analysis | Explain seven metrics, cite evidence and produce a non-binding ranking |
 
-The three routes use the same universe, dates, capital, resolution, rebalance protocol, fees, slippage, data version and benchmark assumptions.
+No model role writes or patches source code.
 
-## Agent responsibilities
+Each English Prompt v2 file is self-contained and has ten sections: Identity, mission, inputs, owned decisions, excluded decisions, route rules, procedure, output contract, refusal behavior and final self-check. `ContextAssembler` selects exactly one registered file; the structured client adds no hidden System-message prefix or suffix. Complete Chinese translations exist only for team review in `CURRENT_AGENT_CONTEXT.md`.
 
-### Strategy Designer
+## Deterministic strategy compilation
 
-Receives a parent StrategySpec and deterministic evidence summary. Returns a strict `CandidateDesign` containing route-specific logic, permitted execution changes, design reasons and expected trade-offs.
+`DeterministicStrategyCompiler` maps each supported validated Spec to versioned Traditional, ML or Hybrid template regions. The common skeleton owns:
 
-It cannot assign IDs or change the universe, comparison period, capital, resolution or hard risk policy.
+- imports, dates, cash and Symbol registration;
+- warm-up and one monthly schedule;
+- completed-history reads and duplicate-rebalance protection;
+- top-k selection, capped equal weights and liquidation;
+- long-only and total-exposure constraints.
 
-### QC Code Agent
+`qc_semantics_v1` fixes completed-bar momentum and mean reversion, the eight `price_volume_v1` features, leakage-safe historical labels, estimator/task mapping and percentile-based Hybrid fusion. Unsupported Specs or environments fail explicitly; no alternate signal or placeholder estimator is substituted.
 
-Receives an immutable StrategySpec, its digest, the LEAN environment and QC API allowlist. Returns `main.py`, source digest, Spec digest, used APIs, implementation assumptions and generator metadata.
+The compiled artifact records source, Spec, template, compiler and semantics digests. Static validation runs before any model code-risk review.
 
-It translates strategy semantics into code and cannot modify the StrategySpec.
+## Failure behavior
 
-### Code Risk Agent
+- Design or Schema failure rejects the design.
+- Unsupported Spec or compilation failure rejects code validation.
+- Static validation failure rejects code validation.
+- Any non-approved Code Risk verdict rejects code risk.
+- Smoke failure rejects Smoke testing.
+- A failed route is never patched or retried by a model.
 
-Runs after code generation and deterministic static validation, before smoke or full backtesting. It receives no backtest metrics.
+Code Risk receives no performance results. It returns evidenced findings and may block execution, but it cannot mutate code or the Spec. `max_drawdown_limit` remains a post-backtest deterministic admission threshold.
 
-It reviews code for implementation defects that can create excessive or unnecessary risk, including Spec drift, position sizing errors, duplicate orders, missing liquidation, indicator readiness, look-ahead, ML leakage, unintended exposure and execution mistakes.
+## Analysis and selection
 
-It returns `approve`, `repair_required` or `reject`. Blocking repairable findings enter the bounded Repair loop.
+The single analysis call sees the parent, four baselines, all successful candidates and failed-route statuses. It compares CAGR, Sharpe, Sortino, maximum drawdown, annualized volatility, turnover and fees, cites run IDs and labels simulated evidence correctly. Its ranking cannot override `CandidateSelector`.
 
-### Repair Agent
+## Runtime and security
 
-Receives the immutable StrategySpec, failed code, LEAN environment, failure source, diagnostics and attempt number. It may fix implementation defects only. The Spec digest must remain unchanged.
-
-### Post-Backtest Analysis Agent
-
-Runs exactly once after all three routes have completed or terminated. It receives normalized parent, baseline and successful candidate results plus failed-route states and run IDs.
-
-It compares CAGR, Sharpe, Sortino, maximum drawdown, annualized volatility, turnover and fees; explains strengths, weaknesses and trade-offs; and provides a non-binding ranking. It does not determine final eligibility.
-
-## Deterministic services
-
-| Service | Responsibility |
-|---|---|
-| EvidenceSummarizer | Calculate metric leaders and user gaps from five validation results |
-| SpecBuilder | Merge permitted CandidateDesign fields into the parent StrategySpec |
-| StrategySpec Validator | Enforce route, scope, universe, protocol and hard-risk invariants |
-| Static Code Validator | Check syntax, hashes, imports, QC API allowlist, lifecycle methods and obvious prohibited patterns |
-| Analysis Validator | Verify all seven reported metrics, strategy IDs and run IDs against supplied results |
-| CandidateSelector | Enforce pipeline eligibility, result completeness, Sharpe and drawdown rules |
-
-Deterministic services do not call a language model.
-
-## Core contracts
-
-### CandidateDesign
-
-Contains `candidate_type`, route-specific `logic`, `execution_changes`, empty `risk_changes`, `design_reasons` and `expected_tradeoffs`. Unknown fields and incorrect types are rejected.
-
-### StrategySpec
-
-The sole source of strategy meaning. It contains version, identity, parent identity, route, universe, execution protocol, hard risk policy and a discriminated Traditional/ML/Hybrid logic object.
-
-### GeneratedCode
-
-Contains `main.py`, strategy identity, source digest, Spec digest, used QC APIs, assumptions and generation metadata.
-
-### CodeRiskReview
-
-Contains reviewed strategy/source/Spec identities, verdict and structured findings with severity, category, code location, evidence, risk and repair instruction.
-
-### BacktestResult
-
-Contains run identity, strategy identity, role, status, data split, provider, normalized metrics and warnings. Test results are prohibited from the design stage.
-
-### PostBacktestAnalysis
-
-Contains cross-strategy metric analyses, candidate assessments, non-binding recommended ranking, no-improvement flag and summary.
-
-### SelectionResult
-
-Contains deterministic checks for every backtested candidate, eligible IDs, selected strategy ID and no-improvement flag.
-
-## Execution and risk constraints
-
-- Daily data and Monthly rebalance for the standard experiment.
-- Long-only, no leverage and maximum 35% position weight.
-- Test evidence never enters strategy design or tuning.
-- Unknown Agent-output fields are rejected.
-- A failed structured response receives one schema-directed correction attempt, then fails.
-- CandidateDesign cannot change frozen protocol fields.
-- Generated or repaired code must preserve the StrategySpec digest.
-- Code Risk review must pass before smoke testing.
-- Repair attempts are bounded by the OptimizationRequest.
-- Final selection cannot be overridden by an Agent recommendation.
-- Zero selected candidates is a valid result.
-
-## Provider boundaries
-
-The production Agent implementations use a generic structured model client configured by `API_KEY`, `MODEL` and `BASE_URL`. Credentials are loaded at runtime and must never appear in source, logs, results or audit events.
-
-`BacktestProvider` exposes `smoke_test` and `run`. Local LEAN is the production execution target. Deterministic offline providers are used for tests only.
-
-## Definition of done
-
-A candidate route is complete only when its design is schema-valid, its StrategySpec passes deterministic validation, generated code passes static validation and Code Risk review, smoke testing passes, the full result is normalized and the route appears in the unified post-backtest analysis and deterministic selection result.
+The project environment is managed by uv. The OpenAI-compatible structured client reads generic runtime configuration, sends one registered English prompt plus the target JSON Schema and dynamic input, and permits one validation-directed retry. Trace records sanitized requests, final replies, prompt identity and token/cache usage. It never records credentials or model reasoning content. `.env`, Git data, Chinese prompts and unregistered files cannot enter a context bundle.

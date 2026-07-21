@@ -8,8 +8,6 @@ from alphaforge.agents.providers.mock import (
     MockBacktestProvider,
     MockCodeRiskAgent,
     MockPostBacktestAnalysisAgent,
-    MockQCCodeAgent,
-    MockRepairAgent,
     MockStrategyDesigner,
 )
 from alphaforge.demo import build_demo_environment, build_demo_request
@@ -18,9 +16,7 @@ from alphaforge.demo import build_demo_environment, build_demo_request
 def main() -> None:
     orchestrator = OptimisationOrchestrator(
         designer=MockStrategyDesigner(),
-        qc_code_agent=MockQCCodeAgent(),
         code_risk_agent=MockCodeRiskAgent(),
-        repair_agent=MockRepairAgent(),
         backtest_provider=MockBacktestProvider(),
         analysis_agent=MockPostBacktestAnalysisAgent(),
         lean_environment=build_demo_environment(),

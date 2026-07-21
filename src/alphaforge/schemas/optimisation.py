@@ -8,7 +8,6 @@ from alphaforge.schemas.strategy_spec import StrategySpec, StrictModel
 
 class OptimizationConstraints(StrictModel):
     max_rounds: int = Field(default=1, ge=1, le=2)
-    max_repair_attempts: int = Field(default=2, ge=0, le=3)
     min_sharpe_improvement: float = Field(default=0.05, ge=0)
     max_drawdown_deterioration: float = Field(default=0.02, ge=0, le=1)
 

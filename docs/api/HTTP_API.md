@@ -4,7 +4,7 @@ Base path 为 `/v1`，媒体类型为 `application/json`。HTTP 层为异步作�
 
 ## POST /v1/optimisations
 
-提交 `OptimizationRequest`，其中包含父 `StrategySpec`、五个标准化证据结果和确定性选择/修复约束。
+提交 `OptimizationRequest`，其中包含父 `StrategySpec`、五个标准化证据结果和确定性选择约束。
 
 - 必须提供 `Idempotency-Key`。
 - 成功返回 `202 Accepted`、`optimization_id`、`queued` 和状态 URL。
@@ -20,10 +20,9 @@ queued
 → summarizing_evidence
 → designing
 → validating_spec
-→ generating_code
+→ compiling_strategy
 → validating_code
 → reviewing_code_risk
-→ repairing（按需回到 validating_code）
 → smoke_testing
 → backtesting
 → post_backtest_analysis

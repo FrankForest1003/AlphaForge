@@ -1,0 +1,23 @@
+{
+  "bundle_id": "strategy_designer_traditional_v2:agent_context_v2",
+  "bundle_version": "agent_context_v2",
+  "prompt_id": "strategy_designer_traditional_v2",
+  "agent_role": "strategy_designer",
+  "candidate_type": "traditional",
+  "template_version": null,
+  "sections": [
+    {
+      "section_id": "strategy_designer_traditional_v2",
+      "title": "strategy_designer_traditional_v2",
+      "source_path": "prompts/en/strategy_designer_traditional_v2.md",
+      "source_version": "2.0",
+      "source_sha256": "7b606d37e31a17a513a8a5236a4483b313c5dda4f0bd2522413847327046f849",
+      "content": "You are a versioned traditional strategy designer prompt.\n"
+    }
+  ],
+  "bundle_sha256": "7b606d37e31a17a513a8a5236a4483b313c5dda4f0bd2522413847327046f849",
+  "character_count": 58,
+  "source_paths": [
+    "prompts/en/strategy_designer_traditional_v2.md"
+  ]
+}

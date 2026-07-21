@@ -12,6 +12,7 @@ class ModelSettings(BaseModel):
     api_key: str = Field(min_length=1)
     model: str = Field(min_length=1)
     base_url: str = Field(min_length=1)
+    thinking_enabled: bool = True
 
 
 def load_model_settings(env_file: Path = Path(".env")) -> ModelSettings:
@@ -24,10 +25,11 @@ def load_model_settings(env_file: Path = Path(".env")) -> ModelSettings:
         values[key.strip()] = value.strip().strip('"').strip("'")
     resolved = {
         key: os.environ.get(key, values.get(key, ""))
-        for key in ("API_KEY", "MODEL", "BASE_URL")
+        for key in ("API_KEY", "MODEL", "BASE_URL", "THINKING_ENABLED")
     }
     return ModelSettings(
         api_key=resolved["API_KEY"],
         model=resolved["MODEL"],
         base_url=resolved["BASE_URL"],
+        thinking_enabled=resolved["THINKING_ENABLED"].lower() not in {"0", "false", "no", "off"},
     )

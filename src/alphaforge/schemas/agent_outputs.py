@@ -76,12 +76,20 @@ class BuiltCandidate(StrictModel):
     changed_paths: tuple[str, ...]
 
 
-class QCCodeGenerationRequest(StrictModel):
+class StrategyCompilationRequest(StrictModel):
     strategy_spec: StrategySpec
     spec_sha256: str
     lean_environment: LeanEnvironmentManifest
     allowed_qc_api: tuple[str, ...] = Field(min_length=1)
     template_version: str
+    template_sha256: str
+    semantics_version: Literal["qc_semantics_v1"] = "qc_semantics_v1"
+
+
+class CodeRegion(StrictModel):
+    name: str = Field(min_length=1)
+    source: str = Field(min_length=1)
+    source_sha256: str
 
 
 class GeneratedCode(StrictModel):
@@ -93,7 +101,13 @@ class GeneratedCode(StrictModel):
     spec_sha256: str
     used_qc_api: tuple[str, ...]
     assumptions: tuple[str, ...]
-    generator_metadata: dict[str, str]
+    compiler_metadata: dict[str, str]
+    template_version: str
+    template_sha256: str
+    compiler_version: str
+    compiler_sha256: str
+    semantics_version: Literal["qc_semantics_v1"]
+    regions: tuple[CodeRegion, ...] = Field(min_length=1)
 
 
 class CodeValidationResult(StrictModel):
@@ -119,7 +133,7 @@ class CodeRiskFinding(StrictModel):
     code_location: str
     evidence: str
     risk: str
-    repair_instruction: str
+    required_correction: str
 
 
 class CodeRiskReviewRequest(StrictModel):
@@ -133,7 +147,7 @@ class CodeRiskReview(StrictModel):
     strategy_id: str
     reviewed_source_sha256: str
     spec_sha256: str
-    verdict: Literal["approve", "repair_required", "reject"]
+    verdict: Literal["approve", "changes_required", "reject"]
     findings: tuple[CodeRiskFinding, ...] = ()
 
     @model_validator(mode="after")
@@ -141,18 +155,9 @@ class CodeRiskReview(StrictModel):
         blocking = any(finding.severity == "blocking" for finding in self.findings)
         if self.verdict == "approve" and blocking:
             raise ValueError("approve cannot include blocking findings")
-        if self.verdict == "repair_required" and not blocking:
-            raise ValueError("repair_required needs at least one blocking finding")
+        if self.verdict == "changes_required" and not blocking:
+            raise ValueError("changes_required needs at least one blocking finding")
         return self
-
-
-class RepairRequest(StrictModel):
-    strategy_spec: StrategySpec
-    failed_code: GeneratedCode
-    lean_environment: LeanEnvironmentManifest
-    failure_source: Literal["static_validation", "code_risk", "smoke_test"]
-    diagnostics: tuple[str, ...] = Field(min_length=1)
-    attempt: int = Field(ge=1, le=3)
 
 
 class RouteOutcome(StrictModel):
@@ -280,6 +285,21 @@ class AuditEvent(StrictModel):
     detail: str
 
 
+class TemplateCapabilityRecord(StrictModel):
+    candidate_type: RouteType
+    status: Literal["rendered", "cannot_implement", "template_error"]
+    reasons: tuple[str, ...] = ()
+
+
+class TemplateCapabilityReport(StrictModel):
+    template_version: str
+    records: tuple[TemplateCapabilityRecord, ...] = Field(min_length=3, max_length=3)
+
+    @property
+    def rendered_count(self) -> int:
+        return sum(record.status == "rendered" for record in self.records)
+
+
 class OptimizationResult(StrictModel):
     optimization_id: str
     status: Literal["completed", "failed"]
@@ -289,6 +309,7 @@ class OptimizationResult(StrictModel):
     selection: SelectionResult
     analysis_error: str | None = None
     audit_log: tuple[AuditEvent, ...]
+    template_capability_report: TemplateCapabilityReport
 
     @property
     def selected_types(self) -> tuple[CandidateType, ...]:

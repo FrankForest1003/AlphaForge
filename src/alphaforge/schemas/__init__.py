@@ -5,6 +5,7 @@ from alphaforge.schemas.agent_outputs import (
     OptimizationResult,
     PostBacktestAnalysis,
     SelectionResult,
+    TemplateCapabilityReport,
 )
 from alphaforge.schemas.backtest import BacktestResult, BacktestSubmission
 from alphaforge.schemas.manifests import LeanEnvironmentManifest, StrategyManifest
@@ -24,4 +25,5 @@ __all__ = [
     "SelectionResult",
     "StrategyManifest",
     "StrategySpec",
+    "TemplateCapabilityReport",
 ]
