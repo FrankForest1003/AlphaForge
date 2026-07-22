@@ -1,0 +1,30 @@
+{
+  "strategy_id": "hybrid_30_stock_ml_momentum_min_variance_v1",
+  "strategy_family": "hybrid",
+  "entry_file": "approved/hybrid_30_stock_ml_momentum_min_variance/main.py",
+  "algorithm_class": "HybridThirtyStockMLMomentumMinVariance",
+  "expected_marker": "ALPHAFORGE_HYBRID_30_ML_MOMENTUM_MIN_VARIANCE_COMPLETED",
+  "supports_ml": true,
+  "requires_real_data": true,
+  "universe_id": "alphaforge_us_equity_30_v1.0",
+  "required_symbols": ["MSFT","AAPL","NVDA","GOOGL","AMZN","META","AVGO","ASML","AMD","ORCL","JPM","BRK.B","V","LLY","JNJ","ABBV","TMO","WMT","COST","PG","KO","MCD","CAT","HON","UNP","ETN","XOM","LIN","NEE","PLD","SPY","QQQ"],
+  "default_parameters": {
+    "start_date": "2016-01-04",
+    "end_date": "latest",
+    "initial_cash": "100000",
+    "symbols": "MSFT,AAPL,NVDA,GOOGL,AMZN,META,AVGO,ASML,AMD,ORCL,JPM,BRK.B,V,LLY,JNJ,ABBV,TMO,WMT,COST,PG,KO,MCD,CAT,HON,UNP,ETN,XOM,LIN,NEE,PLD",
+    "training_bars": "504",
+    "forecast_horizon": "21",
+    "top_k": "3",
+    "holding_buffer_rank": "5",
+    "target_gross": "0.95",
+    "max_position_weight": "0.35",
+    "max_drawdown": "0.20",
+    "classic_weight": "0.85",
+    "random_seed": "42",
+    "risk_filter_enabled": "true",
+    "transaction_cost_bps": "10",
+    "slippage_bps": "5"
+  },
+  "description": "Contributor baseline: Gradient Boosting alpha blended with classical momentum and Ledoit-Wolf minimum-variance allocation, plus deterministic risk controls."
+}

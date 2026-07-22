@@ -47,8 +47,8 @@ class MLThirtyStockGradientBoosting(AlphaForgeBaseAlgorithm):
         unknown = sorted(set(tickers).difference(self.DEFAULT_UNIVERSE))
         if unknown:
             raise ValueError(f"Symbols outside AlphaForge whitelist: {unknown}")
-        if not 10 <= len(tickers) <= 30:
-            raise ValueError("The selectable stock pool must contain 10 to 30 whitelist symbols")
+        if not 5 <= len(tickers) <= 30:
+            raise ValueError("The selectable stock pool must contain 5 to 30 whitelist symbols")
         return tickers
 
     def initialize_strategy(self):
@@ -65,6 +65,8 @@ class MLThirtyStockGradientBoosting(AlphaForgeBaseAlgorithm):
         self.random_seed = int(self._parameter("random_seed", "42"))
         self.risk_filter_enabled = self._bool_parameter("risk_filter_enabled", True)
         self.risk_sma_period = int(self._parameter("risk_sma_period", "200"))
+        self.fee_bps = float(self._parameter("transaction_cost_bps", "10"))
+        self.slippage_bps = float(self._parameter("slippage_bps", "5"))
         tickers = self._selected_tickers()
         if not 1 <= self.top_k <= len(tickers):
             raise ValueError("top_k must be between 1 and the selected stock-pool size")
@@ -72,15 +74,18 @@ class MLThirtyStockGradientBoosting(AlphaForgeBaseAlgorithm):
         self.symbols = []
         for ticker in tickers:
             security = self.add_equity(ticker, Resolution.DAILY)
-            security.set_data_normalization_mode(DataNormalizationMode.RAW)
-            security.set_leverage(1)
+            self.af_configure_security(
+                security,
+                fee_bps=self.fee_bps,
+                slippage_bps=self.slippage_bps,
+            )
             self.symbols.append(self.af_track_symbol(security.symbol))
 
         spy = self.add_equity("SPY", Resolution.DAILY)
-        spy.set_data_normalization_mode(DataNormalizationMode.RAW)
+        self.af_configure_security(spy)
         self.spy = spy.symbol
         qqq = self.add_equity("QQQ", Resolution.DAILY)
-        qqq.set_data_normalization_mode(DataNormalizationMode.RAW)
+        self.af_configure_security(qqq)
         self.qqq = qqq.symbol
         self.af_use_security_benchmark(self.spy)
         self.settings.minimum_order_margin_portfolio_percentage = 0

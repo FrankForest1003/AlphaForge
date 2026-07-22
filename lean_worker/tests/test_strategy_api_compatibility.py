@@ -24,6 +24,8 @@ def test_top3_strategies_use_staged_rebalance():
     ml = _text("strategies/approved/ml_30_stock_gradient_boosting/main.py")
     assert "def af_rebalance_to_weights" in base
     assert "phase 1 remove" in base
+    assert "free_portfolio_value_percentage" in base
+    assert "effective_target" in base
     assert "af_rebalance_to_weights(" in classic
     assert "af_rebalance_to_weights(" in ml
     assert "set_holdings(targets, True)" not in classic

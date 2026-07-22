@@ -4,7 +4,9 @@ from AlgorithmImports import *
 from alphaforge_base import AlphaForgeBaseAlgorithm
 
 
-class ClassicThirtyStockTop3Momentum(AlphaForgeBaseAlgorithm):
+class ClassicThirtyStockMeanReversion(AlphaForgeBaseAlgorithm):
+    """Monthly cross-sectional mean reversion with a shared market risk gate."""
+
     DEFAULT_UNIVERSE = [
         "MSFT", "AAPL", "NVDA", "GOOGL", "AMZN", "META", "AVGO", "ASML", "AMD", "ORCL",
         "JPM", "BRK.B", "V", "LLY", "JNJ", "ABBV", "TMO", "WMT", "COST", "PG",
@@ -16,8 +18,9 @@ class ClassicThirtyStockTop3Momentum(AlphaForgeBaseAlgorithm):
         return value if value not in (None, "") else default
 
     def _bool_parameter(self, name, default):
-        value = str(self._parameter(name, str(default))).strip().lower()
-        return value in {"1", "true", "yes", "on"}
+        return str(self._parameter(name, str(default))).strip().lower() in {
+            "1", "true", "yes", "on"
+        }
 
     def _selected_tickers(self):
         raw = str(self._parameter("symbols", ",".join(self.DEFAULT_UNIVERSE)))
@@ -34,12 +37,12 @@ class ClassicThirtyStockTop3Momentum(AlphaForgeBaseAlgorithm):
         return tickers
 
     def initialize_strategy(self):
-        start = datetime.fromisoformat(self._parameter("start_date", "2015-01-02"))
-        end = datetime.fromisoformat(self._parameter("end_date", "2026-07-17"))
+        start = datetime.fromisoformat(self._parameter("start_date", "2016-01-04"))
+        end = datetime.fromisoformat(self._parameter("end_date", "2026-06-30"))
         self.set_start_date(start.year, start.month, start.day)
         self.set_end_date(end.year, end.month, end.day)
         self.set_cash(float(self._parameter("initial_cash", "100000")))
-        self.lookback = int(self._parameter("lookback", "126"))
+        self.lookback = int(self._parameter("lookback", "21"))
         self.top_k = int(self._parameter("top_k", "3"))
         self.target_gross = float(self._parameter("target_gross", "0.95"))
         self.max_position_weight = float(self._parameter("max_position_weight", "0.35"))
@@ -71,13 +74,12 @@ class ClassicThirtyStockTop3Momentum(AlphaForgeBaseAlgorithm):
         self.settings.minimum_order_margin_portfolio_percentage = 0
         self.settings.free_portfolio_value_percentage = 0.02
 
-        self.momentum = {
+        self.reversion = {
             symbol: self.roc(symbol, self.lookback, Resolution.DAILY)
             for symbol in self.symbols
         }
         self.risk_sma = self.sma(self.qqq, self.risk_sma_period, Resolution.DAILY)
-        warmup = max(self.lookback + 5, self.risk_sma_period + 5)
-        self.set_warm_up(warmup, Resolution.DAILY)
+        self.set_warm_up(max(self.lookback + 5, self.risk_sma_period + 5), Resolution.DAILY)
         reference = self.symbols[0]
         self.schedule.on(
             self.date_rules.month_start(reference),
@@ -91,26 +93,12 @@ class ClassicThirtyStockTop3Momentum(AlphaForgeBaseAlgorithm):
     def rebalance(self):
         if self.is_warming_up:
             return
-        ready_scores = {
-            symbol: float(indicator.current.value)
-            for symbol, indicator in self.momentum.items()
-            if indicator.is_ready and float(self.securities[symbol].price) > 0
-        }
-        if len(ready_scores) < self.top_k:
-            self.af_record_signal(
-                "classic_30_insufficient_ready_symbols",
-                {
-                    "ready_count": len(ready_scores),
-                    "required_count": self.top_k,
-                },
-            )
-            return
         if self.risk_filter_enabled and (
             not self.risk_sma.is_ready
             or float(self.securities[self.qqq].price) <= float(self.risk_sma.current.value)
         ):
             self.af_record_signal(
-                "classic_30_risk_off",
+                "mean_reversion_risk_off",
                 {
                     "qqq_price": float(self.securities[self.qqq].price),
                     "qqq_sma": float(self.risk_sma.current.value),
@@ -120,32 +108,35 @@ class ClassicThirtyStockTop3Momentum(AlphaForgeBaseAlgorithm):
             self.af_liquidate_all("Risk-off: QQQ below SMA")
             return
 
-        scores = ready_scores
-        ranked = sorted(scores.items(), key=lambda item: item[1], reverse=True)
-        selected = [symbol for symbol, score in ranked[: self.top_k] if score > 0]
+        scores = {
+            symbol: float(indicator.current.value)
+            for symbol, indicator in self.reversion.items()
+            if indicator.is_ready and float(self.securities[symbol].price) > 0
+        }
+        ranked = sorted(scores.items(), key=lambda item: item[1])
+        selected = [symbol for symbol, score in ranked[: self.top_k] if score < 0]
         if not selected:
             self.af_record_signal(
-                "classic_30_no_positive_momentum",
-                {"scores": {symbol.value: score for symbol, score in ranked}},
+                "mean_reversion_no_oversold_assets",
+                {"returns": {symbol.value: score for symbol, score in ranked}},
             )
-            self.af_liquidate_all("Risk-off: no positive momentum")
+            self.af_liquidate_all("No negative-return mean-reversion candidates")
             return
 
         per_asset = min(self.max_position_weight, self.target_gross / len(selected))
-        target_weights = {symbol: per_asset for symbol in selected}
         self.af_record_signal(
-            "classic_30_top3_momentum",
+            "classic_30_mean_reversion",
             {
-                "scores": {symbol.value: score for symbol, score in ranked},
+                "returns": {symbol.value: score for symbol, score in ranked},
                 "selected": [symbol.value for symbol in selected],
                 "target_weight_each": per_asset,
-                "risk_filter_enabled": self.risk_filter_enabled,
+                "lookback": self.lookback,
             },
         )
         self.af_rebalance_to_weights(
-            target_weights,
-            "Monthly Top-K momentum rebalance",
+            {symbol: per_asset for symbol in selected},
+            "Monthly cross-sectional mean-reversion rebalance",
         )
 
     def on_alpha_end(self):
-        self.debug("ALPHAFORGE_CLASSIC_30_TOP3_MOMENTUM_COMPLETED")
+        self.debug("ALPHAFORGE_CLASSIC_30_MEAN_REVERSION_COMPLETED")

@@ -2,6 +2,10 @@
 
 This overlay prepares the top-level monorepo structure for AlphaForge and places the validated Local LEAN Runtime v1.1.3 under `lean_worker/`.
 
+## Team guide
+
+For current setup instructions, verified progress, known gaps, troubleshooting, and member-D handoff boundaries, read [TEAM_PROJECT_GUIDE_zh.md](TEAM_PROJECT_GUIDE_zh.md) first.
+
 ## Key boundaries
 
 - `frontend/`: Streamlit presentation layer only.

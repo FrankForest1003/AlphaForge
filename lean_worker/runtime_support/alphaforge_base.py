@@ -8,6 +8,27 @@ from typing import Any
 from AlgorithmImports import *
 
 
+class AlphaForgeBpsFeeModel(FeeModel):
+    """Deterministic notional fee model shared by every battle strategy."""
+
+    def __init__(self, fee_bps: float):
+        self.fee_rate = max(0.0, float(fee_bps)) / 10_000.0
+
+    def get_order_fee(self, parameters):
+        notional = abs(float(parameters.order.quantity) * float(parameters.security.price))
+        return OrderFee(CashAmount(notional * self.fee_rate, "USD"))
+
+
+class AlphaForgeBpsSlippageModel:
+    """Simple deterministic price slippage used consistently across candidates."""
+
+    def __init__(self, slippage_bps: float):
+        self.slippage_rate = max(0.0, float(slippage_bps)) / 10_000.0
+
+    def get_slippage_approximation(self, asset, order):
+        return float(asset.price) * self.slippage_rate
+
+
 def _number(value: Any) -> float:
     try:
         return float(value)
@@ -127,6 +148,21 @@ class AlphaForgeBaseAlgorithm(QCAlgorithm):
             self._af_tracked_symbols.append(symbol)
         return symbol
 
+    def af_configure_security(
+        self,
+        security,
+        *,
+        fee_bps: float = 0.0,
+        slippage_bps: float = 0.0,
+        leverage: float = 1.0,
+    ):
+        """Apply the immutable ExperimentContract execution assumptions."""
+        security.set_data_normalization_mode(DataNormalizationMode.RAW)
+        security.set_leverage(float(leverage))
+        security.set_fee_model(AlphaForgeBpsFeeModel(fee_bps))
+        security.set_slippage_model(AlphaForgeBpsSlippageModel(slippage_bps))
+        return security
+
     def af_set_benchmark_symbol(self, symbol):
         self._af_benchmark_symbol = symbol
         return symbol
@@ -203,12 +239,21 @@ class AlphaForgeBaseAlgorithm(QCAlgorithm):
         portfolio_value = _number(self.portfolio.total_portfolio_value)
         reduction_submitted = False
         tolerance = 0.0025
+        # SetHoldings applies this reserve before calculating order quantities.
+        # Compare against the same effective target; otherwise LEAN may discover
+        # small sell orders only inside the final target batch and validate a new
+        # buy before those sale proceeds exist.
+        free_portfolio_percentage = max(
+            0.0,
+            min(1.0, _number(self.settings.free_portfolio_value_percentage)),
+        )
 
         for symbol in self._af_tracked_symbols:
             holding = self.portfolio[symbol]
             if not holding.invested:
                 continue
             target = clean.get(symbol, 0.0)
+            effective_target = target * (1.0 - free_portfolio_percentage)
             current_weight = (
                 _number(holding.holdings_value) / portfolio_value
                 if portfolio_value > 0
@@ -217,7 +262,7 @@ class AlphaForgeBaseAlgorithm(QCAlgorithm):
             if target <= 0:
                 self.liquidate(symbol, tag=f"{tag} | phase 1 remove")
                 reduction_submitted = True
-            elif current_weight > target + tolerance:
+            elif current_weight > effective_target + tolerance:
                 self.set_holdings(symbol, target, tag=f"{tag} | phase 1 reduce")
                 reduction_submitted = True
 

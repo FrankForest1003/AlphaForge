@@ -11,6 +11,10 @@ import pandas as pd
 def load_runtime_support():
     fake = types.ModuleType("AlgorithmImports")
     fake.QCAlgorithm = type("QCAlgorithm", (), {})
+    fake.FeeModel = type("FeeModel", (), {})
+    fake.OrderFee = type("OrderFee", (), {})
+    fake.CashAmount = type("CashAmount", (), {})
+    fake.DataNormalizationMode = types.SimpleNamespace(RAW="RAW")
     sys.modules["AlgorithmImports"] = fake
     path = Path(__file__).resolve().parents[1] / "runtime_support" / "alphaforge_base.py"
     spec = importlib.util.spec_from_file_location("alphaforge_base_test", path)

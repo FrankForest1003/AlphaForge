@@ -19,7 +19,9 @@
   },
   "strategies": [
     "classic_30_stock_top3_momentum_v1",
+    "classic_30_stock_mean_reversion_v1",
     "ml_30_stock_gradient_boosting_v1",
+    "hybrid_30_stock_ml_momentum_min_variance_v1",
     "classic_two_stock_momentum_v1",
     "ml_gradient_boosting_v1"
   ],

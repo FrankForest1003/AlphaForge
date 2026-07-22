@@ -2,7 +2,8 @@ FROM python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    ALPHAFORGE_MOCK_MODE=true
+    ALPHAFORGE_MOCK_MODE=false \
+    ALPHAFORGE_API_BASE_URL=http://backend:8000/v1
 
 WORKDIR /app
 COPY requirements.txt .

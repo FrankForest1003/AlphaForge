@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import json
 from datetime import date
+from html import escape
 
 import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-from api_client import AlphaForgeAPI
+from api_client import AlphaForgeAPI, AlphaForgeAPIError
 from mock_data import AGENT_EVENTS, BASELINE_LESSONS, CANDIDATES, COLORS, LEAN_TEMPLATE, RESULTS
 
 
@@ -37,7 +38,10 @@ def init_state() -> None:
         "page": "overview",
         "last_workflow_page": "setup",
         "unlocked_step": 0,
-        "battle_id": "BTL-2026-071",
+        "battle_id": None,
+        "contract_hash": None,
+        "experiment_contract": None,
+        "baseline_batch_id": None,
         "round": 1,
         "strategy_mode": "Guided Mode",
         "strategy_submitted": False,
@@ -59,22 +63,29 @@ def inject_css() -> None:
         """
         <style>
           :root {
-            --ink: #172033;
-            --body: #334155;
-            --muted: #526174;
+            --ink: #152238;
+            --body: #304156;
+            --muted: #526579;
             --subtle: #64748b;
             --teal: #0f766e;
             --teal-hover: #115e59;
             --teal-soft: #e7f3f1;
             --blue: #1d4ed8;
             --blue-soft: #eaf1ff;
-            --border: #d5dde5;
-            --border-strong: #c2ccd6;
+            --amber: #a16207;
+            --amber-soft: #fff8df;
+            --red: #b42318;
+            --red-soft: #fff0ee;
+            --border: #d8e1e8;
+            --border-strong: #b8c5d0;
             --surface: #ffffff;
-            --surface-soft: #f7f9fb;
-            --canvas: #f3f6f8;
+            --surface-soft: #f7fafb;
+            --canvas: #f4f7f9;
           }
-          .stApp { background: var(--canvas); color: var(--body); }
+          html, body, [class*="css"] {
+            font-family: Inter, "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif;
+          }
+          .stApp { background: var(--canvas); color: var(--body); font-size: 16px; }
           [data-testid="stHeader"] { background: rgba(243,246,248,.94); }
           [data-testid="stAppViewContainer"],
           [data-testid="stMain"],
@@ -105,26 +116,27 @@ def inject_css() -> None:
             color: #64748b;
             opacity: 1;
           }
-          .block-container { max-width: 1320px; padding-top: 2rem; padding-bottom: 5rem; }
+          .block-container { max-width: 1440px; padding: 2.35rem 2.4rem 5rem; }
           h1, h2, h3 { color: var(--ink) !important; letter-spacing: -.025em; }
-          h1 { font-size: 2rem !important; margin-bottom: .25rem !important; }
-          h2 { font-size: 1.35rem !important; }
-          h3 { font-size: 1.05rem !important; }
-          .brand { font-size: 1.18rem; font-weight: 800; color: var(--ink); letter-spacing: -.02em; }
-          .brand-sub { color: var(--muted); font-size: .77rem; margin-top: .12rem; }
+          h1 { font-size: clamp(2rem, 3vw, 2.65rem) !important; line-height: 1.12 !important; margin-bottom: .35rem !important; }
+          h2 { font-size: 1.48rem !important; margin-top: 1.65rem !important; }
+          h3 { font-size: 1.12rem !important; }
+          p, li { line-height: 1.65; }
+          .brand { font-size: 1.32rem; font-weight: 820; color: var(--ink); letter-spacing: -.025em; }
+          .brand-sub { color: var(--muted); font-size: .82rem; line-height: 1.45; margin-top: .16rem; }
           .page-kicker { color: #0b6b63; font-size: .72rem; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }
-          .page-subtitle { color: var(--muted); font-size: .96rem; line-height: 1.55; max-width: 780px; }
+          .page-subtitle { color: var(--muted); font-size: 1rem; line-height: 1.65; max-width: 880px; }
           .section-label { color: #4c5d70; font-size: .72rem; font-weight: 780; letter-spacing: .08em; text-transform: uppercase; }
           .card {
-            padding: 1rem 1.05rem;
+            padding: 1.08rem 1.15rem;
             border: 1px solid var(--border);
-            border-radius: 12px;
+            border-radius: 14px;
             background: var(--surface);
             min-height: 112px;
-            box-shadow: 0 1px 2px rgba(23,32,51,.035);
+            box-shadow: 0 2px 8px rgba(23,32,51,.04);
           }
-          .card-title { color: var(--ink); font-size: 1rem; font-weight: 760; margin: .22rem 0 .35rem; }
-          .muted { color: #4b5b6d; font-size: .89rem; line-height: 1.55; }
+          .card-title { color: var(--ink); font-size: 1.04rem; font-weight: 760; line-height: 1.35; margin: .28rem 0 .4rem; }
+          .muted { color: #4b5f73; font-size: .91rem; line-height: 1.62; }
           .muted b { color: #2d3c4f; }
           .tag {
             display: inline-block; padding: .2rem .48rem; border-radius: 5px;
@@ -133,8 +145,8 @@ def inject_css() -> None:
           .tag.gray { background: #edf1f4; color: #425466; }
           .tag.blue { background: var(--blue-soft); color: #1e4f85; }
           .notice {
-            padding: .8rem .95rem; border: 1px solid #bddbd5; border-radius: 10px;
-            background: #edf7f4; color: #244a46; margin: .4rem 0 1rem;
+            padding: .95rem 1.1rem; border: 1px solid #b6d9d2; border-radius: 12px;
+            background: #edf8f5; color: #204942; margin: .5rem 0 1.2rem; line-height: 1.6;
           }
           .notice b { color: #173f3b; }
           .result-banner {
@@ -148,10 +160,11 @@ def inject_css() -> None:
             color:#fff; background:var(--teal); font-size:.7rem; font-weight:800; flex:none;
           }
           div[data-testid="stMetric"] {
-            background: var(--surface); border: 1px solid var(--border); padding: .75rem .9rem; border-radius: 10px;
+            background: var(--surface); border: 1px solid var(--border); padding: .9rem 1rem; border-radius: 12px;
+            box-shadow: 0 2px 7px rgba(23,32,51,.035);
           }
-          div[data-testid="stMetric"] label { color: #526174 !important; font-weight: 650; }
-          div[data-testid="stMetricValue"] { color: var(--ink); }
+          div[data-testid="stMetric"] label { color: #4c6074 !important; font-size: .84rem !important; font-weight: 680; }
+          div[data-testid="stMetricValue"] { color: var(--ink); font-size: 1.85rem; font-weight: 760; }
           div[data-testid="stMetricDelta"] { color: #365264; }
           [data-testid="stCaptionContainer"], [data-testid="stCaptionContainer"] p {
             color: #59697a !important;
@@ -169,9 +182,13 @@ def inject_css() -> None:
           }
           .stDownloadButton > button:hover { color: var(--ink); border-color: #8fa0af; background: #f8fafb; }
           [data-testid="stProgressBar"] > div > div { background-color: var(--teal); }
-          [data-testid="stDataFrame"] { border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+          [data-testid="stDataFrame"] {
+            border: 1px solid var(--border); border-radius: 12px; overflow: hidden;
+            background: var(--surface); box-shadow: 0 2px 8px rgba(23,32,51,.035);
+          }
+          [data-testid="stDataFrame"] * { color-scheme: light !important; }
           .stTabs [data-baseweb="tab-list"] { gap: 1.25rem; border-bottom: 1px solid var(--border); }
-          .stTabs [data-baseweb="tab"] { padding-left: 0; padding-right: 0; color: #526174; }
+          .stTabs [data-baseweb="tab"] { padding: .65rem .15rem; color: #4b6075; font-size: .94rem; font-weight: 650; }
           .stTabs [aria-selected="true"] { color: var(--ink) !important; }
           .stTabs [data-baseweb="tab-highlight"] { background-color: var(--teal); }
           div[data-baseweb="select"] > div,
@@ -192,12 +209,56 @@ def inject_css() -> None:
           [data-baseweb="menu"] li { color: var(--body); background: var(--surface); }
           [data-baseweb="menu"] li:hover { color: var(--ink); background: #edf3f5; }
           [data-testid="stExpander"] { background: var(--surface); border-color: var(--border); }
-          [data-testid="stAlert"] { color: var(--body); }
-          [data-testid="stAlert"] p { color: inherit !important; }
+          [data-testid="stAlert"] {
+            color: var(--body) !important; border: 1px solid var(--border-strong) !important;
+            background: var(--surface) !important; border-radius: 12px !important;
+          }
+          [data-testid="stAlert"] p, [data-testid="stAlert"] div { color: inherit !important; }
+          [data-testid="stAlert"] svg { color: currentColor !important; fill: currentColor !important; }
+          [data-testid="stNotificationContentWarning"] { color: #704d00 !important; background: var(--amber-soft) !important; }
+          [data-testid="stNotificationContentError"] { color: #8a251d !important; background: var(--red-soft) !important; }
+          [data-testid="stNotificationContentSuccess"] { color: #17584e !important; background: #eaf7f3 !important; }
+          .batch-bar {
+            display: flex; align-items: center; justify-content: space-between; gap: 1rem;
+            margin: 1rem 0 1.15rem; padding: .9rem 1rem; background: var(--surface);
+            border: 1px solid var(--border); border-radius: 12px;
+          }
+          .batch-meta { color: var(--muted); font-size: .86rem; line-height: 1.55; overflow-wrap: anywhere; }
+          .batch-meta strong { color: var(--ink); }
+          .status-pill {
+            display: inline-flex; align-items: center; gap: .34rem; padding: .3rem .62rem;
+            border-radius: 999px; font-size: .72rem; font-weight: 800; letter-spacing: .035em;
+            text-transform: uppercase; white-space: nowrap;
+          }
+          .status-completed { color: #176254; background: #ddf5ed; }
+          .status-running, .status-queued, .status-submitting { color: #155ea2; background: #e8f2ff; }
+          .status-failed, .status-timeout { color: #a42b22; background: #ffebe8; }
+          .status-unknown { color: #526174; background: #edf1f4; }
+          .run-card {
+            min-height: 146px; padding: 1rem; background: var(--surface); border: 1px solid var(--border);
+            border-radius: 14px; box-shadow: 0 2px 8px rgba(23,32,51,.035);
+          }
+          .run-card-top { display:flex; align-items:flex-start; justify-content:space-between; gap:.55rem; }
+          .run-name { color: var(--ink); font-size: 1rem; font-weight: 760; line-height: 1.38; }
+          .run-id { color: #66778a; font-size: .75rem; margin-top: .62rem; overflow-wrap: anywhere; }
+          .run-track { color: #4c6074; font-size: .8rem; margin-top: .38rem; }
+          .insight-card {
+            min-height: 112px; padding: .95rem 1rem; background: linear-gradient(140deg,#fff,#f7fbfb);
+            border: 1px solid var(--border); border-radius: 13px;
+          }
+          .insight-label { color: #5b6d80; font-size: .72rem; font-weight: 800; letter-spacing:.07em; text-transform:uppercase; }
+          .insight-value { color: var(--ink); font-size: 1.32rem; font-weight: 800; margin-top:.25rem; }
+          .insight-note { color: #566a7d; font-size: .8rem; margin-top:.18rem; }
           hr { border-color: var(--border) !important; }
           code { font-size: .82rem !important; color: #243247 !important; }
           a { color: #145fa3; }
           a:hover { color: #0f477a; }
+          @media (max-width: 900px) {
+            .block-container { padding: 1.4rem 1rem 4rem; }
+            h1 { font-size: 2rem !important; }
+            .batch-bar { align-items:flex-start; flex-direction:column; }
+            .run-card { min-height: 126px; }
+          }
         </style>
         """,
         unsafe_allow_html=True,
@@ -254,23 +315,70 @@ def style_figure(fig, height: int = 330, legend: bool = False):
     return fig
 
 
-def metric_chart(frame: pd.DataFrame, metric: str, height: int = 340):
+BASELINE_PALETTE = ["#2563EB", "#0F766E", "#7C3AED", "#D97706"]
+
+
+def metric_chart(
+    frame: pd.DataFrame,
+    metric: str,
+    *,
+    title: str | None = None,
+    suffix: str = "",
+    height: int = 310,
+):
+    chart_frame = frame.dropna(subset=[metric]).sort_values(metric, ascending=True)
     fig = px.bar(
-        frame,
-        x="Strategy",
-        y=metric,
-        color="Track",
-        color_discrete_map=COLORS,
+        chart_frame,
+        x=metric,
+        y="Strategy",
+        orientation="h",
+        color="Strategy",
+        color_discrete_sequence=BASELINE_PALETTE,
         text=metric,
     )
     fig.update_traces(
-        texttemplate="%{text:.2f}", textposition="outside",
+        texttemplate=f"%{{text:.2f}}{suffix}", textposition="outside",
         textfont=dict(color="#243247", size=13),
         marker_line_color="#ffffff", marker_line_width=0.8,
         cliponaxis=False,
     )
-    fig.update_xaxes(tickangle=-18)
-    return style_figure(fig, height=height)
+    fig.update_layout(title=dict(text=title or metric, font=dict(size=15, color="#172033")))
+    fig.update_xaxes(ticksuffix=suffix)
+    fig.update_yaxes(title=None, automargin=True)
+    return style_figure(fig, height=height, legend=False)
+
+
+def _status_class(state: str | None) -> str:
+    normalized = str(state or "unknown").strip().lower()
+    if normalized in {"completed", "running", "queued", "submitting", "failed", "timeout"}:
+        return normalized
+    return "unknown"
+
+
+def _run_card(run: dict) -> str:
+    state = str(run.get("state") or "unknown")
+    state_class = _status_class(state)
+    run_id = str(run.get("worker_run_id") or "Waiting for Worker ID")
+    return (
+        '<div class="run-card">'
+        '<div class="run-card-top">'
+        f'<div class="run-name">{escape(str(run.get("display_name") or "Baseline"))}</div>'
+        f'<span class="status-pill status-{state_class}">{escape(state)}</span>'
+        '</div>'
+        f'<div class="run-track">{escape(str(run.get("family") or "Unclassified"))}</div>'
+        f'<div class="run-id">Run ID<br><strong>{escape(run_id)}</strong></div>'
+        '</div>'
+    )
+
+
+def _insight_card(label: str, value: str, note: str) -> str:
+    return (
+        '<div class="insight-card">'
+        f'<div class="insight-label">{escape(label)}</div>'
+        f'<div class="insight-value">{escape(value)}</div>'
+        f'<div class="insight-note">{escape(note)}</div>'
+        '</div>'
+    )
 
 
 def sidebar() -> None:
@@ -304,8 +412,12 @@ def render_overview() -> None:
     )
     a, b, c = st.columns(3)
     a.metric("Current round", str(st.session_state.round), "Up to 5 rounds")
-    b.metric("Human best Sharpe", "1.08", "Mock preview")
-    c.metric("AI best Sharpe", "1.23", "Mock preview")
+    if api.mock_mode:
+        b.metric("Human best Sharpe", "1.08", "Mock preview")
+        c.metric("AI best Sharpe", "1.23", "Mock preview")
+    else:
+        b.metric("Public baselines", "4", "Real LEAN batch")
+        c.metric("AI Forge", "Reserved", "Member-D integration")
     st.subheader("How one round works")
     steps = [
         ("1", "Define and submit", "Freeze the market rules, then create a strategy from a template or LEAN Python."),
@@ -326,20 +438,37 @@ def render_overview() -> None:
 
 def render_setup() -> None:
     page_header("Step 1 of 6", "Rules & Strategy", "Set one experiment contract and submit the Human strategy. These rules apply to every strategy in the round.")
+    try:
+        universe_catalog = api.universe()
+    except AlphaForgeAPIError as exc:
+        st.error(str(exc))
+        st.info("Start the FastAPI backend, or explicitly set ALPHAFORGE_MOCK_MODE=true for the labelled demo.")
+        return
+    universe = [item["display_ticker"] for item in universe_catalog["tradable_symbols"]]
+    if "contract_symbols" not in st.session_state:
+        st.session_state.contract_symbols = list(universe)
+
     rules, strategy = st.columns([1, 1.25], gap="large")
     with rules:
         st.subheader("Experiment contract")
         start, end = st.columns(2)
-        start.date_input("Start date", date(2015, 1, 1))
-        end.date_input("End date", date(2025, 12, 31))
-        st.multiselect(
+        start_date = start.date_input("Start date", date(2016, 1, 4))
+        end_date = end.date_input("End date", date(2026, 6, 30))
+        selected_symbols = st.multiselect(
             "Universe",
-            ["AAPL", "MSFT", "NVDA", "GOOGL", "META", "AVGO", "JPM", "COST"],
-            default=["AAPL", "MSFT", "NVDA", "GOOGL", "META"],
+            universe,
+            key="contract_symbols",
         )
+        st.caption(f"{len(selected_symbols)}/30 selected · minimum 5 · standard experiment uses all 30")
+        if len(selected_symbols) < 5:
+            st.error("Select at least 5 stocks before locking the contract.")
         cash, cost = st.columns(2)
-        cash.number_input("Initial cash (USD)", value=100000, step=10000)
-        cost.number_input("Transaction cost (bps)", value=10, min_value=0)
+        initial_cash = cash.number_input("Initial cash (USD)", value=100000, step=10000)
+        transaction_cost = cost.number_input("Transaction cost (bps)", value=10, min_value=0)
+        slippage, drawdown = st.columns(2)
+        slippage_bps = slippage.number_input("Slippage (bps)", value=5, min_value=0)
+        max_drawdown_pct = drawdown.number_input("Max drawdown gate (%)", value=25, min_value=1, max_value=80)
+        data_version = st.text_input("Data version", value="tiingo-eod-v1")
         st.markdown('<div class="notice">The contract is locked when you continue. Human, baselines and AI use the same dates, data, costs and risk limits.</div>', unsafe_allow_html=True)
     with strategy:
         st.subheader("Human strategy")
@@ -351,7 +480,7 @@ def render_setup() -> None:
         )
         st.session_state.strategy_mode = mode
         if mode == "Guided Mode":
-            template = st.selectbox("Framework", ["Multi-Horizon Momentum", "SMA Risk Filter", "Mean Reversion"])
+            template = st.selectbox("Framework", ["Multi-Horizon Momentum", "SMA Risk Filter", "Mean Reversion"], key="guided_template")
             lookback, top_n, max_weight = st.columns(3)
             lookback_value = lookback.slider("Lookback days", 21, 252, 126)
             top_n_value = top_n.slider("Hold Top N", 1, 10, 3)
@@ -364,7 +493,43 @@ def render_setup() -> None:
             st.session_state.lean_code = st.text_area("LEAN Python", st.session_state.lean_code, height=330)
             st.caption("Code is not sent to any AI Designer. It is used only by validation, LEAN execution and the post-round learning module.")
     st.write("")
-    if st.button("Save contract and submit strategy", type="primary"):
+    if st.button("Lock contract and continue", type="primary", disabled=len(selected_symbols) < 5):
+        contract = {
+            "contract_version": "1.0",
+            "universe_id": universe_catalog["universe_id"],
+            "universe_version": "whitelist_v1.0",
+            "symbols": selected_symbols,
+            "start_date": start_date.isoformat(),
+            "end_date": end_date.isoformat(),
+            "initial_cash": float(initial_cash),
+            "resolution": "Daily",
+            "rebalance_frequency": "Monthly",
+            "top_k": 3,
+            "target_gross": 0.95,
+            "max_position_weight": 0.35,
+            "max_drawdown": max_drawdown_pct / 100.0,
+            "transaction_cost_bps": float(transaction_cost),
+            "slippage_bps": float(slippage_bps),
+            "long_only": True,
+            "max_leverage": 1.0,
+            "cash_allowed": True,
+            "benchmark": "SPY",
+            "risk_filter_symbol": "QQQ",
+            "risk_sma_period": 200,
+            "data_version": data_version,
+            "random_seed": 42,
+        }
+        try:
+            battle = api.create_battle({
+                "name": f"AlphaForge Round {st.session_state.round}",
+                "experiment_contract": contract,
+            })
+        except AlphaForgeAPIError as exc:
+            st.error(str(exc))
+            return
+        st.session_state.battle_id = battle["battle_id"]
+        st.session_state.contract_hash = battle["contract_hash"]
+        st.session_state.experiment_contract = contract
         st.session_state.strategy_submitted = True
         unlock_and_go(1, "validation")
 
@@ -387,10 +552,25 @@ def render_validation() -> None:
                 st.markdown(f'<div class="card" style="min-height:auto;margin-bottom:.55rem"><div class="card-title">{name}</div><div class="muted">{detail}</div></div>', unsafe_allow_html=True)
         with right:
             st.subheader("Submission summary")
-            st.markdown(f'<div class="card"><span class="tag gray">HUMAN · R{st.session_state.round}</span><div class="card-title">{st.session_state.strategy_mode}</div><div class="muted">Contract BTL-2026-071 · 2015–2025 · monthly rebalance · 10 bps cost</div></div>', unsafe_allow_html=True)
+            contract = st.session_state.experiment_contract or {}
+            st.markdown(f'<div class="card"><span class="tag gray">HUMAN · R{st.session_state.round}</span><div class="card-title">{st.session_state.strategy_mode}</div><div class="muted">Contract {st.session_state.battle_id} · {contract.get("start_date")}–{contract.get("end_date")} · monthly rebalance · {contract.get("transaction_cost_bps")} bps fee</div></div>', unsafe_allow_html=True)
             st.write("")
-            if st.button("Run admission checks", type="primary", use_container_width=True):
-                result = api.validate_code(st.session_state.battle_id, st.session_state.lean_code)
+            code_mode_unavailable = st.session_state.strategy_mode == "LEAN Code" and not api.mock_mode
+            if code_mode_unavailable:
+                st.warning("Free LEAN Code admission is intentionally deferred until the isolated validation endpoint is implemented.")
+            if st.button("Run admission checks", type="primary", use_container_width=True, disabled=code_mode_unavailable):
+                if st.session_state.strategy_mode == "Guided Mode":
+                    result = {
+                        "accepted": True,
+                        "checks": {
+                            "Guided template schema": True,
+                            "Whitelist and position limits": True,
+                            "Immutable contract": bool(st.session_state.contract_hash),
+                        },
+                        "smoke_status": "not_required_for_public_baseline_phase",
+                    }
+                else:
+                    result = api.validate_code(st.session_state.battle_id, st.session_state.lean_code)
                 st.session_state.validation_result = result
                 st.session_state.validation_complete = result["accepted"]
                 st.rerun()
@@ -399,12 +579,21 @@ def render_validation() -> None:
         {"Check": "Python syntax", "Status": "Passed", "Evidence": "AST parsed"},
         {"Check": "QCAlgorithm entry", "Status": "Passed", "Evidence": "Entry class found"},
         {"Check": "Restricted capabilities", "Status": "Passed", "Evidence": "No blocked calls"},
-        {"Check": "LEAN smoke test", "Status": "Passed", "Evidence": "Mock run completed"},
+        {"Check": "Experiment contract", "Status": "Passed", "Evidence": f"sha256:{st.session_state.contract_hash[:12]}…"},
     ]
     st.success("Admission passed. The Human strategy version is now frozen for this round.")
     st.dataframe(rows, use_container_width=True, hide_index=True)
-    if st.button("Run Human and baseline backtests", type="primary"):
-        st.session_state.baseline_complete = True
+    if st.button("Run four public baselines", type="primary"):
+        if api.mock_mode:
+            st.session_state.baseline_complete = True
+            unlock_and_go(2, "baselines")
+        try:
+            batch = api.run_baselines(st.session_state.battle_id)
+        except AlphaForgeAPIError as exc:
+            st.error(str(exc))
+            return
+        st.session_state.baseline_batch_id = batch["batch_id"]
+        st.session_state.baseline_complete = batch.get("state") == "completed"
         unlock_and_go(2, "baselines")
 
 
@@ -413,29 +602,282 @@ def render_baselines() -> None:
         return
     page_header("Step 3 of 6", "Baseline Comparison", "Understand the four public reference strategies and compare them with your frozen result.")
     st.markdown('<div class="notice"><b>Information boundary:</b> this page is visible to you. AI Designers receive the four baseline results only; your row and all Human analysis are removed from their context.</div>', unsafe_allow_html=True)
-    frame = RESULTS.iloc[:5]
-    human = frame.iloc[0]
-    a, b, c, d = st.columns(4)
-    a.metric("Human Sharpe", f"{human.Sharpe:.2f}", "+0.12 vs best baseline")
-    b.metric("CAGR", f"{human.CAGR:.1f}%")
-    c.metric("Max drawdown", f"{human.MDD:.1f}%")
-    d.metric("Turnover", f"{human.Turnover:.1f}%")
-    chart, explanation = st.columns([1.5, 1], gap="large")
-    with chart:
-        st.plotly_chart(metric_chart(frame, "Sharpe"), use_container_width=True)
-    with explanation:
-        st.subheader("What this tells you")
-        st.markdown('<div class="card"><div class="card-title">Your signal adds value</div><div class="muted">It leads all four public baselines on risk-adjusted return in this Mock result. The remaining concern is drawdown rather than raw return.</div></div>', unsafe_allow_html=True)
-        st.write("")
-        st.markdown('<div class="card"><div class="card-title">Sharpe is not the whole score</div><div class="muted">The final judge also checks drawdown, turnover, robustness and the shared experiment contract.</div></div>', unsafe_allow_html=True)
-    st.subheader("Four public baselines")
-    cols = st.columns(4)
-    for col, (no, name, idea, lesson, recipe) in zip(cols, BASELINE_LESSONS):
-        col.markdown(f'<div class="card"><span class="tag gray">BASELINE {no}</span><div class="card-title">{name}</div><div class="muted">{idea}</div><br><div class="muted"><b>Lesson:</b> {lesson}</div><br><span class="tag blue">{recipe}</span></div>', unsafe_allow_html=True)
-    st.write("")
-    if st.button("Freeze public evidence and generate AI candidates", type="primary"):
-        st.session_state.candidates_complete = True
-        unlock_and_go(3, "candidates")
+    if api.mock_mode:
+        frame = RESULTS.iloc[1:5]
+        st.plotly_chart(
+            metric_chart(frame, "Sharpe", title="Risk-adjusted return (mock preview)"),
+            use_container_width=True,
+        )
+        st.caption("Labelled demo values. Set ALPHAFORGE_MOCK_MODE=false for real LEAN evidence.")
+        return
+
+    try:
+        batch = api.baselines(st.session_state.battle_id, refresh=True)
+    except AlphaForgeAPIError as exc:
+        st.error(str(exc))
+        return
+    if not batch:
+        st.warning("No baseline batch exists for this battle.")
+        return
+
+    batch_state = str(batch.get("state") or "unknown")
+    batch_state_class = _status_class(batch_state)
+    st.markdown(
+        '<div class="batch-bar">'
+        '<div class="batch-meta">'
+        f'<strong>Batch {escape(str(batch["batch_id"]))}</strong><br>'
+        f'Contract sha256:{escape(str(batch["contract_hash"])[:12])}… · '
+        'all strategies share one immutable experiment contract'
+        '</div>'
+        f'<span class="status-pill status-{batch_state_class}">{escape(batch_state)}</span>'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+    status_columns = st.columns(4)
+    for column, run in zip(status_columns, batch["runs"]):
+        column.markdown(_run_card(run), unsafe_allow_html=True)
+    if batch.get("error"):
+        st.error(batch["error"])
+
+    if batch["state"] in {"queued", "running", "submitting"}:
+        st.info("LEAN Worker runs one job at a time. Refresh to retrieve the latest normalized evidence.")
+        if st.button("Refresh baseline jobs", type="primary"):
+            st.rerun()
+        return
+
+    completed_runs = [run for run in batch["runs"] if run.get("summary")]
+    if not completed_runs:
+        st.error("The batch finished without comparable results. Review the run errors, then retry.")
+        if st.button("Retry four baselines"):
+            try:
+                new_batch = api.run_baselines(st.session_state.battle_id)
+                st.session_state.baseline_batch_id = new_batch["batch_id"]
+                st.rerun()
+            except AlphaForgeAPIError as exc:
+                st.error(str(exc))
+        return
+
+    records = []
+    for run in completed_runs:
+        summary = run["summary"]
+        records.append({
+            "Strategy": run["display_name"],
+            "Track": run["family"],
+            "Status": run["state"],
+            "Sharpe": summary.get("sharpe_ratio"),
+            "CAGR (%)": None if summary.get("cagr") is None else summary["cagr"] * 100,
+            "Max drawdown (%)": None if summary.get("maximum_drawdown") is None else summary["maximum_drawdown"] * 100,
+            "Turnover (%)": None if summary.get("portfolio_turnover") is None else summary["portfolio_turnover"] * 100,
+            "Fees (USD)": summary.get("total_fees"),
+            "Orders": summary.get("total_orders"),
+            "Eligible": run["eligible_for_comparison"],
+        })
+    frame = pd.DataFrame(records)
+
+    rankable = frame["Eligible"].fillna(False) & frame["Sharpe"].notna()
+    frame.insert(0, "Rank", pd.Series(pd.NA, index=frame.index, dtype="Int64"))
+    frame.loc[rankable, "Rank"] = (
+        frame.loc[rankable, "Sharpe"].rank(method="min", ascending=False).astype("Int64")
+    )
+
+    insight_columns = st.columns(4)
+    if rankable.any():
+        best_sharpe = frame.loc[frame.loc[rankable, "Sharpe"].idxmax()]
+        insight_columns[0].markdown(
+            _insight_card(
+                "Highest Sharpe",
+                f'{best_sharpe["Sharpe"]:.3f}',
+                str(best_sharpe["Strategy"]),
+            ),
+            unsafe_allow_html=True,
+        )
+    else:
+        insight_columns[0].markdown(
+            _insight_card("Highest Sharpe", "—", "No comparable value"),
+            unsafe_allow_html=True,
+        )
+
+    drawdown_rows_with_values = frame.dropna(subset=["Max drawdown (%)"])
+    if not drawdown_rows_with_values.empty:
+        lowest_drawdown = drawdown_rows_with_values.loc[
+            drawdown_rows_with_values["Max drawdown (%)"].idxmin()
+        ]
+        insight_columns[1].markdown(
+            _insight_card(
+                "Lowest drawdown",
+                f'{lowest_drawdown["Max drawdown (%)"]:.2f}%',
+                str(lowest_drawdown["Strategy"]),
+            ),
+            unsafe_allow_html=True,
+        )
+    else:
+        insight_columns[1].markdown(
+            _insight_card("Lowest drawdown", "—", "No comparable value"),
+            unsafe_allow_html=True,
+        )
+
+    fee_rows_with_values = frame.dropna(subset=["Fees (USD)"])
+    if not fee_rows_with_values.empty:
+        lowest_fees = fee_rows_with_values.loc[fee_rows_with_values["Fees (USD)"].idxmin()]
+        insight_columns[2].markdown(
+            _insight_card(
+                "Lowest fees",
+                f'${lowest_fees["Fees (USD)"]:,.2f}',
+                str(lowest_fees["Strategy"]),
+            ),
+            unsafe_allow_html=True,
+        )
+    else:
+        insight_columns[2].markdown(
+            _insight_card("Lowest fees", "—", "No comparable value"),
+            unsafe_allow_html=True,
+        )
+
+    comparable_count = int(frame["Eligible"].fillna(False).sum())
+    insight_columns[3].markdown(
+        _insight_card(
+            "Comparable evidence",
+            f"{comparable_count} / 4",
+            "Completed and contract-eligible",
+        ),
+        unsafe_allow_html=True,
+    )
+
+    st.subheader("Normalized LEAN scorecard")
+    st.caption(
+        "Rank uses Sharpe among eligible runs. Higher Sharpe/CAGR is better; "
+        "lower maximum drawdown, turnover and fees indicate less risk or execution burden."
+    )
+    st.dataframe(
+        frame,
+        use_container_width=True,
+        hide_index=True,
+        row_height=44,
+        column_config={
+            "Rank": st.column_config.NumberColumn("Rank", help="Sharpe rank among eligible baselines", format="%d", width="small"),
+            "Strategy": st.column_config.TextColumn("Strategy", width="large"),
+            "Track": st.column_config.TextColumn("Track", width="medium"),
+            "Status": st.column_config.TextColumn("Status", width="small"),
+            "Sharpe": st.column_config.NumberColumn("Sharpe ↑", help="Risk-adjusted return; higher is better", format="%.3f"),
+            "CAGR (%)": st.column_config.NumberColumn("CAGR ↑", help="Annualized compound return", format="%.2f%%"),
+            "Max drawdown (%)": st.column_config.NumberColumn("Max drawdown ↓", help="Largest peak-to-trough loss; lower is better", format="%.2f%%"),
+            "Turnover (%)": st.column_config.NumberColumn("Turnover ↓", help="Portfolio turnover reported by LEAN", format="%.2f%%"),
+            "Fees (USD)": st.column_config.NumberColumn("Fees ↓", help="Total simulated transaction fees", format="$%.2f"),
+            "Orders": st.column_config.NumberColumn("Orders", format="%d"),
+            "Eligible": st.column_config.CheckboxColumn("Eligible", help="Passed result and contract checks"),
+        },
+    )
+
+    equity_rows = []
+    drawdown_rows = []
+    for run in completed_runs:
+        curve = run.get("performance", {}).get("equity_curve", [])
+        first_value = next((float(point.get("portfolio_value")) for point in curve if point.get("portfolio_value")), None)
+        if first_value:
+            equity_rows.extend({
+                "Time": point.get("time"),
+                "Normalized value": float(point.get("portfolio_value", 0)) / first_value,
+                "Strategy": run["display_name"],
+            } for point in curve if point.get("portfolio_value") is not None)
+        drawdown_rows.extend({
+            "Time": point.get("time"),
+            "Drawdown (%)": -abs(float(point.get("drawdown", 0)) * 100),
+            "Strategy": run["display_name"],
+        } for point in run.get("performance", {}).get("drawdown_curve", []))
+
+    charts = st.tabs([
+        "Performance",
+        "Risk & cost",
+        "Equity curves",
+        "Drawdown curves",
+        "Baseline lessons",
+    ])
+    with charts[0]:
+        performance_columns = st.columns(2)
+        with performance_columns[0]:
+            st.plotly_chart(
+                metric_chart(frame, "Sharpe", title="Sharpe ratio · higher is better"),
+                use_container_width=True,
+            )
+        with performance_columns[1]:
+            st.plotly_chart(
+                metric_chart(frame, "CAGR (%)", title="CAGR · higher is better", suffix="%"),
+                use_container_width=True,
+            )
+    with charts[1]:
+        risk_columns = st.columns(2)
+        with risk_columns[0]:
+            st.plotly_chart(
+                metric_chart(frame, "Max drawdown (%)", title="Maximum drawdown · lower is better", suffix="%"),
+                use_container_width=True,
+            )
+        with risk_columns[1]:
+            st.plotly_chart(
+                metric_chart(frame, "Turnover (%)", title="Portfolio turnover · lower is better", suffix="%"),
+                use_container_width=True,
+            )
+        st.plotly_chart(
+            metric_chart(frame, "Fees (USD)", title="Total simulated fees · lower is better", suffix=" USD", height=280),
+            use_container_width=True,
+        )
+    with charts[2]:
+        if equity_rows:
+            figure = px.line(
+                pd.DataFrame(equity_rows),
+                x="Time",
+                y="Normalized value",
+                color="Strategy",
+                color_discrete_sequence=BASELINE_PALETTE,
+            )
+            figure.update_traces(line=dict(width=2.4))
+            figure.update_layout(title="Growth of $1 under the shared contract")
+            st.plotly_chart(style_figure(figure, 390, legend=True), use_container_width=True)
+        else:
+            st.info("No equity-curve points were returned for this batch.")
+    with charts[3]:
+        if drawdown_rows:
+            figure = px.line(
+                pd.DataFrame(drawdown_rows),
+                x="Time",
+                y="Drawdown (%)",
+                color="Strategy",
+                color_discrete_sequence=BASELINE_PALETTE,
+            )
+            figure.update_traces(line=dict(width=2.2))
+            figure.update_layout(title="Peak-to-trough drawdown depth")
+            st.plotly_chart(style_figure(figure, 390, legend=True), use_container_width=True)
+        else:
+            st.info("No drawdown-curve points were returned for this batch.")
+    with charts[4]:
+        for row in [BASELINE_LESSONS[:2], BASELINE_LESSONS[2:]]:
+            cols = st.columns(2)
+            for col, (no, name, idea, lesson, recipe) in zip(cols, row):
+                col.markdown(
+                    f'<div class="card"><span class="tag gray">BASELINE {no}</span>'
+                    f'<div class="card-title">{name}</div><div class="muted">{idea}</div><br>'
+                    f'<div class="muted"><b>Lesson:</b> {lesson}</div><br>'
+                    f'<span class="tag blue">{recipe}</span></div>',
+                    unsafe_allow_html=True,
+                )
+            st.write("")
+
+    all_eligible = (
+        batch["state"] == "completed"
+        and len(completed_runs) == 4
+        and all(run["eligible_for_comparison"] for run in completed_runs)
+    )
+    if all_eligible:
+        st.success("Public baseline evidence is real, normalized, and bound to the frozen contract.")
+    else:
+        st.warning("Some baseline evidence is incomplete or ineligible. Retry before freezing the public evidence bundle.")
+        if st.button("Retry incomplete baseline batch"):
+            try:
+                new_batch = api.run_baselines(st.session_state.battle_id)
+                st.session_state.baseline_batch_id = new_batch["batch_id"]
+                st.rerun()
+            except AlphaForgeAPIError as exc:
+                st.error(str(exc))
+    st.button("AI Forge awaiting member-D Agent Runtime", disabled=True, use_container_width=True)
 
 
 def render_candidates() -> None:
@@ -594,12 +1036,17 @@ def render_review() -> None:
 
 def render_system() -> None:
     page_header("Utility", "Runs & System", "Operational status is available at any time and does not change workflow progress.")
+    try:
+        health = api.health()
+    except AlphaForgeAPIError as exc:
+        health = {"backend": "unavailable", "lean_worker": {"status": "unavailable"}, "agent_runtime": "not_configured"}
+        st.error(str(exc))
     cols = st.columns(4)
     services = [
         ("Frontend", "Healthy"),
-        ("Backend", "Reserved" if api.mock_mode else "Healthy"),
-        ("Agent runtime", "Mock" if api.mock_mode else "Healthy"),
-        ("LEAN Worker", "Reserved" if api.mock_mode else "Healthy"),
+        ("Backend", "Demo" if api.mock_mode else health.get("backend", "unknown")),
+        ("Agent runtime", "Mock" if api.mock_mode else health.get("agent_runtime", "not_configured")),
+        ("LEAN Worker", "Demo" if api.mock_mode else health.get("lean_worker", {}).get("status", "unknown")),
     ]
     for col, (name, status) in zip(cols, services):
         col.metric(name, status)

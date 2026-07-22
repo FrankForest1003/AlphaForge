@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import py_compile
 import subprocess
 from pathlib import Path
@@ -60,7 +61,9 @@ for path in (ROOT / "strategies/registry").glob("*.json"):
 
 for required_strategy in [
     "classic_30_stock_top3_momentum_v1",
+    "classic_30_stock_mean_reversion_v1",
     "ml_30_stock_gradient_boosting_v1",
+    "hybrid_30_stock_ml_momentum_min_variance_v1",
 ]:
     if required_strategy not in registry:
         raise SystemExit(f"Missing required strategy: {required_strategy}")
@@ -86,8 +89,9 @@ if service.get("platform") != "linux/amd64":
 if "127.0.0.1:" not in service["ports"][0]:
     raise SystemExit("Service must bind to localhost by default")
 
+bash_executable = os.environ.get("ALPHAFORGE_BASH", "bash")
 for path in list((ROOT / "scripts").glob("*.sh")) + list((ROOT / "docker").glob("*.sh")):
-    subprocess.run(["bash", "-n", str(path)], check=True)
+    subprocess.run([bash_executable, "-n", str(path)], check=True)
 
 for forbidden in [ROOT / ".env"]:
     if forbidden.exists():

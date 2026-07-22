@@ -1,4 +1,4 @@
-from .client import AlphaForgeAPI
+from .client import AlphaForgeAPI, AlphaForgeAPIError
 
-__all__ = ["AlphaForgeAPI"]
+__all__ = ["AlphaForgeAPI", "AlphaForgeAPIError"]
 

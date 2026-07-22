@@ -83,12 +83,72 @@ def replace_jsonc_scalar(text: str, key: str, value: Any) -> str:
 def replace_jsonc_container(text: str, key: str, value: Any) -> str:
     rendered = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
     pattern = re.compile(
-        rf'(?m)^(?P<indent>\s*)"{re.escape(key)}"\s*:\s*(?P<old>\{{[^\n]*\}}|\[[^\n]*\])'
+        rf'(?m)^(?P<prefix>\s*"{re.escape(key)}"\s*:\s*)(?P<opening>[{{[])'
     )
-    updated, count = pattern.subn(lambda m: f'{m.group("indent")}"{key}": {rendered}', text, count=1)
-    if count != 1:
+    match = pattern.search(text)
+    if match is None:
         raise WorkerError(f"Active config key not found: {key}")
-    return updated
+
+    # LEAN's stock config.json stores ``parameters`` as a multi-line JSONC
+    # object containing comments. A one-line regex silently missed that block,
+    # so requested experiment parameters were recorded in the manifest but the
+    # engine ran strategy defaults. Find the balanced container while ignoring
+    # braces in strings and JSONC comments, then replace only its value.
+    opening = match.group("opening")
+    closing = "}" if opening == "{" else "]"
+    start = match.start("opening")
+    depth = 0
+    in_string = False
+    escaped = False
+    line_comment = False
+    block_comment = False
+
+    index = start
+    while index < len(text):
+        char = text[index]
+        next_char = text[index + 1] if index + 1 < len(text) else ""
+
+        if line_comment:
+            if char in "\r\n":
+                line_comment = False
+            index += 1
+            continue
+        if block_comment:
+            if char == "*" and next_char == "/":
+                block_comment = False
+                index += 2
+            else:
+                index += 1
+            continue
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            index += 1
+            continue
+        if char == "/" and next_char == "/":
+            line_comment = True
+            index += 2
+            continue
+        if char == "/" and next_char == "*":
+            block_comment = True
+            index += 2
+            continue
+        if char == '"':
+            in_string = True
+        elif char == opening:
+            depth += 1
+        elif char == closing:
+            depth -= 1
+            if depth == 0:
+                end = index + 1
+                return text[:start] + rendered + text[end:]
+        index += 1
+
+    raise WorkerError(f"Unterminated config container: {key}")
 
 
 def build_job_config(template: str, algorithm_class: str, algorithm_file: Path, data_folder: Path, parameters: dict[str, Any]) -> str:

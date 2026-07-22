@@ -2,7 +2,7 @@
 
 Freeze these contracts before the four development tracks diverge:
 
-1. `project_configuration.schema.json`
+1. `experiment_contract_v1.schema.json` (implemented; 5–30 whitelist stocks)
 2. `strategy_manifest.schema.json`
 3. `alphaforge_dsl_v1.schema.json`
 4. `dsl_validation_result.schema.json`
