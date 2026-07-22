@@ -51,3 +51,10 @@ def test_ml_history_access_avoids_pandas_mapper_missing_key_exception():
     assert "history.loc[symbol]" not in ml
     assert "history.xs(symbol" not in ml
     assert "history_not_available_in_requested_window" in ml
+
+
+def test_guided_low_volatility_uses_safe_history_and_staged_execution():
+    guided = _text("strategies/approved/guided_30_stock_low_volatility/main.py")
+    assert "af_split_history_frames(history)" in guided
+    assert "self.af_rebalance_to_weights(" in guided
+    assert "ALPHAFORGE_GUIDED_30_LOW_VOLATILITY_COMPLETED" in guided

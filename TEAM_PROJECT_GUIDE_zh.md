@@ -2,7 +2,9 @@
 
 > 更新时间：2026-07-22
 > 适用对象：AlphaForge 全体组员、后续接入项目的开发者
-> 当前阶段：ExperimentContract、四基线后端批处理和真实 Baseline Classroom 已打通；AI Agent Runtime 等待成员 D 接入
+> 当前阶段：ExperimentContract、Guided/LEAN Code Human、代码准入、四基线批处理和真实 Baseline Classroom 已打通；AI Agent Runtime 等待成员 D 接入
+
+需要快速接手时，先读 [`docs/CURRENT_IMPLEMENTATION_HANDOFF_zh.md`](docs/CURRENT_IMPLEMENTATION_HANDOFF_zh.md)，再按本文查完整操作和设计背景。
 
 ## 1. 先看结论
 
@@ -13,8 +15,8 @@
 ```text
 Streamlit 前端
   → 创建并冻结 ExperimentContract
-  → FastAPI 创建 Battle 和四基线 Batch
-  → 本地 LEAN Worker 串行执行四个策略
+  → FastAPI 创建 Battle 和五方比较 Batch
+  → 本地 LEAN Worker 串行执行已冻结的 Guided/Code Human 与四个公共基线
   → 解析并标准化指标、净值曲线和回撤曲线
   → Baseline Classroom 展示与重试
 ```
@@ -26,7 +28,7 @@ Streamlit 前端
 | 目录 | 当前用途 | 注意事项 |
 |---|---|---|
 | `frontend/` | Streamlit 页面、实验配置、基线状态和结果展示 | 不直接执行 LEAN，不自行计算最终指标 |
-| `backend/` | FastAPI、ExperimentContract、Battle/Batch 编排、SQLite 持久化 | 只编排任务，不包含策略公式 |
+| `backend/` | FastAPI、ExperimentContract、代码静态准入、Battle/Batch 编排、SQLite 持久化 | 不直接执行 LEAN，也不将 Human 代码暴露给 AI Designer |
 | `lean_worker/` | 隔离的本地 LEAN Runtime、策略注册、数据、任务和结果解析 | 真实数据、任务和结果目录不会提交到 Git |
 | `shared/contracts/` | 跨模块 JSON Schema | 已实现 ExperimentContract；其余合同应评审后再冻结 |
 | `qc_strategies/` | 团队维护的策略来源和成员贡献 | 长期应作为策略 source of truth |
@@ -171,22 +173,25 @@ docker compose down
 2. 选择股票池，允许从 30 股票白名单中选择 5–30 只；
 3. 正式标准实验应使用完整 30 只股票；
 4. 设置初始资金、交易费、滑点和最大回撤门槛；
-5. 当前建议优先使用 `Guided Mode`；
-6. 点击 `Lock contract and continue`。
+5. 在 `Guided Mode` 中选择 Multi-Horizon Momentum、Risk-Adjusted Momentum 或 Low Volatility；
+6. 设置回看期、Top N 和单股仓位上限；
+7. 点击 `Lock contract and continue`。
 
 合同冻结后，Human、四基线和后续 AI 候选必须使用相同实验条件。后端会计算合同 SHA-256，避免某个策略暗中改变日期、费用或股票池。
 
-当前 Live 模式下的自由 `LEAN Code` admission endpoint 尚未实现，因此该入口会被禁用；这不影响四公共基线运行。
+自由 `LEAN Code` 已接入 Live admission：代码随 Battle 冻结并记录 SHA-256，先经过 AST 语法、入口函数、合同参数和受限能力检查，再进入隔离 LEAN 短冒烟；只有冒烟 `completed` 才能启动完整 Human + 四基线批处理。通过只表示代码可安全进入当前执行链路，不表示策略一定盈利。
 
 ### Step 2：Admission Check
 
-在 Guided Mode 下点击 `Run admission checks`，确认股票白名单、仓位限制和不可变合同检查通过，然后点击 `Run four public baselines`。
+在 Guided Mode 下点击 `Run admission checks`，确认模板、股票白名单、仓位限制和不可变合同检查通过，然后点击 `Run your strategy + four public baselines`。
 
-当前 Guided Human 策略主要用于锁定产品流程，还没有作为第五条真实 LEAN 策略进入最终比较。不要在汇报中把它描述成“已完成 Human 全量回测”。
+Guided Human 会被编译为受控的已批准策略模板，并作为独立的第五条任务进入真实 LEAN。结果具有独立 Run ID、结果哈希、订单、费用和曲线，不使用模拟指标。
+
+在 `LEAN Code` 下，编辑器会预填一份可运行的 `UserStrategy(AlphaForgeBaseAlgorithm)`。不要改入口类名、三个 hook、合同参数读取、执行成本 helper 或完成标记。第一次点击会做静态检查并提交隔离 Smoke；状态为 `queued/running` 时点击 `Refresh isolated LEAN smoke`，只有 `completed` 后才会出现完整批处理入口。
 
 ### Step 3：Baseline Comparison
 
-LEAN Worker 一次只运行一个任务，四策略会串行执行。页面会显示：
+LEAN Worker 一次只运行一个任务，Human 与四基线共五个策略会串行执行。页面会显示：
 
 - 每个策略的任务状态和 Worker Run ID；
 - Sharpe、CAGR、MDD、Turnover、Fees；
@@ -256,7 +261,7 @@ results/<run_id>/alphaforge_details.json    曲线、持仓、订单、信号和
 
 ### 7.2 后端状态
 
-Battle、ExperimentContract、Batch 和四条 Run 记录保存在 Docker 命名卷 `alphaforge_backend-data` 中的 SQLite 数据库。旧失败任务不会因为新重试而消失。
+Battle、ExperimentContract、代码哈希/准入证据、Batch 和五条 Run 记录保存在 Docker 命名卷 `alphaforge_backend-data` 中的 SQLite 数据库。旧失败任务不会因为新重试而消失；原始 Human 代码不会出现在 `BattleView` 或未来 AI 公共证据 Bundle 中。
 
 ## 8. 常用 API
 
@@ -266,8 +271,11 @@ Battle、ExperimentContract、Batch 和四条 Run 记录保存在 Docker 命名�
 | GET | `/v1/catalog/universe` | 30 股票白名单和最少选择数 |
 | GET | `/v1/catalog/baselines` | 四基线注册信息 |
 | POST | `/v1/battles` | 创建并冻结 ExperimentContract |
+| GET | `/v1/catalog/guided-strategies` | 查询三个受控 Guided Human 模板 |
 | GET | `/v1/battles/{battle_id}` | 查询 Battle |
-| POST | `/v1/battles/{battle_id}/baselines/run` | 创建新的四基线 Batch |
+| POST | `/v1/strategies/code/validate` | 对 Battle 中冻结的代码做静态检查并提交隔离 LEAN Smoke |
+| GET | `/v1/strategies/code/validate/{battle_id}` | 刷新代码 Smoke 和准入状态 |
+| POST | `/v1/battles/{battle_id}/baselines/run` | 创建新的 Human + 四基线比较 Batch |
 | GET | `/v1/battles/{battle_id}/baselines` | 查询并刷新最新 Batch |
 | GET | `/v1/baseline-batches/{batch_id}` | 按 Batch ID 查询 |
 | POST | `/v1/battles/{battle_id}/rounds/{round_id}/ai-forge` | 成员 D 待实现；当前返回 501 |
@@ -355,6 +363,10 @@ lean_worker/workspace/results/<run_id>/result.json
 - [x] SPY、QQQ 作为分析依赖；
 - [x] 不可变 ExperimentContract 和 SHA-256；
 - [x] FastAPI Battle、Batch、Run 编排及 SQLite 持久化；
+- [x] Multi-Horizon Momentum、Risk-Adjusted Momentum、Low Volatility 三个非基线 Guided Human 模板；
+- [x] Guided Human 独立真实 LEAN Run、结果哈希和标准化证据；
+- [x] 自由 LEAN Code 的不可变代码哈希、AST 受限检查和隔离 LEAN Smoke；
+- [x] Code Human 作为独立第五条任务进入真实 Baseline Comparison；
 - [x] 四基线统一参数批量提交；
 - [x] 两个传统、一个纯 ML、一个 Hybrid 基线；
 - [x] 本地真实 LEAN Worker 和 Tiingo 数据；
@@ -363,9 +375,17 @@ lean_worker/workspace/results/<run_id>/result.json
 - [x] Streamlit Live Baseline Classroom；
 - [x] 失败批次审计保留和前端重试；
 - [x] 9 篇论文归档及研究索引；
-- [x] 四策略真实短回测均已达到 `completed + eligible`；
-- [x] 当前自动化测试 23 项全部通过；
+- [x] 三个 Guided 模板均完成真实短回测并达到 `completed + eligible`；
+- [x] Code Human 与四基线真实五任务 Batch 均达到 `completed + eligible`；
+- [x] 当前自动化测试 32 项全部通过；
 - [x] frontend、backend、lean-worker 三容器健康运行。
+
+最近一次工程验证证据（仅用于确认链路，不作为正式业绩结论）：
+
+- Code Battle：`btl-730ca5f0006b`；
+- Code Smoke Run：`20260722-080721-1048ad3f`；
+- Human + 四基线 Batch：`base-958138878df9`，五条 Run 全部 `completed + eligible`；
+- Guided Runs：Multi-Horizon `20260722-080849-99ff5007`、Risk-Adjusted `20260722-080932-75a2c8e2`、Low Volatility `20260722-080932-40bbb4b7`。
 
 最近修复的关键问题：
 
@@ -375,8 +395,6 @@ lean_worker/workspace/results/<run_id>/result.json
 
 ### 11.2 当前未完成或仅为原型
 
-- [ ] Guided Human 策略的真实全量 LEAN 回测；
-- [ ] 自由 LEAN Code 的隔离 Admission、静态检查和 Smoke Endpoint；
 - [ ] 成员 D 的 Baseline Analyst、Traditional/ML/Hybrid Designer、Risk Reviewer、Validator、Code Generation 和 Repair Runtime；
 - [ ] 三个 AI Candidate 的真实 Spec → Code → LEAN 闭环；
 - [ ] AI 信息边界的自动化泄漏测试；
@@ -389,7 +407,7 @@ lean_worker/workspace/results/<run_id>/result.json
 
 ### 11.3 不要误报的内容
 
-- 当前已经验证的是四基线真实执行链路，不代表策略已经取得优秀或稳健收益；
+- 当前已经验证的是 Guided/Code Human 加四基线的真实执行链路，不代表任何策略已经取得优秀或稳健收益；
 - 短区间 Smoke 结果不能用作论文或展示中的正式性能结论；
 - AI Candidate 页面中的现有静态内容不是成员 D Runtime 的真实输出；
 - `agent_runtime=not_configured` 不影响基线，但说明端到端 AI 优化项目尚未完成；
@@ -399,12 +417,12 @@ lean_worker/workspace/results/<run_id>/result.json
 
 ### 成员 C 当前建议任务
 
-1. 使用修复后的系统重新运行完整 30 股票四基线；
+1. 使用修复后的系统重新运行完整 30 股票 Human 加四基线；
 2. 冻结正式 ExperimentContract、数据版本和 Run IDs；
 3. 检查四策略指标、订单、费用、曲线和比较资格；
 4. 完善 Baseline Classroom 的解释文本、错误展开和结果导出；
 5. 为成员 D 准备只包含“合同 + 四基线公共证据”的输入 Bundle；
-6. 与团队确认 Human 初始策略由哪个 Guided 模板真实执行。
+6. 冻结展示所用的 Guided 模板及参数，并记录 Human Run ID。
 
 ### 成员 D 接入要求
 

@@ -38,3 +38,12 @@ python -m streamlit run app.py
 Live mode is the default and never falls back to fabricated metrics. Set
 `ALPHAFORGE_MOCK_MODE=true` only for the explicitly labelled UI demo.
 
+Guided Mode offers Multi-Horizon Momentum, Risk-Adjusted Momentum, and Low Volatility.
+The selected template is run as an independent real LEAN Human job and displayed
+beside the four public baselines under the same immutable experiment contract.
+
+LEAN Code starts from a runnable `UserStrategy(AlphaForgeBaseAlgorithm)` example.
+The submitted source is frozen with the Battle, statically checked for its API
+contract and restricted capabilities, then admitted only after an isolated LEAN
+smoke run completes. Passing admission proves executability, not profitability.
+

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from datetime import date
 from html import escape
+from math import ceil
 
 import pandas as pd
 import plotly.express as px
@@ -41,6 +42,7 @@ def init_state() -> None:
         "battle_id": None,
         "contract_hash": None,
         "experiment_contract": None,
+        "guided_strategy": None,
         "baseline_batch_id": None,
         "round": 1,
         "strategy_mode": "Guided Mode",
@@ -238,6 +240,10 @@ def inject_css() -> None:
             min-height: 146px; padding: 1rem; background: var(--surface); border: 1px solid var(--border);
             border-radius: 14px; box-shadow: 0 2px 8px rgba(23,32,51,.035);
           }
+          .run-card-human {
+            border-color: #8fc8bf; background: linear-gradient(115deg, #ffffff, #edf8f5);
+            box-shadow: 0 3px 12px rgba(15,118,110,.08);
+          }
           .run-card-top { display:flex; align-items:flex-start; justify-content:space-between; gap:.55rem; }
           .run-name { color: var(--ink); font-size: 1rem; font-weight: 760; line-height: 1.38; }
           .run-id { color: #66778a; font-size: .75rem; margin-top: .62rem; overflow-wrap: anywhere; }
@@ -315,7 +321,7 @@ def style_figure(fig, height: int = 330, legend: bool = False):
     return fig
 
 
-BASELINE_PALETTE = ["#2563EB", "#0F766E", "#7C3AED", "#D97706"]
+BASELINE_PALETTE = ["#0F766E", "#2563EB", "#0891B2", "#7C3AED", "#D97706"]
 
 
 def metric_chart(
@@ -332,8 +338,8 @@ def metric_chart(
         x=metric,
         y="Strategy",
         orientation="h",
-        color="Strategy",
-        color_discrete_sequence=BASELINE_PALETTE,
+        color="Track",
+        color_discrete_map=COLORS,
         text=metric,
     )
     fig.update_traces(
@@ -359,8 +365,9 @@ def _run_card(run: dict) -> str:
     state = str(run.get("state") or "unknown")
     state_class = _status_class(state)
     run_id = str(run.get("worker_run_id") or "Waiting for Worker ID")
+    card_class = "run-card run-card-human" if run.get("role") == "human" else "run-card"
     return (
-        '<div class="run-card">'
+        f'<div class="{card_class}">'
         '<div class="run-card-top">'
         f'<div class="run-name">{escape(str(run.get("display_name") or "Baseline"))}</div>'
         f'<span class="status-pill status-{state_class}">{escape(state)}</span>'
@@ -440,6 +447,7 @@ def render_setup() -> None:
     page_header("Step 1 of 6", "Rules & Strategy", "Set one experiment contract and submit the Human strategy. These rules apply to every strategy in the round.")
     try:
         universe_catalog = api.universe()
+        guided_catalog = api.guided_strategies()
     except AlphaForgeAPIError as exc:
         st.error(str(exc))
         st.info("Start the FastAPI backend, or explicitly set ALPHAFORGE_MOCK_MODE=true for the labelled demo.")
@@ -479,17 +487,74 @@ def render_setup() -> None:
             index=0 if st.session_state.strategy_mode == "Guided Mode" else 1,
         )
         st.session_state.strategy_mode = mode
+        guided_template_id = "multi_horizon_momentum"
+        guided_template_name = "Multi-Horizon Momentum"
+        lookback_value = 126
+        top_n_value = 3
+        max_weight_value = 35
         if mode == "Guided Mode":
-            template = st.selectbox("Framework", ["Multi-Horizon Momentum", "SMA Risk Filter", "Mean Reversion"], key="guided_template")
+            template_by_name = {
+                item["display_name"]: item for item in guided_catalog
+            }
+            template_name = st.selectbox(
+                "Strategy template",
+                list(template_by_name),
+                key="guided_template",
+            )
+            template = template_by_name[template_name]
+            guided_template_id = template["template_id"]
+            guided_template_name = template_name
             lookback, top_n, max_weight = st.columns(3)
-            lookback_value = lookback.slider("Lookback days", 21, 252, 126)
-            top_n_value = top_n.slider("Hold Top N", 1, 10, 3)
-            max_weight_value = max_weight.slider("Max weight (%)", 10, 100, 35)
+            lookback_value = lookback.slider(
+                "Lookback days",
+                21,
+                252,
+                int(template["default_lookback_days"]),
+                key=f"guided-lookback-{guided_template_id}",
+                help="Historical trading days used to rank the selected stocks.",
+            )
+            top_n_max = max(3, min(10, len(selected_symbols)))
+            top_n_value = top_n.slider(
+                "Hold Top N",
+                3,
+                top_n_max,
+                3,
+                help="This is part of the shared contract and also applies to the four baselines.",
+            )
+            minimum_weight = ceil(95 / top_n_value)
+            max_weight_value = max_weight.slider(
+                "Max weight (%)",
+                minimum_weight,
+                100,
+                max(35, minimum_weight),
+                help="Minimum adjusts automatically so Top N can reach the 95% target exposure.",
+            )
             st.markdown(
-                f'<div class="card"><span class="tag blue">LIVE SUMMARY</span><div class="card-title">{template}</div><div class="muted">Rank the universe using {lookback_value} days of history, hold the top {top_n_value}, and cap each position at {max_weight_value}%.</div></div>',
+                f'<div class="card"><span class="tag blue">GUIDED · REAL LEAN</span>'
+                f'<div class="card-title">{escape(template_name)}</div>'
+                f'<div class="muted">{escape(template["description"])}<br><br>'
+                f'<b>Your controls:</b> {lookback_value}-day lookback · Top {top_n_value} · '
+                f'{max_weight_value}% position cap.<br>'
+                f'<b>Trade-off:</b> {escape(template["best_for"])}</div></div>',
                 unsafe_allow_html=True,
             )
         else:
+            st.markdown(
+                '<div class="notice"><b>Runnable code contract.</b> Keep '
+                '<code>UserStrategy(AlphaForgeBaseAlgorithm)</code>, implement '
+                '<code>initialize_strategy</code>, <code>on_alpha_data</code> and '
+                '<code>on_alpha_end</code>, and read all dates, symbols, cash, sizing '
+                'and costs through <code>self.get_parameter</code>. Network, subprocess '
+                'and arbitrary file access are blocked.</div>',
+                unsafe_allow_html=True,
+            )
+            with st.expander("What may I edit?", expanded=False):
+                st.markdown(
+                    "Change the trailing-data score inside `rebalance()`, add LEAN "
+                    "indicators, or adjust signal filters. Do not rename the entry class "
+                    "or hooks, hard-code experiment dates/cash, bypass "
+                    "`af_configure_security`, or remove the completion marker."
+                )
             st.session_state.lean_code = st.text_area("LEAN Python", st.session_state.lean_code, height=330)
             st.caption("Code is not sent to any AI Designer. It is used only by validation, LEAN execution and the post-round learning module.")
     st.write("")
@@ -504,9 +569,9 @@ def render_setup() -> None:
             "initial_cash": float(initial_cash),
             "resolution": "Daily",
             "rebalance_frequency": "Monthly",
-            "top_k": 3,
+            "top_k": int(top_n_value),
             "target_gross": 0.95,
-            "max_position_weight": 0.35,
+            "max_position_weight": max_weight_value / 100.0,
             "max_drawdown": max_drawdown_pct / 100.0,
             "transaction_cost_bps": float(transaction_cost),
             "slippage_bps": float(slippage_bps),
@@ -520,16 +585,35 @@ def render_setup() -> None:
             "random_seed": 42,
         }
         try:
-            battle = api.create_battle({
+            battle_payload = {
                 "name": f"AlphaForge Round {st.session_state.round}",
                 "experiment_contract": contract,
-            })
+                "strategy_mode": "guided" if mode == "Guided Mode" else "code",
+            }
+            if mode == "Guided Mode":
+                battle_payload["guided_strategy"] = {
+                    "template_id": guided_template_id,
+                    "lookback_days": int(lookback_value),
+                }
+            else:
+                battle_payload["custom_code"] = st.session_state.lean_code
+            battle = api.create_battle(battle_payload)
         except AlphaForgeAPIError as exc:
             st.error(str(exc))
             return
         st.session_state.battle_id = battle["battle_id"]
         st.session_state.contract_hash = battle["contract_hash"]
         st.session_state.experiment_contract = contract
+        if mode == "Guided Mode":
+            st.session_state.guided_strategy = {
+                **(battle.get("guided_strategy") or {
+                    "template_id": guided_template_id,
+                    "lookback_days": int(lookback_value),
+                }),
+                "display_name": guided_template_name,
+            }
+        else:
+            st.session_state.guided_strategy = None
         st.session_state.strategy_submitted = True
         unlock_and_go(1, "validation")
 
@@ -544,7 +628,7 @@ def render_validation() -> None:
         with left:
             checks = [
                 ("Python syntax", "Checks that the submitted file can be parsed."),
-                ("QCAlgorithm structure", "Requires a valid algorithm class and Initialize method."),
+                ("AlphaForge structure", "Requires UserStrategy and the three controlled strategy hooks."),
                 ("Restricted capabilities", "Blocks network, subprocess and unrestricted file access."),
                 ("LEAN smoke test", "Runs a short isolated execution before the full backtest."),
             ]
@@ -553,12 +637,27 @@ def render_validation() -> None:
         with right:
             st.subheader("Submission summary")
             contract = st.session_state.experiment_contract or {}
-            st.markdown(f'<div class="card"><span class="tag gray">HUMAN · R{st.session_state.round}</span><div class="card-title">{st.session_state.strategy_mode}</div><div class="muted">Contract {st.session_state.battle_id} · {contract.get("start_date")}–{contract.get("end_date")} · monthly rebalance · {contract.get("transaction_cost_bps")} bps fee</div></div>', unsafe_allow_html=True)
+            guided = st.session_state.guided_strategy or {}
+            strategy_title = (
+                guided.get("display_name", "Guided strategy")
+                if st.session_state.strategy_mode == "Guided Mode"
+                else "Custom LEAN Python"
+            )
+            st.markdown(
+                f'<div class="card"><span class="tag gray">HUMAN · R{st.session_state.round}</span>'
+                f'<div class="card-title">{escape(str(strategy_title))}</div>'
+                f'<div class="muted">{st.session_state.strategy_mode} · '
+                f'{guided.get("lookback_days", "—")}-day lookback · '
+                f'Top {contract.get("top_k")} · {float(contract.get("max_position_weight", 0)):.0%} cap<br>'
+                f'Contract {st.session_state.battle_id} · {contract.get("start_date")}–{contract.get("end_date")} · '
+                f'{contract.get("transaction_cost_bps")} bps fee</div></div>',
+                unsafe_allow_html=True,
+            )
             st.write("")
-            code_mode_unavailable = st.session_state.strategy_mode == "LEAN Code" and not api.mock_mode
-            if code_mode_unavailable:
-                st.warning("Free LEAN Code admission is intentionally deferred until the isolated validation endpoint is implemented.")
-            if st.button("Run admission checks", type="primary", use_container_width=True, disabled=code_mode_unavailable):
+            existing = st.session_state.validation_result or {}
+            smoke_pending = existing.get("smoke_status") in {"queued", "running"}
+            action_label = "Refresh isolated LEAN smoke" if smoke_pending else "Run admission checks"
+            if st.button(action_label, type="primary", use_container_width=True):
                 if st.session_state.strategy_mode == "Guided Mode":
                     result = {
                         "accepted": True,
@@ -570,20 +669,38 @@ def render_validation() -> None:
                         "smoke_status": "not_required_for_public_baseline_phase",
                     }
                 else:
-                    result = api.validate_code(st.session_state.battle_id, st.session_state.lean_code)
+                    result = (
+                        api.code_validation(st.session_state.battle_id)
+                        if smoke_pending
+                        else api.validate_code(
+                            st.session_state.battle_id, st.session_state.lean_code
+                        )
+                    )
                 st.session_state.validation_result = result
                 st.session_state.validation_complete = result["accepted"]
                 st.rerun()
+            if existing:
+                st.caption(
+                    f"LEAN smoke: {existing.get('smoke_status', 'not submitted')}"
+                    + (
+                        f" · run {existing.get('smoke_run_id')}"
+                        if existing.get("smoke_run_id") else ""
+                    )
+                )
+                for check_name, passed in existing.get("checks", {}).items():
+                    st.write(f"{'✓' if passed else '✕'} {check_name}")
+                for error in existing.get("errors", []):
+                    st.error(error)
         return
     rows = [
         {"Check": "Python syntax", "Status": "Passed", "Evidence": "AST parsed"},
-        {"Check": "QCAlgorithm entry", "Status": "Passed", "Evidence": "Entry class found"},
+        {"Check": "UserStrategy entry", "Status": "Passed", "Evidence": "Controlled entry class found"},
         {"Check": "Restricted capabilities", "Status": "Passed", "Evidence": "No blocked calls"},
         {"Check": "Experiment contract", "Status": "Passed", "Evidence": f"sha256:{st.session_state.contract_hash[:12]}…"},
     ]
     st.success("Admission passed. The Human strategy version is now frozen for this round.")
     st.dataframe(rows, use_container_width=True, hide_index=True)
-    if st.button("Run four public baselines", type="primary"):
+    if st.button("Run your strategy + four public baselines", type="primary"):
         if api.mock_mode:
             st.session_state.baseline_complete = True
             unlock_and_go(2, "baselines")
@@ -633,8 +750,17 @@ def render_baselines() -> None:
         '</div>',
         unsafe_allow_html=True,
     )
+    human_runs = [run for run in batch["runs"] if run.get("role") == "human"]
+    baseline_runs = [run for run in batch["runs"] if run.get("role", "baseline") == "baseline"]
+    if human_runs:
+        st.markdown('<div class="section-label">Your frozen LEAN run</div>', unsafe_allow_html=True)
+        st.markdown(_run_card(human_runs[0]), unsafe_allow_html=True)
+        st.write("")
+    else:
+        st.info("This is a historical baseline-only batch. Retry to add your Guided strategy as a real LEAN run.")
+    st.markdown('<div class="section-label">Four public baselines</div>', unsafe_allow_html=True)
     status_columns = st.columns(4)
-    for column, run in zip(status_columns, batch["runs"]):
+    for column, run in zip(status_columns, baseline_runs):
         column.markdown(_run_card(run), unsafe_allow_html=True)
     if batch.get("error"):
         st.error(batch["error"])
@@ -663,6 +789,7 @@ def render_baselines() -> None:
         records.append({
             "Strategy": run["display_name"],
             "Track": run["family"],
+            "Role": "Your strategy" if run.get("role") == "human" else "Public baseline",
             "Status": run["state"],
             "Sharpe": summary.get("sharpe_ratio"),
             "CAGR (%)": None if summary.get("cagr") is None else summary["cagr"] * 100,
@@ -734,10 +861,11 @@ def render_baselines() -> None:
         )
 
     comparable_count = int(frame["Eligible"].fillna(False).sum())
+    expected_count = 5
     insight_columns[3].markdown(
         _insight_card(
             "Comparable evidence",
-            f"{comparable_count} / 4",
+            f"{comparable_count} / {expected_count}",
             "Completed and contract-eligible",
         ),
         unsafe_allow_html=True,
@@ -757,6 +885,7 @@ def render_baselines() -> None:
             "Rank": st.column_config.NumberColumn("Rank", help="Sharpe rank among eligible baselines", format="%d", width="small"),
             "Strategy": st.column_config.TextColumn("Strategy", width="large"),
             "Track": st.column_config.TextColumn("Track", width="medium"),
+            "Role": st.column_config.TextColumn("Role", width="medium"),
             "Status": st.column_config.TextColumn("Status", width="small"),
             "Sharpe": st.column_config.NumberColumn("Sharpe ↑", help="Risk-adjusted return; higher is better", format="%.3f"),
             "CAGR (%)": st.column_config.NumberColumn("CAGR ↑", help="Annualized compound return", format="%.2f%%"),
@@ -863,11 +992,13 @@ def render_baselines() -> None:
 
     all_eligible = (
         batch["state"] == "completed"
-        and len(completed_runs) == 4
+        and len(completed_runs) == expected_count
+        and len(human_runs) == 1
+        and len(baseline_runs) == 4
         and all(run["eligible_for_comparison"] for run in completed_runs)
     )
     if all_eligible:
-        st.success("Public baseline evidence is real, normalized, and bound to the frozen contract.")
+        st.success("Your strategy and all four public baselines are real, normalized, and bound to the same frozen contract.")
     else:
         st.warning("Some baseline evidence is incomplete or ineligible. Retry before freezing the public evidence bundle.")
         if st.button("Retry incomplete baseline batch"):

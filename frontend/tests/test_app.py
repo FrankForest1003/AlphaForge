@@ -17,6 +17,40 @@ def test_labelled_mock_overview_renders_without_exception(monkeypatch):
         app = AppTest.from_file(str(FRONTEND_ROOT / "app.py"))
         app.run(timeout=30)
         assert not app.exception
+        next(
+            button for button in app.button
+            if button.label == "Continue current round"
+        ).click().run(timeout=30)
+        assert not app.exception
+        assert any(
+            selectbox.label == "Strategy template"
+            for selectbox in app.selectbox
+        )
+    finally:
+        sys.path.remove(str(FRONTEND_ROOT))
+
+
+def test_code_mode_shows_runnable_controlled_template(monkeypatch):
+    monkeypatch.setenv("ALPHAFORGE_MOCK_MODE", "true")
+    sys.path.insert(0, str(FRONTEND_ROOT))
+    try:
+        app = AppTest.from_file(str(FRONTEND_ROOT / "app.py"))
+        app.run(timeout=30)
+        next(
+            button for button in app.button
+            if button.label == "Continue current round"
+        ).click().run(timeout=30)
+        next(radio for radio in app.radio if radio.label == "Entry method").set_value(
+            "LEAN Code"
+        ).run(timeout=30)
+        assert not app.exception
+        editor = next(area for area in app.text_area if area.label == "LEAN Python")
+        assert "class UserStrategy(AlphaForgeBaseAlgorithm)" in editor.value
+        assert "def initialize_strategy" in editor.value
+        assert "ALPHAFORGE_USER_STRATEGY_COMPLETED" in editor.value
+        assert any(
+            "Runnable code contract" in item.value for item in app.markdown
+        )
     finally:
         sys.path.remove(str(FRONTEND_ROOT))
 
@@ -42,12 +76,13 @@ def test_live_baseline_scorecard_renders_without_exception(monkeypatch):
         from api_client import AlphaForgeAPI
 
         runs = []
-        for index, (name, family, sharpe) in enumerate(
+        for index, (name, family, sharpe, role) in enumerate(
             [
-                ("Momentum Rank", "Traditional", 0.72),
-                ("Mean Reversion", "Traditional", 0.48),
-                ("Gradient Boosting", "Machine Learning", 0.83),
-                ("Hybrid ML + Minimum Variance", "Hybrid", 0.91),
+                ("Your Strategy · Low Volatility", "Human", 0.88, "human"),
+                ("Momentum Rank", "Traditional", 0.72, "baseline"),
+                ("Mean Reversion", "Traditional", 0.48, "baseline"),
+                ("Gradient Boosting", "Machine Learning", 0.83, "baseline"),
+                ("Hybrid ML + Minimum Variance", "Hybrid", 0.91, "baseline"),
             ],
             start=1,
         ):
@@ -55,6 +90,7 @@ def test_live_baseline_scorecard_renders_without_exception(monkeypatch):
                 {
                     "display_name": name,
                     "family": family,
+                    "role": role,
                     "state": "completed",
                     "worker_run_id": f"test-run-{index}",
                     "eligible_for_comparison": True,
@@ -100,6 +136,7 @@ def test_live_baseline_scorecard_renders_without_exception(monkeypatch):
 
         assert not app.exception
         assert any(item.value == "Normalized LEAN scorecard" for item in app.subheader)
+        assert any("Your frozen LEAN run" in item.value for item in app.markdown)
         assert len(app.tabs) == 5
     finally:
         sys.path.remove(str(FRONTEND_ROOT))

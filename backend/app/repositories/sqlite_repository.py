@@ -40,6 +40,11 @@ class SQLiteRepository:
                     status TEXT NOT NULL,
                     contract_hash TEXT NOT NULL,
                     contract_json TEXT NOT NULL,
+                    guided_strategy_json TEXT,
+                    strategy_mode TEXT NOT NULL DEFAULT 'guided',
+                    custom_code TEXT,
+                    custom_code_hash TEXT,
+                    code_validation_json TEXT,
                     created_at TEXT NOT NULL
                 );
 
@@ -57,6 +62,7 @@ class SQLiteRepository:
                     strategy_id TEXT NOT NULL,
                     display_name TEXT NOT NULL,
                     family TEXT NOT NULL,
+                    role TEXT NOT NULL DEFAULT 'baseline',
                     worker_run_id TEXT,
                     state TEXT NOT NULL,
                     result_json TEXT,
@@ -69,19 +75,54 @@ class SQLiteRepository:
                 ON baseline_batches(battle_id, created_at DESC);
                 """
             )
+            battle_columns = {
+                row["name"]
+                for row in connection.execute("PRAGMA table_info(battles)").fetchall()
+            }
+            if "guided_strategy_json" not in battle_columns:
+                connection.execute(
+                    "ALTER TABLE battles ADD COLUMN guided_strategy_json TEXT"
+                )
+            for column, definition in (
+                ("strategy_mode", "TEXT NOT NULL DEFAULT 'guided'"),
+                ("custom_code", "TEXT"),
+                ("custom_code_hash", "TEXT"),
+                ("code_validation_json", "TEXT"),
+            ):
+                if column not in battle_columns:
+                    connection.execute(
+                        f"ALTER TABLE battles ADD COLUMN {column} {definition}"
+                    )
+            run_columns = {
+                row["name"]
+                for row in connection.execute("PRAGMA table_info(baseline_runs)").fetchall()
+            }
+            if "role" not in run_columns:
+                connection.execute(
+                    "ALTER TABLE baseline_runs ADD COLUMN role TEXT NOT NULL DEFAULT 'baseline'"
+                )
 
     def create_battle(self, record: dict[str, Any]) -> None:
         with self._lock, self._connection() as connection:
             connection.execute(
                 """
                 INSERT INTO battles
-                (battle_id, name, status, contract_hash, contract_json, created_at)
-                VALUES (?, ?, ?, ?, ?, ?)
+                (battle_id, name, status, contract_hash, contract_json,
+                 guided_strategy_json, strategy_mode, custom_code,
+                 custom_code_hash, code_validation_json, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     record["battle_id"], record["name"], record["status"],
                     record["contract_hash"],
                     json.dumps(record["experiment_contract"], ensure_ascii=False),
+                    json.dumps(record.get("guided_strategy"), ensure_ascii=False)
+                    if record.get("guided_strategy") is not None else None,
+                    record.get("strategy_mode", "guided"),
+                    record.get("custom_code"),
+                    record.get("custom_code_hash"),
+                    json.dumps(record.get("code_validation"), ensure_ascii=False)
+                    if record.get("code_validation") is not None else None,
                     record["created_at"],
                 ),
             )
@@ -95,7 +136,22 @@ class SQLiteRepository:
             return None
         record = dict(row)
         record["experiment_contract"] = json.loads(record.pop("contract_json"))
+        guided_json = record.pop("guided_strategy_json", None)
+        record["guided_strategy"] = json.loads(guided_json) if guided_json else None
+        if record.get("strategy_mode", "guided") == "guided" and record["guided_strategy"] is None:
+            record["guided_strategy"] = {
+                "template_id": "multi_horizon_momentum", "lookback_days": 126
+            }
+        validation_json = record.pop("code_validation_json", None)
+        record["code_validation"] = json.loads(validation_json) if validation_json else None
         return record
+
+    def update_code_validation(self, battle_id: str, validation: dict[str, Any]) -> None:
+        with self._lock, self._connection() as connection:
+            connection.execute(
+                "UPDATE battles SET code_validation_json = ? WHERE battle_id = ?",
+                (json.dumps(validation, ensure_ascii=False), battle_id),
+            )
 
     def create_batch(self, record: dict[str, Any], runs: list[dict[str, Any]]) -> None:
         with self._lock, self._connection() as connection:
@@ -113,15 +169,16 @@ class SQLiteRepository:
             connection.executemany(
                 """
                 INSERT INTO baseline_runs
-                (batch_id, strategy_id, display_name, family, worker_run_id, state,
-                 result_json, result_hash, error)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (batch_id, strategy_id, display_name, family, role, worker_run_id,
+                 state, result_json, result_hash, error)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
                     (
                         record["batch_id"], run["strategy_id"], run["display_name"],
-                        run["family"], run.get("worker_run_id"), run["state"], None,
-                        None, run.get("error"),
+                        run["family"], run.get("role", "baseline"),
+                        run.get("worker_run_id"), run["state"], None, None,
+                        run.get("error"),
                     )
                     for run in runs
                 ],

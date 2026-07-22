@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -9,6 +10,7 @@ class BaselineRunView(BaseModel):
     strategy_id: str
     display_name: str
     family: str
+    role: Literal["human", "baseline"] = "baseline"
     worker_run_id: str | None = None
     state: str
     eligible_for_comparison: bool = False

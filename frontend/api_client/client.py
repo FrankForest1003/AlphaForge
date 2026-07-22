@@ -62,6 +62,33 @@ class AlphaForgeAPI:
             }
         return self._request("GET", "/catalog/universe")
 
+    def guided_strategies(self) -> list[dict[str, Any]]:
+        if self.mock_mode:
+            return [
+                {
+                    "template_id": "multi_horizon_momentum",
+                    "display_name": "Multi-Horizon Momentum",
+                    "default_lookback_days": 126,
+                    "description": "Blend short, medium and long momentum with stock and market trend confirmation.",
+                    "best_for": "Designed to reduce single-lookback fragility; improvement is not guaranteed.",
+                },
+                {
+                    "template_id": "risk_adjusted_momentum",
+                    "display_name": "Risk-Adjusted Momentum",
+                    "default_lookback_days": 126,
+                    "description": "Rank blended momentum per unit of realized volatility with trend gates.",
+                    "best_for": "Designed to avoid rewarding volatile momentum blindly; improvement is not guaranteed.",
+                },
+                {
+                    "template_id": "low_volatility",
+                    "display_name": "Low Volatility",
+                    "default_lookback_days": 63,
+                    "description": "Rank stocks by realized volatility and hold the calmest names under the shared risk gate.",
+                    "best_for": "Defensive positioning; may lag during sharp risk-on rallies.",
+                },
+            ]
+        return self._request("GET", "/catalog/guided-strategies")
+
     def run_baselines(self, battle_id: str) -> dict[str, Any]:
         if self.mock_mode:
             return {"batch_id": "demo-baselines", "battle_id": battle_id, "state": "completed"}
@@ -76,19 +103,34 @@ class AlphaForgeAPI:
     def validate_code(self, battle_id: str, code: str) -> dict[str, Any]:
         if self.mock_mode:
             checks = {
-                "Python syntax": "class" in code and "def Initialize" in code,
-                "QCAlgorithm entry": "QCAlgorithm" in code,
-                "Initialize method": "Initialize" in code,
+                "Python syntax": "class" in code and "def initialize_strategy" in code,
+                "UserStrategy entry": "class UserStrategy" in code,
+                "AlphaForge base contract": "AlphaForgeBaseAlgorithm" in code,
                 "Restricted imports": "subprocess" not in code and "socket" not in code,
             }
-            return {"accepted": all(checks.values()), "checks": checks, "smoke_status": "ready"}
+            return {
+                "battle_id": battle_id,
+                "code_hash": "mock-code-hash",
+                "accepted": all(checks.values()),
+                "checks": checks,
+                "errors": [],
+                "smoke_status": "completed",
+                "smoke_run_id": "mock-smoke-run",
+            }
         return self._request("POST", "/strategies/code/validate", json={"battle_id": battle_id, "code": code})
+
+    def code_validation(self, battle_id: str) -> dict[str, Any]:
+        if self.mock_mode:
+            return self.validate_code(battle_id, "class UserStrategy AlphaForgeBaseAlgorithm def initialize_strategy")
+        return self._request("GET", f"/strategies/code/validate/{battle_id}")
 
     def endpoint_registry(self) -> list[tuple[str, str]]:
         return [
             ("POST", "/battles"),
             ("POST", "/strategies/guided/preview"),
+            ("GET", "/catalog/guided-strategies"),
             ("POST", "/strategies/code/validate"),
+            ("GET", "/strategies/code/validate/{battle_id}"),
             ("POST", "/battles/{id}/baselines/run"),
             ("GET", "/battles/{id}/baselines"),
             ("POST", "/battles/{id}/rounds/{round}/ai-forge"),

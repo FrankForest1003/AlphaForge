@@ -22,10 +22,13 @@
     "classic_30_stock_mean_reversion_v1",
     "ml_30_stock_gradient_boosting_v1",
     "hybrid_30_stock_ml_momentum_min_variance_v1",
+    "guided_30_stock_multi_horizon_momentum_v1",
+    "guided_30_stock_risk_adjusted_momentum_v1",
+    "guided_30_stock_low_volatility_v1",
     "classic_two_stock_momentum_v1",
     "ml_gradient_boosting_v1"
   ],
   "service_bind": "127.0.0.1",
   "default_port": 18081,
-  "execution_model": "FIFO; one LEAN backtest at a time; staged sell/reduce-before-buy rebalancing; missing-history ML symbols skipped safely"
+  "execution_model": "FIFO; one LEAN backtest at a time; immutable hash-addressed custom sources after backend AST admission; staged sell/reduce-before-buy rebalancing; missing-history ML symbols skipped safely"
 }

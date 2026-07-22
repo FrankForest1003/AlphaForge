@@ -8,9 +8,15 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import load_settings
 from app.repositories import SQLiteRepository
-from app.schemas import BaselineBatchView, BattleCreate, BattleView
+from app.schemas import (
+    BaselineBatchView,
+    BattleCreate,
+    BattleView,
+    CodeValidationRequest,
+    CodeValidationView,
+)
 from app.services import BaselineService, LeanWorkerClient, WorkerClientError
-from app.services.baseline_service import BASELINES
+from app.services.baseline_service import BASELINES, GUIDED_STRATEGIES
 
 
 settings = load_settings()
@@ -71,6 +77,15 @@ def catalog_baselines() -> list[dict[str, Any]]:
     return list(BASELINES)
 
 
+@app.get("/v1/catalog/guided-strategies")
+def catalog_guided_strategies() -> list[dict[str, Any]]:
+    """Return the only Human templates admitted to the current guided flow."""
+    return [
+        {key: value for key, value in item.items() if key != "worker_strategy_id"}
+        for item in GUIDED_STRATEGIES
+    ]
+
+
 @app.post(
     "/v1/battles",
     response_model=BattleView,
@@ -101,6 +116,31 @@ def run_baselines(battle_id: str) -> BaselineBatchView:
         return service.run_baselines(battle_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post("/v1/strategies/code/validate", response_model=CodeValidationView)
+def validate_code(request: CodeValidationRequest) -> dict[str, Any]:
+    try:
+        return service.validate_custom_code(request.battle_id, request.code)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.get(
+    "/v1/strategies/code/validate/{battle_id}",
+    response_model=CodeValidationView,
+)
+def get_code_validation(battle_id: str) -> dict[str, Any]:
+    try:
+        return service.refresh_custom_code_validation(battle_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @app.get(

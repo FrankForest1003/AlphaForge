@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import date
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -70,11 +70,53 @@ class ExperimentContract(BaseModel):
         return hashlib.sha256(encoded).hexdigest()
 
 
+class GuidedStrategySpec(BaseModel):
+    """Small, auditable strategy choice compiled to an approved Worker template."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    template_id: Literal[
+        "multi_horizon_momentum",
+        "risk_adjusted_momentum",
+        "low_volatility",
+        "momentum_rank",
+        "mean_reversion",
+    ]
+    lookback_days: int = Field(default=126, ge=21, le=252)
+
+    def canonical_payload(self) -> dict:
+        return self.model_dump(mode="json")
+
+
 class BattleCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str = Field(default="AlphaForge Battle", min_length=1, max_length=120)
     experiment_contract: ExperimentContract
+    strategy_mode: Literal["guided", "code"] = "guided"
+    guided_strategy: GuidedStrategySpec | None = None
+    custom_code: str | None = Field(default=None, min_length=1, max_length=65_536)
+
+    @model_validator(mode="after")
+    def validate_strategy_submission(self):
+        if self.strategy_mode == "guided":
+            if self.custom_code is not None:
+                raise ValueError("custom_code is only allowed when strategy_mode='code'")
+            if self.guided_strategy is None:
+                object.__setattr__(
+                    self,
+                    "guided_strategy",
+                    GuidedStrategySpec(
+                        template_id="multi_horizon_momentum",
+                        lookback_days=126,
+                    ),
+                )
+        else:
+            if self.guided_strategy is not None:
+                raise ValueError("guided_strategy is only allowed when strategy_mode='guided'")
+            if not self.custom_code or not self.custom_code.strip():
+                raise ValueError("custom_code is required when strategy_mode='code'")
+        return self
 
 
 class BattleView(BaseModel):
@@ -83,4 +125,26 @@ class BattleView(BaseModel):
     status: str
     contract_hash: str
     experiment_contract: ExperimentContract
+    strategy_mode: Literal["guided", "code"] = "guided"
+    guided_strategy: GuidedStrategySpec | None = None
+    custom_code_hash: str | None = None
+    code_validation: dict[str, Any] | None = None
     created_at: str
+
+
+class CodeValidationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    battle_id: str = Field(min_length=1, max_length=100)
+    code: str = Field(min_length=1, max_length=65_536)
+
+
+class CodeValidationView(BaseModel):
+    battle_id: str
+    code_hash: str
+    accepted: bool = False
+    checks: dict[str, bool] = Field(default_factory=dict)
+    errors: list[str] = Field(default_factory=list)
+    smoke_status: str = "not_submitted"
+    smoke_run_id: str | None = None
+    smoke_result_hash: str | None = None

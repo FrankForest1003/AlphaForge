@@ -45,6 +45,20 @@ class LeanWorkerClient:
             json={"strategy_id": strategy_id, "parameters": parameters},
         )
 
+    def submit_custom(
+        self,
+        algorithm_code: str,
+        parameters: dict[str, Any],
+        timeout_seconds: int | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "algorithm_code": algorithm_code,
+            "parameters": parameters,
+        }
+        if timeout_seconds is not None:
+            payload["timeout_seconds"] = timeout_seconds
+        return self._request("POST", "/v1/custom-jobs", json=payload)
+
     def job(self, run_id: str) -> dict[str, Any]:
         return self._request("GET", f"/v1/jobs/{run_id}")
 

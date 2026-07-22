@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import hmac
+import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -31,6 +33,9 @@ UNIVERSE_PATH = Path(
 API_TOKEN = os.environ.get("ALPHAFORGE_API_TOKEN", "")
 JOB_INDEX = RUNTIME_ROOT / "service" / "jobs"
 JOB_INDEX.mkdir(parents=True, exist_ok=True)
+CUSTOM_SOURCE_ROOT = RUNTIME_ROOT / "service" / "custom_sources"
+CUSTOM_SOURCE_ROOT.mkdir(parents=True, exist_ok=True)
+CUSTOM_EXPECTED_MARKER = "ALPHAFORGE_USER_STRATEGY_COMPLETED"
 
 app = FastAPI(
     title="AlphaForge Local LEAN Runtime",
@@ -48,6 +53,12 @@ class SubmitRequest(BaseModel):
     strategy_id: str
     parameters: dict[str, Any] = Field(default_factory=dict)
     timeout_seconds: int | None = Field(default=None, ge=1, le=86400)
+
+
+class CustomSubmitRequest(BaseModel):
+    algorithm_code: str = Field(min_length=1, max_length=65_536)
+    parameters: dict[str, Any] = Field(default_factory=dict)
+    timeout_seconds: int | None = Field(default=None, ge=1, le=3600)
 
 
 def now() -> str:
@@ -186,14 +197,61 @@ def ensure_data_ready(item: dict[str, Any]) -> None:
         )
 
 
+def validate_custom_envelope(code: str) -> None:
+    """Defense in depth; the backend performs the authoritative AST admission."""
+    required = (
+        "class UserStrategy(AlphaForgeBaseAlgorithm)",
+        "def initialize_strategy(",
+        "def on_alpha_end(",
+        CUSTOM_EXPECTED_MARKER,
+    )
+    missing = [value for value in required if value not in code]
+    if missing:
+        raise HTTPException(
+            status_code=422,
+            detail={"message": "Custom strategy envelope is incomplete", "missing": missing},
+        )
+    forbidden = re.compile(
+        r"(^|\W)(os|sys|subprocess|socket|pathlib|requests|urllib|open|exec|eval|__import__)\b"
+    )
+    match = forbidden.search(code)
+    if match:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Custom strategy contains a blocked capability: {match.group(2)}",
+        )
+
+
+def custom_source(code: str) -> tuple[str, Path]:
+    digest = hashlib.sha256(code.encode("utf-8")).hexdigest()
+    path = (CUSTOM_SOURCE_ROOT / f"{digest}.py").resolve()
+    path.relative_to(CUSTOM_SOURCE_ROOT)
+    if path.is_file():
+        if path.read_text(encoding="utf-8") != code:
+            raise HTTPException(status_code=409, detail="Immutable source hash collision")
+    else:
+        path.write_text(code, encoding="utf-8")
+    return digest, path
+
+
 def execute(run_id: str) -> None:
     with execution_lock:
         record = read_record(run_id)
         if record is None:
             return
         try:
-            item = load_registry()[record["strategy_id"]]
-            algorithm = resolve_entry(item)
+            if record.get("custom_algorithm_path"):
+                algorithm = Path(record["custom_algorithm_path"]).resolve()
+                algorithm.relative_to(CUSTOM_SOURCE_ROOT)
+                if not algorithm.is_file():
+                    raise RuntimeError("Immutable custom strategy source is missing")
+                item = {
+                    "algorithm_class": "UserStrategy",
+                    "expected_marker": CUSTOM_EXPECTED_MARKER,
+                }
+            else:
+                item = load_registry()[record["strategy_id"]]
+                algorithm = resolve_entry(item)
             record["state"] = "running"
             record["started_at"] = now()
             save_record(record)
@@ -331,6 +389,49 @@ def submit(request: SubmitRequest, x_worker_token: str | None = Header(default=N
     save_record(record)
     executor.submit(execute, run_id)
     return {"run_id": run_id, "state": "queued", "strategy_id": request.strategy_id}
+
+
+@app.post("/v1/custom-jobs", status_code=202)
+def submit_custom(
+    request: CustomSubmitRequest,
+    x_worker_token: str | None = Header(default=None),
+) -> dict[str, str]:
+    authorize(x_worker_token)
+    validate_custom_envelope(request.algorithm_code)
+    symbols = [
+        value.strip().upper()
+        for value in str(request.parameters.get("symbols", "")).split(",")
+        if value.strip()
+    ]
+    item = {
+        "requires_real_data": True,
+        "required_symbols": [*symbols, "SPY", "QQQ"],
+        "default_parameters": {},
+    }
+    ensure_data_ready(item)
+    parameters = resolve_parameters(item, request.parameters)
+    digest, source_path = custom_source(request.algorithm_code)
+    run_id = datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:8]
+    strategy_id = f"custom:{digest[:12]}"
+    record = {
+        "run_id": run_id,
+        "strategy_id": strategy_id,
+        "source_hash": digest,
+        "custom_algorithm_path": str(source_path),
+        "state": "queued",
+        "created_at": now(),
+        "started_at": None,
+        "finished_at": None,
+        "timeout_seconds": request.timeout_seconds
+        or int(CONFIG.get("default_timeout_seconds", 1800)),
+        "parameters": parameters,
+        "result_path": None,
+        "log_path": None,
+        "error": None,
+    }
+    save_record(record)
+    executor.submit(execute, run_id)
+    return {"run_id": run_id, "state": "queued", "strategy_id": strategy_id}
 
 
 @app.get("/v1/jobs/{run_id}")

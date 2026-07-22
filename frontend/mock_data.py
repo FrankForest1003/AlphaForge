@@ -9,6 +9,7 @@ COLORS = {
     "Human": "#0F766E",
     "Traditional": "#2563EB",
     "ML": "#7C3AED",
+    "Machine Learning": "#7C3AED",
     "Hybrid": "#D97706",
     "Baseline": "#64748B",
 }
@@ -81,20 +82,104 @@ def equity_curve(label: str, months: int = 60) -> pd.DataFrame:
     return pd.DataFrame({"Month": range(months), "Portfolio": values, "Strategy": label})
 
 
-LEAN_TEMPLATE = '''from AlgorithmImports import *
+LEAN_TEMPLATE = '''from datetime import datetime
 
-class UserStrategy(QCAlgorithm):
-    def Initialize(self):
-        self.SetStartDate(2020, 1, 1)
-        self.SetCash(100000)
-        self.spy = self.AddEquity("SPY", Resolution.Daily).Symbol
-        self.sma = self.SMA(self.spy, 200, Resolution.Daily)
+from AlgorithmImports import *
+from alphaforge_base import AlphaForgeBaseAlgorithm, af_split_history_frames
 
-    def OnData(self, data: Slice):
-        if not self.sma.IsReady:
+
+class UserStrategy(AlphaForgeBaseAlgorithm):
+    """Runnable starter: trend-quality ranking under the locked ExperimentContract.
+
+    Safe editing area: change the score inside rebalance(). Keep the class name,
+    three hook methods, contract parameters, execution helpers, and final marker.
+    """
+
+    def _parameter(self, name, default):
+        value = self.get_parameter(name)
+        return value if value not in (None, "") else default
+
+    def initialize_strategy(self):
+        start = datetime.fromisoformat(self._parameter("start_date", "2016-01-04"))
+        end = datetime.fromisoformat(self._parameter("end_date", "2026-06-30"))
+        self.set_start_date(start.year, start.month, start.day)
+        self.set_end_date(end.year, end.month, end.day)
+        self.set_cash(float(self._parameter("initial_cash", "100000")))
+
+        tickers = [
+            item.strip().upper()
+            for item in self._parameter("symbols", "MSFT,AAPL,NVDA,GOOGL,AMZN").split(",")
+            if item.strip()
+        ]
+        self.top_k = int(self._parameter("top_k", "3"))
+        self.target_gross = float(self._parameter("target_gross", "0.95"))
+        self.max_weight = float(self._parameter("max_position_weight", "0.35"))
+        fee_bps = float(self._parameter("transaction_cost_bps", "10"))
+        slippage_bps = float(self._parameter("slippage_bps", "5"))
+
+        self.symbols = []
+        for ticker in tickers:
+            security = self.add_equity(ticker, Resolution.DAILY)
+            self.af_configure_security(
+                security, fee_bps=fee_bps, slippage_bps=slippage_bps
+            )
+            self.symbols.append(self.af_track_symbol(security.symbol))
+
+        spy = self.add_equity("SPY", Resolution.DAILY)
+        qqq = self.add_equity("QQQ", Resolution.DAILY)
+        self.af_configure_security(spy)
+        self.af_configure_security(qqq)
+        self.spy, self.qqq = spy.symbol, qqq.symbol
+        self.af_use_security_benchmark(self.spy)
+        self.market_sma = self.sma(self.qqq, 200, Resolution.DAILY)
+        self.set_warm_up(205, Resolution.DAILY)
+        self.schedule.on(
+            self.date_rules.month_start(self.symbols[0]),
+            self.time_rules.after_market_open(self.symbols[0], 30),
+            self.rebalance,
+        )
+
+    def on_alpha_data(self, data):
+        # Scheduled rebalance owns the trading decision; keep this hook present.
+        pass
+
+    def rebalance(self):
+        if self.is_warming_up or not self.market_sma.is_ready:
             return
-        if self.Securities[self.spy].Price > self.sma.Current.Value:
-            self.SetHoldings(self.spy, 1.0)
-        else:
-            self.Liquidate()
+        if self.securities[self.qqq].price <= self.market_sma.current.value:
+            self.af_liquidate_all("Market risk gate")
+            return
+
+        history = self.history(self.symbols, 127, Resolution.DAILY)
+        frames = af_split_history_frames(history)
+        scores = {}
+        for symbol in self.symbols:
+            frame = frames.get(symbol.value)
+            if frame is None or "close" not in frame.columns:
+                continue
+            close = frame["close"].astype(float).dropna()
+            if len(close) < 127:
+                continue
+            momentum = float(close.iloc[-1] / close.iloc[-64] - 1.0)
+            trend_gap = float(close.iloc[-1] / close.tail(100).mean() - 1.0)
+            volatility = float(close.pct_change().dropna().tail(63).std())
+            if momentum > 0 and trend_gap > 0 and volatility > 0:
+                # Safe editing area: combine only trailing information here.
+                scores[symbol] = momentum + 0.5 * trend_gap - 0.25 * volatility
+
+        selected = [
+            symbol for symbol, _ in
+            sorted(scores.items(), key=lambda item: item[1], reverse=True)[: self.top_k]
+        ]
+        if not selected:
+            self.af_liquidate_all("No eligible trend-quality candidates")
+            return
+        weight = min(self.max_weight, self.target_gross / len(selected))
+        self.af_rebalance_to_weights(
+            {symbol: weight for symbol in selected},
+            "Monthly custom trend-quality rebalance",
+        )
+
+    def on_alpha_end(self):
+        self.debug("ALPHAFORGE_USER_STRATEGY_COMPLETED")
 '''

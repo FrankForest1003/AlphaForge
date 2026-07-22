@@ -64,6 +64,9 @@ for required_strategy in [
     "classic_30_stock_mean_reversion_v1",
     "ml_30_stock_gradient_boosting_v1",
     "hybrid_30_stock_ml_momentum_min_variance_v1",
+    "guided_30_stock_multi_horizon_momentum_v1",
+    "guided_30_stock_risk_adjusted_momentum_v1",
+    "guided_30_stock_low_volatility_v1",
 ]:
     if required_strategy not in registry:
         raise SystemExit(f"Missing required strategy: {required_strategy}")
