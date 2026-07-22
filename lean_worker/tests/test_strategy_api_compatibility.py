@@ -23,9 +23,12 @@ def test_top3_strategies_use_staged_rebalance():
     classic = _text("strategies/approved/classic_30_stock_top3_momentum/main.py")
     ml = _text("strategies/approved/ml_30_stock_gradient_boosting/main.py")
     assert "def af_rebalance_to_weights" in base
-    assert "phase 1 remove" in base
-    assert "free_portfolio_value_percentage" in base
-    assert "effective_target" in base
+    assert "def _af_submit_opening_orders" in base
+    assert "opening price probe" not in base
+    assert "def _af_submit_adjustment_phase" in base
+    assert "self.limit_order(" in base
+    assert "AlphaForge daily target repricing" in base
+    assert "self.af_clear_pending_rebalance()" in base
     assert "af_rebalance_to_weights(" in classic
     assert "af_rebalance_to_weights(" in ml
     assert "set_holdings(targets, True)" not in classic

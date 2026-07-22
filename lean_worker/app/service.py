@@ -18,6 +18,8 @@ from fastapi import FastAPI, Header, HTTPException, Query
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
+from app.io_utils import atomic_write_text
+
 CONFIG_PATH = Path(os.environ.get("ALPHAFORGE_WORKER_CONFIG", "/app/config/worker.json"))
 CONFIG = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
 RUNTIME_ROOT = Path(CONFIG["runtime_root"]).resolve()
@@ -149,7 +151,8 @@ def record_path(run_id: str) -> Path:
 
 
 def save_record(record: dict[str, Any]) -> None:
-    record_path(record["run_id"]).write_text(
+    atomic_write_text(
+        record_path(record["run_id"]),
         json.dumps(record, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )

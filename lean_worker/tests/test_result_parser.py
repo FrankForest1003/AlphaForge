@@ -46,6 +46,52 @@ class ParserTests(unittest.TestCase):
             self.assertTrue(result["engine"]["clean_shutdown"])
             self.assertEqual(result["summary"]["total_orders"], 2)
 
+    def test_lean_error_prefix_does_not_turn_explicit_warning_into_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            log = root / "console.log"
+            detail = root / "alphaforge_details.json"
+            log.write_text(
+                "ERROR:: Warning: order LimitPrice was rounded to 183.04\n"
+                "Engine.Main(): Analysis Complete.\n"
+                "PythonInitializer.Shutdown(): ended\n"
+                "Program.Main(): Exiting Lean...\n"
+                "MARKER\n",
+                encoding="utf-8",
+            )
+            detail.write_text(
+                json.dumps(
+                    {
+                        "equity_curve": [],
+                        "position_snapshots": [],
+                        "orders": [],
+                        "order_events": [],
+                        "signals": [],
+                        "ml": {
+                            "training_runs": [],
+                            "predictions": [],
+                            "model_artifacts": [],
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            result = parse_log_file(
+                log,
+                detail_path=detail,
+                exit_code=0,
+                run_id="warning-run",
+                algorithm_class="A",
+                algorithm_file="a.py",
+                expected_marker="MARKER",
+                timed_out=False,
+                manifest={"strategy": {}, "environment": {}},
+            )
+
+            self.assertEqual(result["status"], "completed")
+            self.assertEqual(result["diagnostics"]["error_lines"], [])
+            self.assertEqual(len(result["diagnostics"]["warning_lines"]), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -171,10 +171,10 @@ def parse_log_file(
             key = DATA_KEYS[name]
             data_quality[key] = parse_value(value, "percent" if "percentage" in key else "int")
             continue
-        if " ERROR::" in line or line.startswith("ERROR::") or "Unhandled exception." in line or "Order Error:" in line:
-            error_lines.append(line)
-        elif " WARN" in line or "Warning:" in line:
+        if " WARN" in line or "Warning:" in line:
             warning_lines.append(line)
+        elif " ERROR::" in line or line.startswith("ERROR::") or "Unhandled exception." in line or "Order Error:" in line:
+            error_lines.append(line)
 
     details: dict[str, Any] = {}
     if detail_path.is_file():
