@@ -22,6 +22,9 @@ from alphaforge.agents.providers.structured import StructuredModelClient
 from alphaforge.config import load_model_settings
 from alphaforge.demo import build_demo_environment, build_demo_request
 from alphaforge.schemas.backtest import BacktestResult
+from alphaforge.schemas.agent_outputs import OptimizationResult
+from alphaforge.schemas.optimisation import OptimizationConstraints
+from alphaforge.services import OptimizationResumer
 from backend.app.services import (
     LeanWorkerClient,
     LocalLeanBacktestProvider,
@@ -258,6 +261,28 @@ def parse_args() -> argparse.Namespace:
         help="Per-request model transport timeout; Schema retry rules are unchanged.",
     )
     parser.add_argument(
+        "--resume-result",
+        type=Path,
+        default=None,
+        help=(
+            "Resume a narrowly recognized infrastructure or Prompt-contract failure "
+            "without regenerating its design or deterministic source."
+        ),
+    )
+    parser.add_argument(
+        "--continue-result",
+        type=Path,
+        default=None,
+        help="Continue a completed no-selection result from its next round.",
+    )
+    parser.add_argument(
+        "--continue-routes",
+        nargs="+",
+        choices=("traditional", "ml", "hybrid"),
+        default=("traditional",),
+        help="Routes to allocate the next-round continuation budget to.",
+    )
+    parser.add_argument(
         "--output",
         type=Path,
         default=Path("artifacts/debug_runs/latest/optimization_result.json"),
@@ -290,6 +315,9 @@ def _worker_token(path: Path) -> str:
 
 def main() -> None:
     args = parse_args()
+    if args.resume_result is not None and args.continue_result is not None:
+        raise ValueError("--resume-result and --continue-result are mutually exclusive")
+    initial_result = None
     trace = ReadableTrace()
     client = StructuredModelClient(
         load_model_settings(args.env_file),
@@ -304,8 +332,83 @@ def main() -> None:
             )
         )
         lean_environment = local_lean_environment_manifest()
+        if args.resume_result is not None:
+            partial = OptimizationResult.model_validate_json(
+                args.resume_result.read_text(encoding="utf-8")
+            )
+            resumer = OptimizationResumer(
+                backtest_provider=backtest_provider,
+                analysis_agent=LLMPostBacktestAnalysisAgent(client),
+                lean_environment=lean_environment,
+                audit_sink=trace.record_audit,
+            )
+            result = None
+            run_error = None
+            try:
+                result = resumer.resume_supported_failures(
+                    partial,
+                    constraints=OptimizationConstraints(),
+                    code_risk_agent=LLMCodeRiskAgent(client),
+                )
+            except Exception as exc:
+                run_error = f"{type(exc).__name__}: {exc}"
+                raise
+            finally:
+                trace.write_markdown(
+                    args.trace_output, result=result, run_error=run_error
+                )
+            assert result is not None
+            args.output.parent.mkdir(parents=True, exist_ok=True)
+            args.output.write_text(
+                json.dumps(result.model_dump(mode="json"), ensure_ascii=False, indent=2)
+                + "\n",
+                encoding="utf-8",
+            )
+            print(
+                json.dumps(
+                    {
+                        "optimization_id": result.optimization_id,
+                        "status": result.status,
+                        "selected_strategy_id": result.selection.selected_strategy_id,
+                        "resumed_from": str(args.resume_result),
+                        "output": str(args.output),
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+            return
         demo_request = build_demo_request()
-        if args.evidence_input is not None:
+        evidence_runner = ValidationEvidenceRunner(
+            backtest_provider=backtest_provider,
+            lean_environment=lean_environment,
+            progress=lambda message: print(message, flush=True),
+        )
+        if args.continue_result is not None:
+            initial_result = OptimizationResult.model_validate_json(
+                args.continue_result.read_text(encoding="utf-8")
+            )
+            evidence = tuple(
+                item.backtest_result
+                for item in initial_result.evidence_summary.reference_strategies
+            )
+            # Rebuild fixed policy fields from the current demo mandate. Historical
+            # results remain reusable because max_drawdown_limit is a post-backtest
+            # admission threshold and never changes generated trading behavior.
+            reference_specs = tuple(
+                spec
+                for _role, spec in evidence_runner.reference_specs(
+                    demo_request.parent_spec
+                )
+            )
+            print(f"optimization continuation: {args.continue_result}", flush=True)
+        elif args.evidence_input is not None:
+            reference_specs = tuple(
+                spec
+                for _role, spec in evidence_runner.reference_specs(
+                    demo_request.parent_spec
+                )
+            )
             evidence = TypeAdapter(tuple[BacktestResult, ...]).validate_python(
                 json.loads(args.evidence_input.read_text(encoding="utf-8"))
             )
@@ -317,12 +420,16 @@ def main() -> None:
                 )
             print(f"validation evidence: reused {args.evidence_input}", flush=True)
         else:
-            evidence = ValidationEvidenceRunner(
-                backtest_provider=backtest_provider,
-                lean_environment=lean_environment,
-                progress=lambda message: print(message, flush=True),
-            ).run(demo_request.parent_spec)
-        request = demo_request.model_copy(update={"evidence": evidence})
+            reference_specs = tuple(
+                spec
+                for _role, spec in evidence_runner.reference_specs(
+                    demo_request.parent_spec
+                )
+            )
+            evidence = evidence_runner.run(demo_request.parent_spec)
+        request = demo_request.model_copy(
+            update={"evidence": evidence, "reference_specs": reference_specs}
+        )
         args.evidence_output.parent.mkdir(parents=True, exist_ok=True)
         args.evidence_output.write_text(
             json.dumps(
@@ -349,7 +456,11 @@ def main() -> None:
     result = None
     run_error = None
     try:
-        result = orchestrator.run(request)
+        result = orchestrator.run(
+            request,
+            initial_result=initial_result,
+            routes=(tuple(args.continue_routes) if initial_result is not None else None),
+        )
     except Exception as exc:
         run_error = f"{type(exc).__name__}: {exc}"
         raise

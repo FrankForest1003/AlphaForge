@@ -3,13 +3,14 @@ from __future__ import annotations
 from datetime import date
 
 from alphaforge.schemas.backtest import BacktestMetrics, BacktestResult
-from alphaforge.schemas.optimisation import OptimizationRequest
+from alphaforge.schemas.optimisation import OptimizationConstraints, OptimizationRequest
 from alphaforge.schemas.manifests import LeanEnvironmentManifest
 from alphaforge.schemas.strategy_spec import (
     ExecutionSpec,
     RiskConstraints,
     StrategySpec,
     TraditionalLogic,
+    MLLogic,
     UniverseSpec,
 )
 
@@ -33,7 +34,10 @@ def build_demo_request(*, include_test_evidence: bool = False) -> OptimizationRe
         candidate_type="user",
         universe=UniverseSpec(symbols=SYMBOLS),
         execution=ExecutionSpec(start_date=date(2018, 1, 1), end_date=date(2024, 12, 31)),
-        risk=RiskConstraints(),
+        # This demonstration mandate is calibrated to the observed parent result.
+        # It must be explicit because the generic schema default is intentionally
+        # more conservative and is not suitable for every research universe.
+        risk=RiskConstraints(max_drawdown_limit=0.50),
         logic=TraditionalLogic(signal="momentum_rank", lookback_days=252),
     )
     rows = (
@@ -63,10 +67,53 @@ def build_demo_request(*, include_test_evidence: bool = False) -> OptimizationRe
         )
         for role, strategy_id, sharpe, drawdown, cagr in rows
     )
+    baseline_logic = {
+        "baseline_b1_momentum_v1": TraditionalLogic(
+            signal="momentum_rank", lookback_days=126
+        ),
+        "baseline_b2_mean_reversion_v1": TraditionalLogic(
+            signal="mean_reversion_rank", lookback_days=20
+        ),
+        "baseline_b3_gbdt_v1": MLLogic(
+            model="gradient_boosting",
+            task="relative_alpha_regression",
+            training_window_days=504,
+            prediction_horizon_days=21,
+            feature_set_version="price_volume_v1",
+            random_seed=42,
+        ),
+        "baseline_b4_rf_v1": MLLogic(
+            model="random_forest",
+            task="direction_classification",
+            training_window_days=504,
+            prediction_horizon_days=21,
+            feature_set_version="price_volume_v1",
+            random_seed=42,
+        ),
+    }
+    reference_specs = [parent]
+    for result in evidence[1:]:
+        logic = baseline_logic[result.strategy_id]
+        payload = parent.model_dump(mode="python")
+        payload.update(
+            {
+                "strategy_id": result.strategy_id,
+                "parent_strategy_id": parent.strategy_id,
+                "candidate_type": logic.kind,
+                "logic": logic,
+            }
+        )
+        reference_specs.append(StrategySpec.model_validate(payload))
     return OptimizationRequest(
         optimization_id="demo_opt_001",
         parent_spec=parent,
         evidence=evidence,
+        reference_specs=tuple(reference_specs),
+        constraints=OptimizationConstraints(
+            max_rounds=3,
+            min_sharpe_improvement=0.0,
+            max_drawdown_deterioration=0.02,
+        ),
     )
 
 

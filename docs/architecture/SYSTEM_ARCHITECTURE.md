@@ -6,18 +6,21 @@ flowchart TD
   EVIDENCE --> SUMMARY["EvidenceSummarizer"]
   SUMMARY --> DESIGN["Three Strategy Designers"]
   DESIGN --> SPEC["SpecBuilder + Spec validation"]
-  SPEC --> COMPILE["Deterministic StrategyCompiler"]
+  SPEC --> DEDUPE["Semantic deduplication"]
+  DEDUPE --> COMPILE["Deterministic StrategyCompiler"]
   COMPILE --> STATIC["Static Code Validator"]
   STATIC --> RISK["Three route-specific Code Risk Agents"]
   RISK -->|approve| DEPLOY["Worker digest-bound deployment"]
   DEPLOY --> SMOKE["Local LEAN Smoke Test"]
   SMOKE --> FULL["Local LEAN full backtest"]
-  FULL --> ANALYSIS["Unified Post-Backtest Analysis"]
+  FULL --> LOOP{"Admission passed or round limit?"}
+  LOOP -->|next round| DESIGN
+  LOOP -->|finish| ANALYSIS["Unified Post-Backtest Analysis"]
   ANALYSIS --> SELECT["Deterministic CandidateSelector"]
   SELECT --> RESULT["OptimizationResult"]
 ```
 
-The parent and four baselines are first executed under one Local LEAN contract; their normalized results form the design evidence. Traditional, ML and Hybrid pipelines then execute in a fixed three-worker pool through code-risk review. The Local LEAN Worker serializes actual LEAN jobs through one FIFO executor because the engine configuration and licensed data are shared. Each route terminates immediately on Spec, compilation, static validation, Code Risk, Smoke or full-backtest failure. All three outcomes are joined before the single analysis request is built.
+The parent and four baselines are first executed under one Local LEAN contract. Their complete Specs and normalized results form the design evidence. Traditional, ML and Hybrid pipelines execute in a fixed three-worker pool per round. Later rounds receive their own route history; semantic duplicates never reach compilation. The Local LEAN Worker serializes actual jobs through one FIFO executor. All attempted outcomes are joined before the single analysis request is built.
 
 ## Dependency direction
 

@@ -22,13 +22,15 @@
 
 ## 6. 领域与路线规则
 
-运行环境为 LEAN 2.5、Python 3.11、linux/amd64、美国股票、仅 Daily、仅做多、无杠杆且离线。源码必须继承 `AlphaForgeBaseAlgorithm`；使用 RAW 模式；复用 Daily SPY Benchmark；总目标仓位不超过 0.95，单仓不超过 Spec 限制，现金保留比例不低于 0.02；使用 `af_rebalance_to_weights`。禁止网络、子进程、安装依赖、无限制文件访问、Hour/Minute 数据、Adjusted 模式、直接订单 API，以及未经检查的 `history.loc[symbol]`。
+运行环境为 LEAN 2.5、Python 3.11、linux/amd64、美国股票、仅 Daily、仅做多、无杠杆且离线。源码必须继承 `AlphaForgeBaseAlgorithm`；使用 RAW 模式；复用 Daily SPY；精确实现 Spec 的 target_gross 和可选 benchmark_sma 回看期；过滤器关闭风险时必须把目标权重清零；单仓不超过 Spec 限制，现金保留比例不低于 0.02；使用 `af_rebalance_to_weights`。禁止网络、子进程、安装依赖、无限制文件访问、日内数据、Adjusted 模式、直接订单 API 和未经检查的 `history.loc[symbol]`。
 
 Traditional 分数必须使用严格 lookback+1 个已完成观测和声明的动量/均值回归方向。`price_volume_v1` 必须包含声明的八个特征。ML 训练使用配置的唯一日期窗口、horizon、估计器/任务和 seed。分类必须保留未知未来标签为缺失值。单个 Symbol 失败必须跳过。
 
 负 shift 本身不等于泄漏。必须追踪 shift 语义、尾部 NaN、stack/join 对齐、布尔转换、`dropna`、`dropna(subset=...)`、其他过滤操作和最终保留日期。除非另行配置，Pandas stack 默认丢弃 NaN。只有能指出具体保留样本使用了其预测时点不可获得的信息，才能报告 blocking 泄漏。如果过滤删除全部未完成标签，不得对这些行报告泄漏。
 
 融合必须取两个有效 Symbol 集合的交集，对两个分量分别做横截面百分位排名，并计算 `traditional_weight * traditional_percentile + (1 - traditional_weight) * ml_percentile`。原始量纲直接融合、权重方向相反，或用并集补齐缺失分量都属于 blocking。
+
+诊断信息使用 AlphaForge recorder。完成合同独立执行：`on_alpha_end` 必须调用 `self.debug("<已注册的 completion marker>")`，因为 Worker 会在捕获的 LEAN 文本中查找该字面 marker。`af_record_signal` 不得替代它；正确的 `self.debug` marker 不构成 finding。
 
 ## 7. 必须遵循的工作步骤
 

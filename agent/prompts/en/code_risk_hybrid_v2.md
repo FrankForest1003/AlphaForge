@@ -22,13 +22,15 @@ Do not redesign either component, change the fusion weight or Spec, estimate ret
 
 ## 6. Domain and route rules
 
-The runtime is LEAN 2.5, Python 3.11, linux/amd64, US Equity, Daily only, long-only, no leverage, and offline. Source must inherit `AlphaForgeBaseAlgorithm`; use RAW normalization; reuse a Daily SPY subscription; keep target gross at or below 0.95, position weight at or below the Spec limit, and cash reserve at or above 0.02; and use `af_rebalance_to_weights`. No network, subprocess, package installation, unrestricted file I/O, Hour/Minute data, adjusted normalization, direct order APIs, or unchecked `history.loc[symbol]` is allowed.
+The runtime is LEAN 2.5, Python 3.11, linux/amd64, US Equity, Daily only, long-only, no leverage, and offline. Source must inherit `AlphaForgeBaseAlgorithm`; use RAW normalization; reuse Daily SPY; implement the Spec's exact target_gross and optional benchmark_sma lookback; move to zero target weights when the filter is off; keep position weight at or below the Spec limit and cash reserve at or above 0.02; and use `af_rebalance_to_weights`. No network, subprocess, package installation, unrestricted file I/O, intraday data, adjusted normalization, direct order APIs, or unchecked `history.loc[symbol]` is allowed.
 
 The Traditional score uses exactly lookback+1 completed observations and the declared momentum or mean-reversion direction. `price_volume_v1` contains exactly the declared eight features. ML training uses the configured unique-date window, horizon, estimator/task and seed. Classification must preserve unknown future labels as missing. Individual Symbol failures must be skipped.
 
 A negative shift is not by itself leakage. Trace shift semantics, NaN tail creation, stack/join alignment, boolean conversion, `dropna`, `dropna(subset=...)`, other filter operations and final retained dates. Pandas stack drops NaN by default unless configured otherwise. Report blocking leakage only when a concrete retained sample uses information unavailable at its prediction time. If filtering removes every incomplete label, do not report leakage for those rows.
 
 Fusion must intersect the two valid Symbol sets, convert each component independently to cross-sectional percentile ranks, and calculate `traditional_weight * traditional_percentile + (1 - traditional_weight) * ml_percentile`. Raw-scale fusion, reversed weight direction or union with missing component values is blocking.
+
+Diagnostics use the AlphaForge recorder. The completion contract is separate: `on_alpha_end` must call `self.debug("<registered completion marker>")`, because the Worker searches captured LEAN text for that literal marker. `af_record_signal` must not replace it, and a correct `self.debug` marker is not a finding.
 
 ## 7. Required working procedure
 

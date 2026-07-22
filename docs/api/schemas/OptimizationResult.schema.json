@@ -340,6 +340,18 @@
           ],
           "default": null
         },
+        "duplicate_of_strategy_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Duplicate Of Strategy Id"
+        },
         "failure_reasons": {
           "default": [],
           "items": {
@@ -358,6 +370,25 @@
             }
           ],
           "default": null
+        },
+        "round_number": {
+          "default": 1,
+          "maximum": 3,
+          "minimum": 1,
+          "title": "Round Number",
+          "type": "integer"
+        },
+        "semantic_sha256": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Semantic Sha256"
         },
         "smoke_test": {
           "anyOf": [
@@ -378,6 +409,7 @@
             "rejected_by_code_risk",
             "rejected_by_smoke_test",
             "rejected_by_backtest",
+            "duplicate_of_reference",
             "backtested_not_selected",
             "selected"
           ],
@@ -614,11 +646,21 @@
           "minItems": 5,
           "title": "Evidence Run Ids",
           "type": "array"
+        },
+        "reference_strategies": {
+          "items": {
+            "$ref": "#/$defs/ReferenceStrategyEvidence"
+          },
+          "maxItems": 5,
+          "minItems": 5,
+          "title": "Reference Strategies",
+          "type": "array"
         }
       },
       "required": [
         "evidence_run_ids",
-        "comparisons"
+        "comparisons",
+        "reference_strategies"
       ],
       "title": "EvidenceSummary",
       "type": "object"
@@ -626,6 +668,50 @@
     "ExecutionChanges": {
       "additionalProperties": false,
       "properties": {
+        "regime_filter": {
+          "anyOf": [
+            {
+              "enum": [
+                "none",
+                "benchmark_sma"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Regime Filter"
+        },
+        "regime_lookback_days": {
+          "anyOf": [
+            {
+              "maximum": 300,
+              "minimum": 50,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Regime Lookback Days"
+        },
+        "target_gross": {
+          "anyOf": [
+            {
+              "maximum": 0.95,
+              "minimum": 0.25,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Target Gross"
+        },
         "top_k": {
           "anyOf": [
             {
@@ -664,6 +750,29 @@
           "title": "Rebalance",
           "type": "string"
         },
+        "regime_filter": {
+          "default": "none",
+          "enum": [
+            "none",
+            "benchmark_sma"
+          ],
+          "title": "Regime Filter",
+          "type": "string"
+        },
+        "regime_lookback_days": {
+          "anyOf": [
+            {
+              "maximum": 300,
+              "minimum": 50,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Regime Lookback Days"
+        },
         "resolution": {
           "const": "daily",
           "default": "daily",
@@ -674,6 +783,13 @@
           "format": "date",
           "title": "Start Date",
           "type": "string"
+        },
+        "target_gross": {
+          "default": 0.95,
+          "maximum": 0.95,
+          "minimum": 0.25,
+          "title": "Target Gross",
+          "type": "number"
         },
         "top_k": {
           "default": 3,
@@ -1045,6 +1161,40 @@
       "title": "PostBacktestAnalysis",
       "type": "object"
     },
+    "ReferenceStrategyEvidence": {
+      "additionalProperties": false,
+      "properties": {
+        "backtest_result": {
+          "$ref": "#/$defs/BacktestResult"
+        },
+        "semantic_sha256": {
+          "title": "Semantic Sha256",
+          "type": "string"
+        },
+        "strategy_role": {
+          "enum": [
+            "user",
+            "baseline_b1",
+            "baseline_b2",
+            "baseline_b3",
+            "baseline_b4"
+          ],
+          "title": "Strategy Role",
+          "type": "string"
+        },
+        "strategy_spec": {
+          "$ref": "#/$defs/StrategySpec"
+        }
+      },
+      "required": [
+        "strategy_role",
+        "strategy_spec",
+        "backtest_result",
+        "semantic_sha256"
+      ],
+      "title": "ReferenceStrategyEvidence",
+      "type": "object"
+    },
     "RiskChanges": {
       "additionalProperties": false,
       "description": "No risk-policy changes are permitted in the first contract version.",
@@ -1319,7 +1469,8 @@
           "enum": [
             "rendered",
             "cannot_implement",
-            "template_error"
+            "template_error",
+            "duplicate"
           ],
           "title": "Status",
           "type": "string"
@@ -1339,7 +1490,7 @@
           "items": {
             "$ref": "#/$defs/TemplateCapabilityRecord"
           },
-          "maxItems": 3,
+          "maxItems": 9,
           "minItems": 3,
           "title": "Records",
           "type": "array"
@@ -1437,7 +1588,7 @@
       "items": {
         "$ref": "#/$defs/CandidateRun"
       },
-      "maxItems": 3,
+      "maxItems": 9,
       "minItems": 3,
       "title": "Candidates",
       "type": "array"

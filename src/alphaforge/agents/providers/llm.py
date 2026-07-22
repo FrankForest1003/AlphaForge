@@ -17,7 +17,7 @@ from alphaforge.services.analysis_validator import validate_post_backtest_analys
 
 DESIGN_POLICY = CompletionPolicy("high", 6000)
 RISK_POLICY = CompletionPolicy("high", 10000)
-ANALYSIS_POLICY = CompletionPolicy("high", 10000)
+ANALYSIS_POLICY = CompletionPolicy("high", 16000)
 
 
 class LLMStrategyDesigner:

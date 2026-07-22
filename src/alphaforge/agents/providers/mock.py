@@ -36,7 +36,12 @@ class MockStrategyDesigner:
         return CandidateDesign(
             candidate_type=request.candidate_type,
             logic=logic,
-            execution_changes=ExecutionChanges(top_k=3),
+            execution_changes=ExecutionChanges(
+                top_k=3,
+                target_gross=0.8 - 0.05 * (request.round_number - 1),
+                regime_filter="benchmark_sma",
+                regime_lookback_days=200 - 25 * (request.round_number - 1),
+            ),
             risk_changes=RiskChanges(),
             design_reasons=(f"create a distinct {request.candidate_type} candidate",),
             expected_tradeoffs=("candidate complexity may increase implementation risk",),

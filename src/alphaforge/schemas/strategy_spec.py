@@ -30,11 +30,18 @@ class ExecutionSpec(StrictModel):
     resolution: Literal["daily"] = "daily"
     rebalance: Literal["monthly"] = "monthly"
     top_k: int = Field(default=3, ge=1, le=10)
+    target_gross: float = Field(default=0.95, ge=0.25, le=0.95)
+    regime_filter: Literal["none", "benchmark_sma"] = "none"
+    regime_lookback_days: int | None = Field(default=None, ge=50, le=300)
 
     @model_validator(mode="after")
     def period_must_increase(self) -> "ExecutionSpec":
         if self.end_date <= self.start_date:
             raise ValueError("end_date must be after start_date")
+        if self.regime_filter == "none" and self.regime_lookback_days is not None:
+            raise ValueError("regime_lookback_days requires benchmark_sma")
+        if self.regime_filter == "benchmark_sma" and self.regime_lookback_days is None:
+            raise ValueError("benchmark_sma requires regime_lookback_days")
         return self
 
 

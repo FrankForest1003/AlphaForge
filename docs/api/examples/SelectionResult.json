@@ -22,7 +22,7 @@
           "name": "min_sharpe_improvement",
           "passed": true,
           "actual": 0.16,
-          "required": 0.05
+          "required": 0.0
         },
         {
           "name": "max_drawdown_deterioration",
@@ -34,7 +34,7 @@
           "name": "max_drawdown_limit",
           "passed": true,
           "actual": 0.16,
-          "required": 0.25
+          "required": 0.5
         }
       ]
     }

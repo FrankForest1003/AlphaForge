@@ -35,7 +35,7 @@ class ValidationEvidenceRunner:
 
     def run(self, parent_spec: StrategySpec) -> tuple[BacktestResult, ...]:
         results: list[BacktestResult] = []
-        for role, spec in self._specs(parent_spec):
+        for role, spec in self.reference_specs(parent_spec):
             self.progress(f"validation evidence: compiling {role} ({spec.strategy_id})")
             route = spec.logic.kind
             request = StrategyCompilationRequest(
@@ -82,7 +82,8 @@ class ValidationEvidenceRunner:
             )
         return tuple(results)
 
-    def _specs(self, parent: StrategySpec):
+    @staticmethod
+    def reference_specs(parent: StrategySpec) -> tuple[tuple[str, StrategySpec], ...]:
         definitions = (
             ("user", parent.strategy_id, parent.logic),
             (
@@ -120,6 +121,7 @@ class ValidationEvidenceRunner:
                 ),
             ),
         )
+        specs: list[tuple[str, StrategySpec]] = []
         for role, strategy_id, logic in definitions:
             payload = parent.model_dump(mode="python")
             payload.update(
@@ -130,4 +132,5 @@ class ValidationEvidenceRunner:
                     "logic": logic,
                 }
             )
-            yield role, StrategySpec.model_validate(payload)
+            specs.append((role, StrategySpec.model_validate(payload)))
+        return tuple(specs)

@@ -21,15 +21,17 @@ The Local LEAN Worker is an isolated localhost service. It owns LEAN, licensed m
 ```text
 parent spec and fixed baseline definitions
 → same-environment parent and four-baseline validation
-→ deterministic evidence summary
-→ three parallel CandidateDesign calls
+→ complete reference evidence summary
+→ three parallel CandidateDesign calls per round
 → SpecBuilder and Spec validation
+→ semantic deduplication against references and prior rounds
 → deterministic Local LEAN compilation
 → static code validation
 → route-specific Code Risk review
 → Worker Smoke Test
 → Worker full backtest
 → normalized result eligibility
+→ deterministic stop or next-round feedback
 → one post-backtest analysis call
 → deterministic selection
 ```

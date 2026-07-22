@@ -188,12 +188,16 @@ def test_request_applies_critical_reasoning_policy() -> None:
     assert "temperature" not in completions.kwargs
 
 
-def test_runtime_agent_policies_use_high_reasoning_after_latency_tuning() -> None:
-    assert {
-        DESIGN_POLICY.reasoning_effort,
-        RISK_POLICY.reasoning_effort,
-        ANALYSIS_POLICY.reasoning_effort,
-    } == {"high"}
+def test_runtime_agent_policies_bound_reasoning_and_analysis_output() -> None:
+    assert DESIGN_POLICY.reasoning_effort == "high"
+    assert RISK_POLICY.reasoning_effort == "high"
+    assert ANALYSIS_POLICY.reasoning_effort == "high"
+    assert ANALYSIS_POLICY.max_output_tokens == 16000
+
+
+def test_completion_policy_rejects_compatibility_only_effort_aliases() -> None:
+    with pytest.raises(ValueError, match="native value"):
+        CompletionPolicy("medium", 6000)  # type: ignore[arg-type]
 
 
 def test_structured_client_rejects_after_one_correction_attempt() -> None:

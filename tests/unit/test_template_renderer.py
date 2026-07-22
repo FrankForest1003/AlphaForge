@@ -20,8 +20,12 @@ def _spec(route: str):
         DesignRequest(
             optimization_id=request.optimization_id,
             candidate_type=route,
+            round_number=1,
             parent_spec=request.parent_spec,
-            evidence_summary=EvidenceSummarizer().summarize(request.evidence),
+            constraints=request.constraints,
+            evidence_summary=EvidenceSummarizer().summarize(
+                request.evidence, request.reference_specs
+            ),
         )
     )
     return SpecBuilder().build(

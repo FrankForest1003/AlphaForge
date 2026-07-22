@@ -29,6 +29,12 @@ class CompletionPolicy:
     reasoning_effort: Literal["high", "max"]
     max_output_tokens: int
 
+    def __post_init__(self) -> None:
+        if self.reasoning_effort not in {"high", "max"}:
+            raise ValueError("reasoning_effort must be a native value: high or max")
+        if self.max_output_tokens < 1:
+            raise ValueError("max_output_tokens must be positive")
+
 
 class StructuredModelClient:
     """Strict JSON client with one validation-directed correction attempt."""

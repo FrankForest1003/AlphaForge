@@ -22,13 +22,13 @@
 
 ## 6. 领域与路线规则
 
-运行环境为 LEAN 2.5、Python 3.11、linux/amd64、美国股票、仅 Daily、仅做多、无杠杆且离线。源码必须继承 `AlphaForgeBaseAlgorithm`；使用 RAW 模式；复用 Daily SPY Benchmark；总目标仓位不超过 0.95，单仓不超过 Spec 限制，现金保留比例不低于 0.02；通过 `af_rebalance_to_weights` 分阶段执行。禁止网络、子进程、安装依赖、无限制文件访问、Hour/Minute 数据、Adjusted 模式、直接订单 API，以及未经检查的 `history.loc[symbol]`。
+运行环境为 LEAN 2.5、Python 3.11、linux/amd64、美国股票、仅 Daily、仅做多、无杠杆且离线。源码必须继承 `AlphaForgeBaseAlgorithm`；使用 RAW 模式；复用 Daily SPY；精确实现 Spec 的 target_gross 和可选 benchmark_sma 回看期；过滤器关闭风险时必须把目标权重清零；单仓不超过 Spec 限制，现金保留比例不低于 0.02；通过 `af_rebalance_to_weights` 分阶段执行。禁止网络、子进程、安装依赖、无限制文件访问、日内数据、Adjusted 模式、直接订单 API 和未经检查的 `history.loc[symbol]`。
 
 `price_volume_v1` 按声明顺序精确包含 5/21/63/126 日收益、21/63 日年化波动率和 21/63 日成交量比率。训练只使用历史行、配置的唯一交易日窗口、固定随机种子和精确的估计器/任务映射。当前预测行不得进入训练。分类任务必须保留未知未来标签为缺失值，不能把 NaN 比较转换为类别 0。单个 Symbol 失败必须跳过并记录。
 
 负 shift 本身不等于泄漏。对于 `future = close.shift(-horizon) / close - 1`，尾部 horizon 行通常变为 NaN。你必须按执行顺序追踪之后的 `stack`、`join`、`dropna`、`dropna(subset=...)`、布尔转换、索引对齐和日期过滤。除非另行配置，Pandas 的 `Series.stack()` 和 `DataFrame.stack()` 默认丢弃 NaN。只有能指出一个实际保留的训练样本，并证明其标签或特征依赖预测时点之后的数据，才能报告 blocking 泄漏。如果所有未完成标签在训练矩阵选取前都被删除，不得对这些行报告泄漏。
 
-源码必须用 JSON 原生类型记录模型类型、任务、样本数、特征名、可用时的特征重要性、随机种子和各 Symbol 预测，并输出精确 completion marker。
+源码必须用 JSON 原生类型记录模型类型、任务、样本数、特征名、可用时的特征重要性、随机种子和各 Symbol 预测。完成合同独立执行：`on_alpha_end` 必须调用 `self.debug("<已注册的 completion marker>")`，Worker 会在捕获的 LEAN 文本中查找该字面 marker。`af_record_signal` 不得替代它；正确的 `self.debug` marker 不构成 finding。
 
 ## 7. 必须遵循的工作步骤
 

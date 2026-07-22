@@ -178,7 +178,7 @@ def validate_generated_code(
 
     required_source_markers = {
         "DataNormalizationMode.RAW": "RAW_NORMALIZATION_NOT_ENFORCED",
-        "self.target_gross = 0.95": "TARGET_GROSS_NOT_CAPPED",
+        f"self.target_gross = {spec.execution.target_gross!r}": "TARGET_GROSS_SPEC_MISMATCH",
         "self.settings.free_portfolio_value_percentage = 0.02": "CASH_RESERVE_NOT_CONFIGURED",
         "self.af_rebalance_to_weights(": "STAGED_REBALANCE_NOT_USED",
         "_COMPLETED\")": "COMPLETION_MARKER_MISSING",

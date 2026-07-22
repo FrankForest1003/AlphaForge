@@ -19,8 +19,12 @@ def _compiled_traditional():
         DesignRequest(
             optimization_id=request.optimization_id,
             candidate_type="traditional",
+            round_number=1,
             parent_spec=request.parent_spec,
-            evidence_summary=EvidenceSummarizer().summarize(request.evidence),
+            constraints=request.constraints,
+            evidence_summary=EvidenceSummarizer().summarize(
+                request.evidence, request.reference_specs
+            ),
         )
     )
     spec = SpecBuilder().build(

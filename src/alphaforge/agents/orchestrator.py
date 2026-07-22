@@ -20,6 +20,7 @@ from alphaforge.schemas.agent_outputs import (
     CodeRiskReviewRequest,
     OptimizationResult,
     PostBacktestAnalysisRequest,
+    PriorDesignAttempt,
     RouteOutcome,
     StrategyCompilationRequest,
     TemplateCapabilityRecord,
@@ -34,7 +35,7 @@ from alphaforge.services import (
     validate_post_backtest_analysis,
 )
 from alphaforge.strategy_spec.validator import validate_strategy_spec
-from alphaforge.strategy_spec.versioning import strategy_spec_digest
+from alphaforge.strategy_spec.versioning import strategy_semantic_digest, strategy_spec_digest
 
 
 class OptimisationOrchestrator:
@@ -73,10 +74,20 @@ class OptimisationOrchestrator:
         self.audit_sink = audit_sink
         self._audit_lock = threading.Lock()
 
-    def run(self, request: OptimizationRequest) -> OptimizationResult:
+    def run(
+        self,
+        request: OptimizationRequest,
+        *,
+        initial_result: OptimizationResult | None = None,
+        routes: tuple[str, ...] | None = None,
+    ) -> OptimizationResult:
         self._validate_request_evidence(request)
-        audit: list[AuditEvent] = []
-        evidence_summary = self.evidence_summarizer.summarize(request.evidence)
+        audit: list[AuditEvent] = (
+            list(initial_result.audit_log) if initial_result is not None else []
+        )
+        evidence_summary = self.evidence_summarizer.summarize(
+            request.evidence, request.reference_specs
+        )
         self._audit(
             audit,
             "evidence_summary",
@@ -85,21 +96,56 @@ class OptimisationOrchestrator:
             "seven metrics summarized from five validation runs",
         )
 
-        with ThreadPoolExecutor(max_workers=3, thread_name_prefix="alphaforge-route") as executor:
-            futures = {
-                route: executor.submit(
-                    self._run_route,
-                    route=route,
-                    request=request,
-                    evidence_summary=evidence_summary,
-                    audit=audit,
+        accumulated: list[CandidateRun] = (
+            list(initial_result.candidates) if initial_result is not None else []
+        )
+        start_round = (
+            max(candidate.round_number for candidate in accumulated) + 1
+            if accumulated
+            else 1
+        )
+        active_routes = routes or self.ROUTES
+        if not active_routes or any(route not in self.ROUTES for route in active_routes):
+            raise ValueError("routes must be a non-empty subset of the registered routes")
+        for round_number in range(start_round, request.constraints.max_rounds + 1):
+            with ThreadPoolExecutor(
+                max_workers=len(active_routes),
+                thread_name_prefix=f"alphaforge-round-{round_number}",
+            ) as executor:
+                futures = {
+                    route: executor.submit(
+                        self._run_route,
+                        route=route,
+                        round_number=round_number,
+                        prior_candidates=tuple(accumulated),
+                        request=request,
+                        evidence_summary=evidence_summary,
+                        audit=audit,
+                    )
+                    for route in active_routes
+                }
+                candidates_by_route = {
+                    route: future.result() for route, future in futures.items()
+                }
+            accumulated.extend(candidates_by_route[route] for route in active_routes)
+            interim_selection = self.selector.select(
+                evidence=request.evidence,
+                candidates=tuple(accumulated),
+                constraints=request.constraints,
+            )
+            if interim_selection.selected_strategy_id is not None:
+                self._audit(
+                    audit,
+                    "iteration_stop",
+                    request.optimization_id,
+                    "selected",
+                    f"round {round_number}: {interim_selection.selected_strategy_id}",
                 )
-                for route in self.ROUTES
-            }
-            candidates_by_route = {route: future.result() for route, future in futures.items()}
-        candidates = tuple(candidates_by_route[route] for route in self.ROUTES)
+                break
+        candidates = tuple(accumulated)
         route_outcomes = tuple(
             RouteOutcome(
+                round_number=candidate.round_number,
                 candidate_type=candidate.candidate_type,
                 state=candidate.state,
                 strategy_spec=candidate.strategy_spec,
@@ -182,6 +228,8 @@ class OptimisationOrchestrator:
         self,
         *,
         route: str,
+        round_number: int,
+        prior_candidates: tuple[CandidateRun, ...],
         request: OptimizationRequest,
         evidence_summary,
         audit: list[AuditEvent],
@@ -190,19 +238,28 @@ class OptimisationOrchestrator:
             design = self.designer.design(
                 self._design_request(
                     route=route,
+                    round_number=round_number,
+                    prior_candidates=prior_candidates,
                     request=request,
                     evidence_summary=evidence_summary,
                 )
             )
         except Exception as exc:
-            return self._design_failure(route, exc, audit)
-        self._audit(audit, "strategy_design", route, "completed", "CandidateDesign validated")
+            return self._design_failure(route, round_number, exc, audit)
+        self._audit(
+            audit,
+            "strategy_design",
+            f"{route}:r{round_number}",
+            "completed",
+            "CandidateDesign validated",
+        )
 
         try:
             built = self.spec_builder.build(
                 optimization_id=request.optimization_id,
                 parent_spec=request.parent_spec,
                 design=design,
+                round_number=round_number,
             )
             issues = validate_strategy_spec(
                 built.spec,
@@ -214,6 +271,7 @@ class OptimisationOrchestrator:
                 self._audit(audit, "spec_validation", route, "rejected", ",".join(reasons))
                 return CandidateRun(
                     candidate_type=route,
+                    round_number=round_number,
                     state="rejected_by_spec",
                     design=design,
                     strategy_spec=built.spec,
@@ -225,9 +283,35 @@ class OptimisationOrchestrator:
             self._audit(audit, "spec_build", route, "rejected", reason)
             return CandidateRun(
                 candidate_type=route,
+                round_number=round_number,
                 state="rejected_by_spec",
                 design=design,
                 failure_reasons=(reason,),
+            )
+        semantic_sha256 = strategy_semantic_digest(built.spec)
+        duplicate = self._find_duplicate(
+            semantic_sha256=semantic_sha256,
+            request=request,
+            prior_candidates=prior_candidates,
+        )
+        if duplicate is not None:
+            self._audit(
+                audit,
+                "semantic_deduplication",
+                built.spec.strategy_id,
+                "duplicate",
+                duplicate,
+            )
+            return CandidateRun(
+                candidate_type=route,
+                round_number=round_number,
+                state="duplicate_of_reference",
+                design=design,
+                strategy_spec=built.spec,
+                changed_paths=built.changed_paths,
+                failure_reasons=(f"SEMANTIC_DUPLICATE:{duplicate}",),
+                semantic_sha256=semantic_sha256,
+                duplicate_of_strategy_id=duplicate,
             )
         self._audit(audit, "spec_validation", built.spec.strategy_id, "completed", "spec approved")
 
@@ -248,11 +332,13 @@ class OptimisationOrchestrator:
             self._audit(audit, "strategy_compilation", built.spec.strategy_id, "failed", reason)
             return CandidateRun(
                 candidate_type=route,
+                round_number=round_number,
                 state="rejected_by_code_validation",
                 design=design,
                 strategy_spec=built.spec,
                 changed_paths=built.changed_paths,
                 failure_reasons=(reason,),
+                semantic_sha256=semantic_sha256,
             )
         self._audit(audit, "strategy_compilation", built.spec.strategy_id, "completed", code.source_sha256)
 
@@ -390,6 +476,7 @@ class OptimisationOrchestrator:
             )
         return CandidateRun(
             candidate_type=route,
+            round_number=round_number,
             state="backtested_not_selected",
             design=design,
             strategy_spec=built.spec,
@@ -399,23 +486,48 @@ class OptimisationOrchestrator:
             code_risk_review=code_risk_review,
             smoke_test=smoke,
             backtest_result=result,
+            semantic_sha256=semantic_sha256,
         )
 
-    def _design_request(self, *, route: str, request: OptimizationRequest, evidence_summary):
+    def _design_request(
+        self,
+        *,
+        route: str,
+        round_number: int,
+        prior_candidates: tuple[CandidateRun, ...],
+        request: OptimizationRequest,
+        evidence_summary,
+    ):
         from alphaforge.schemas.agent_outputs import DesignRequest
 
         return DesignRequest(
             optimization_id=request.optimization_id,
             candidate_type=route,
+            round_number=round_number,
             parent_spec=request.parent_spec,
+            constraints=request.constraints,
             evidence_summary=evidence_summary,
+            prior_attempts=tuple(
+                PriorDesignAttempt(
+                    round_number=candidate.round_number,
+                    candidate_type=candidate.candidate_type,
+                    strategy_spec=candidate.strategy_spec,
+                    semantic_sha256=candidate.semantic_sha256
+                    or strategy_semantic_digest(candidate.strategy_spec),
+                    state=candidate.state,
+                    backtest_result=candidate.backtest_result,
+                )
+                for candidate in prior_candidates
+                if candidate.candidate_type == route and candidate.strategy_spec is not None
+            ),
         )
 
-    def _design_failure(self, route, exc, audit):
+    def _design_failure(self, route, round_number, exc, audit):
         reason = f"{type(exc).__name__}: {exc}"
-        self._audit(audit, "strategy_design", route, "failed", reason)
+        self._audit(audit, "strategy_design", f"{route}:r{round_number}", "failed", reason)
         return CandidateRun(
             candidate_type=route,
+            round_number=round_number,
             state="rejected_by_design",
             failure_reasons=(reason,),
         )
@@ -437,6 +549,7 @@ class OptimisationOrchestrator:
         self._audit(audit, state, built.spec.strategy_id, "rejected", ",".join(reasons))
         return CandidateRun(
             candidate_type=route,
+            round_number=int(built.spec.strategy_id.rsplit("_r", 1)[-1]),
             state=state,
             design=built.design,
             strategy_spec=built.spec,
@@ -447,7 +560,25 @@ class OptimisationOrchestrator:
             smoke_test=smoke,
             backtest_result=backtest_result,
             failure_reasons=reasons,
+            semantic_sha256=strategy_semantic_digest(built.spec),
         )
+
+    def _find_duplicate(
+        self,
+        *,
+        semantic_sha256: str,
+        request: OptimizationRequest,
+        prior_candidates: tuple[CandidateRun, ...],
+    ) -> str | None:
+        for spec in request.reference_specs:
+            if strategy_semantic_digest(spec) == semantic_sha256:
+                return spec.strategy_id
+        for candidate in prior_candidates:
+            if candidate.strategy_spec is None:
+                continue
+            if strategy_semantic_digest(candidate.strategy_spec) == semantic_sha256:
+                return candidate.strategy_spec.strategy_id
+        return None
 
     def _validate_request_evidence(self, request: OptimizationRequest) -> None:
         if any(result.dataset_split == "test" for result in request.evidence):
@@ -459,6 +590,10 @@ class OptimisationOrchestrator:
             raise ValueError(f"evidence roles mismatch; missing={missing}, extra={extra}")
         if any(result.status != "completed" or result.metrics is None for result in request.evidence):
             raise ValueError("all five evidence results must be completed and contain metrics")
+        evidence_ids = {result.strategy_id for result in request.evidence}
+        spec_ids = {spec.strategy_id for spec in request.reference_specs}
+        if evidence_ids != spec_ids:
+            raise ValueError("reference spec IDs must exactly match evidence strategy IDs")
 
     def _capability_report(self, candidates) -> TemplateCapabilityReport:
         records = []
@@ -467,6 +602,8 @@ class OptimisationOrchestrator:
             if candidate.generated_code is not None:
                 status = "rendered"
                 reasons = ()
+            elif candidate.state == "duplicate_of_reference":
+                status = "duplicate"
             elif any("CANNOT_IMPLEMENT" in reason for reason in reasons):
                 status = "cannot_implement"
             else:

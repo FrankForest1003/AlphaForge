@@ -3,6 +3,50 @@
     "ExecutionChanges": {
       "additionalProperties": false,
       "properties": {
+        "regime_filter": {
+          "anyOf": [
+            {
+              "enum": [
+                "none",
+                "benchmark_sma"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Regime Filter"
+        },
+        "regime_lookback_days": {
+          "anyOf": [
+            {
+              "maximum": 300,
+              "minimum": 50,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Regime Lookback Days"
+        },
+        "target_gross": {
+          "anyOf": [
+            {
+              "maximum": 0.95,
+              "minimum": 0.25,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Target Gross"
+        },
         "top_k": {
           "anyOf": [
             {

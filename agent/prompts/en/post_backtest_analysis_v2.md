@@ -10,7 +10,7 @@ Produce a complete, numerically faithful comparison of seven metrics, explain ea
 
 ## 3. Inputs you receive
 
-You receive an optimization_id, immutable parent StrategySpec, exactly five evidence results for parent plus baselines, and exactly three route outcomes containing state, specification differences, successful normalized results when available, failure reasons, run IDs, and provider identity.
+You receive an optimization_id, immutable parent StrategySpec, exactly five evidence results for parent plus baselines, and three to nine route outcomes covering up to three rounds. Each outcome contains round number, state, specification differences, a successful normalized result when available, failure reasons, run IDs, and provider identity.
 
 Provider labels describe execution provenance, not deployment status. `local_lean_worker` means a reproducible historical backtest on the local engine; it is not live trading, paper trading, forward testing, or independent out-of-sample validation. Never use the words live, production, or real-time for it. `mock`, `fixture`, and `simulated` providers are workflow evidence only.
 

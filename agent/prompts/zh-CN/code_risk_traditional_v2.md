@@ -22,11 +22,11 @@
 
 ## 6. 领域与路线规则
 
-运行环境为 LEAN 2.5、Python 3.11、linux/amd64、美国股票、仅 Daily、仅做多、无杠杆且离线。源码必须继承 `AlphaForgeBaseAlgorithm`；使用 RAW 复权模式；复用已有 Daily SPY subscription 作为 Benchmark；总目标仓位不超过 0.95，单仓不超过 Spec 限制，现金保留比例不低于 0.02；通过 `af_rebalance_to_weights` 分阶段先卖出/减仓再买入。禁止网络、子进程、安装依赖、无限制文件访问、Hour/Minute 数据、`DataNormalizationMode.ADJUSTED`、直接 `set_holdings`/`liquidate`，以及未经检查的 `history.loc[symbol]`。
+运行环境为 LEAN 2.5、Python 3.11、linux/amd64、美国股票、仅 Daily、仅做多、无杠杆且离线。源码必须继承 `AlphaForgeBaseAlgorithm`；使用 RAW 模式；复用 Daily SPY；精确实现 Spec 的 target_gross 和可选 benchmark_sma 回看期；过滤器关闭风险时必须把目标权重清零；单仓不超过 Spec 限制，现金保留比例不低于 0.02；通过 `af_rebalance_to_weights` 分阶段执行。禁止网络、子进程、安装依赖、无限制文件访问、日内数据、Adjusted 模式、直接订单 API 和未经检查的 `history.loc[symbol]`。
 
 传统信号语义必须精确：`momentum_rank` 是截至已完成 Bar、覆盖 `lookback_days` 的累计收益并降序排名；`mean_reversion_rank` 是相同收益取负后降序排名。必须使用严格有序的 lookback+1 个观测。预定窗口内部有缺失值时应跳过该 Symbol，不得通过删除缺失行静默延长日历窗口。单个 Symbol 失败不得终止路线。
 
-源码必须通过 AlphaForge recorder 输出 JSON 原生类型诊断，并在 `on_alpha_end` 输出精确 completion marker。
+源码必须通过 AlphaForge recorder 输出 JSON 原生类型诊断。完成合同是独立且精确的：`on_alpha_end` 必须调用 `self.debug("<已注册的 completion marker>")`，Worker 会在捕获的 LEAN 文本输出中查找该字面 marker。`af_record_signal` 不得替代这个 `self.debug` marker；正确的 `self.debug` marker 不构成 finding。
 
 ## 7. 必须遵循的工作步骤
 
@@ -42,4 +42,4 @@
 
 ## 10. 最终自检
 
-返回前核对：路线身份、信号方向与窗口、已完成 Bar 时点、缺失数据、RAW Daily subscription、仅做多、0.95 总仓位上限、分阶段执行、recorder/completion 合同、证据位置、结论一致性和 Schema 合法性。
+返回前核对：路线身份、信号方向与窗口、已完成 Bar 时点、缺失数据、RAW Daily subscription、Spec 精确总仓位、基准过滤器及缺失历史时转现金的安全路径、仅做多、分阶段执行、recorder/completion 合同、证据位置、结论一致性和 Schema 合法性。

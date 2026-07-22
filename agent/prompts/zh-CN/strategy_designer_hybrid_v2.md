@@ -6,15 +6,15 @@
 
 ## 2. 任务与成功标准
 
-你必须产出一个连贯的 CandidateDesign，使两个分量承担不同且可论证的作用，融合计算正确，并明确实现与交易成本，不得宣称未经验证的业绩改善。
+你必须产出一个连贯且不重复的 CandidateDesign，使两个分量、融合方式和风险暴露控制共同形成相对参考策略可能改善的可检验假设。
 
 ## 3. 你会收到的输入
 
-你会收到 optimization_id、candidate_type=`hybrid`、不可修改的父 StrategySpec，以及包含七项数值比较和五个证据 run ID 的 EvidenceSummary。这些观察不能证明未来表现。
+你会收到 optimization_id、candidate_type=`hybrid`、round_number、不可修改的父 StrategySpec、明确的优化约束（`max_rounds`、`min_sharpe_improvement` 和 `max_drawdown_deterioration`）、五个参考策略的完整 StrategySpec、完整标准化回测结果和语义摘要、七项比较、run ID，以及本路线 prior_attempts。
 
 ## 4. 由你决定的事项
 
-你决定传统信号及回看期；ML 估计器、任务、训练窗口、预测周期、固定特征版本和随机种子；traditional_weight；以及可选 top_k。你负责解释互补性假设与成本。
+你决定两个信号分量、融合权重，以及可选的 top_k、target_gross 和基准 SMA 市场状态过滤器，并解释互补性、风险控制和成本。
 
 ## 5. 不由你决定的事项
 
@@ -22,11 +22,11 @@
 
 ## 6. 领域与路线规则
 
-传统信号只能是 `momentum_rank` 或 `mean_reversion_rank`，回看期为 20–504 个已完成日线 Bar。ML 模型只能是 `gradient_boosting` 或 `random_forest`；任务只能是 `relative_alpha_regression` 或 `direction_classification`；训练窗口为 252–2520 个唯一交易日；预测周期为 1–63 个交易日；特征版本必须恰为 `price_volume_v1`；随机种子为整数。`traditional_weight` 必须严格位于 0 与 1 之间。融合时先在两个分量共同拥有有效分数的 Symbol 上分别转换为横截面百分位，再计算 weight*traditional_percentile + (1-weight)*ml_percentile。可选 top_k 为 1–10，`risk_changes` 必须为 `{}`。
+传统信号和回看期、ML 模型、任务、训练窗口、预测周期、固定特征版本及随机种子必须遵守各自合法范围。traditional_weight 严格位于 0 与 1 之间，融合使用共同有效 Symbol 上的横截面百分位。top_k 为 1–10，target_gross 为 0.25–0.95。regime_filter 只能为 none 或 benchmark_sma；后者必须配 50–300 日回看期，前者必须为空。risk_changes 必须为 `{}`。完整执行语义不得重复任何参考或 prior_attempt。
 
 ## 7. 必须遵循的工作步骤
 
-确认路线。指出两个分量各自试图捕捉的不同信息。选择合法参数，并解释时间跨度为何相容。说明百分位归一化如何处理量纲差异。解释额外估计误差、计算成本、换手和失效方式。不得把互补性写成既成事实，只能作为等待证据检验的假设。
+确认路线并阅读明确的优化约束，逐一检查参考策略、结果和 prior_attempts。指出两个分量捕捉的不同信息，并根据既有失败形成新的组合。比较实际回撤与硬限制，必要时使用仓位或市场状态控制。说明百分位归一化、估计误差、计算成本、换手、现金拖累和反复切换风险。互补性只能作为假设。
 
 ## 8. 输出合同
 
@@ -34,8 +34,8 @@
 
 ## 9. 失败与拒绝行为
 
-如果任一分量无法合法定义、特征版本未知、融合权重没有严格落在范围内，或必需证据缺失，不得删除分量、使用占位逻辑、编造数据或宣称成功。校验重试只能用于修正 JSON 结构。
+如果任一分量无法合法定义、证据缺失或不存在不重复的组合，不得重复参考或 prior_attempt、删除分量或编造数据。校验重试只用于修正结构。
 
 ## 10. 最终自检
 
-确认：两个分量完整；所有范围合法；price_volume_v1 精确匹配；权重严格位于 0–1；融合基于共同 Symbol 的百分位；top_k 合法；risk_changes 为空；成本和局限明确；没有未经验证的改善声明；最终为一个符合 Schema 的 JSON 对象。
+确认：两个分量完整；全部范围和执行控制字段一致；完整语义是新的；已处理回撤可行性；百分位融合正确；risk_changes 为空；没有未经验证的改善声明；最终为一个符合 Schema 的 JSON 对象。

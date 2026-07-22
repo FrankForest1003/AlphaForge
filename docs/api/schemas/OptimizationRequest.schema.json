@@ -144,6 +144,29 @@
           "title": "Rebalance",
           "type": "string"
         },
+        "regime_filter": {
+          "default": "none",
+          "enum": [
+            "none",
+            "benchmark_sma"
+          ],
+          "title": "Regime Filter",
+          "type": "string"
+        },
+        "regime_lookback_days": {
+          "anyOf": [
+            {
+              "maximum": 300,
+              "minimum": 50,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Regime Lookback Days"
+        },
         "resolution": {
           "const": "daily",
           "default": "daily",
@@ -154,6 +177,13 @@
           "format": "date",
           "title": "Start Date",
           "type": "string"
+        },
+        "target_gross": {
+          "default": 0.95,
+          "maximum": 0.95,
+          "minimum": 0.25,
+          "title": "Target Gross",
+          "type": "number"
         },
         "top_k": {
           "default": 3,
@@ -268,14 +298,14 @@
           "type": "number"
         },
         "max_rounds": {
-          "default": 1,
-          "maximum": 2,
+          "default": 3,
+          "maximum": 3,
           "minimum": 1,
           "title": "Max Rounds",
           "type": "integer"
         },
         "min_sharpe_improvement": {
-          "default": 0.05,
+          "default": 0.0,
           "minimum": 0,
           "title": "Min Sharpe Improvement",
           "type": "number"
@@ -461,8 +491,8 @@
       "$ref": "#/$defs/OptimizationConstraints",
       "default": {
         "max_drawdown_deterioration": 0.02,
-        "max_rounds": 1,
-        "min_sharpe_improvement": 0.05
+        "max_rounds": 3,
+        "min_sharpe_improvement": 0.0
       }
     },
     "evidence": {
@@ -480,12 +510,22 @@
     },
     "parent_spec": {
       "$ref": "#/$defs/StrategySpec"
+    },
+    "reference_specs": {
+      "items": {
+        "$ref": "#/$defs/StrategySpec"
+      },
+      "maxItems": 5,
+      "minItems": 5,
+      "title": "Reference Specs",
+      "type": "array"
     }
   },
   "required": [
     "optimization_id",
     "parent_spec",
-    "evidence"
+    "evidence",
+    "reference_specs"
   ],
   "title": "OptimizationRequest",
   "type": "object"

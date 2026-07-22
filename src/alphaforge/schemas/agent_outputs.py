@@ -6,6 +6,7 @@ from pydantic import Field, model_validator
 
 from alphaforge.schemas.backtest import BacktestResult, SmokeTestResult
 from alphaforge.schemas.manifests import LeanEnvironmentManifest
+from alphaforge.schemas.optimisation import OptimizationConstraints
 from alphaforge.schemas.strategy_spec import (
     CandidateType,
     StrategyLogic,
@@ -38,10 +39,33 @@ class MetricComparison(StrictModel):
 class EvidenceSummary(StrictModel):
     evidence_run_ids: tuple[str, ...] = Field(min_length=5, max_length=5)
     comparisons: tuple[MetricComparison, ...] = Field(min_length=7, max_length=7)
+    reference_strategies: tuple["ReferenceStrategyEvidence", ...] = Field(
+        min_length=5, max_length=5
+    )
+
+
+class ReferenceStrategyEvidence(StrictModel):
+    strategy_role: Literal["user", "baseline_b1", "baseline_b2", "baseline_b3", "baseline_b4"]
+    strategy_spec: StrategySpec
+    backtest_result: BacktestResult
+    semantic_sha256: str
 
 
 class ExecutionChanges(StrictModel):
     top_k: int | None = Field(default=None, ge=1, le=10)
+    target_gross: float | None = Field(default=None, ge=0.25, le=0.95)
+    regime_filter: Literal["none", "benchmark_sma"] | None = None
+    regime_lookback_days: int | None = Field(default=None, ge=50, le=300)
+
+    @model_validator(mode="after")
+    def regime_fields_are_consistent(self) -> "ExecutionChanges":
+        if self.regime_filter is None and self.regime_lookback_days is not None:
+            raise ValueError("regime_lookback_days requires regime_filter")
+        if self.regime_filter == "none" and self.regime_lookback_days is not None:
+            raise ValueError("regime_filter=none forbids regime_lookback_days")
+        if self.regime_filter == "benchmark_sma" and self.regime_lookback_days is None:
+            raise ValueError("benchmark_sma requires regime_lookback_days")
+        return self
 
 
 class RiskChanges(StrictModel):
@@ -66,8 +90,20 @@ class CandidateDesign(StrictModel):
 class DesignRequest(StrictModel):
     optimization_id: str
     candidate_type: RouteType
+    round_number: int = Field(ge=1, le=3)
     parent_spec: StrategySpec
+    constraints: OptimizationConstraints
     evidence_summary: EvidenceSummary
+    prior_attempts: tuple["PriorDesignAttempt", ...] = ()
+
+
+class PriorDesignAttempt(StrictModel):
+    round_number: int = Field(ge=1, le=3)
+    candidate_type: RouteType
+    strategy_spec: StrategySpec
+    semantic_sha256: str
+    state: str
+    backtest_result: BacktestResult | None = None
 
 
 class BuiltCandidate(StrictModel):
@@ -161,6 +197,7 @@ class CodeRiskReview(StrictModel):
 
 
 class RouteOutcome(StrictModel):
+    round_number: int = Field(ge=1, le=3)
     candidate_type: RouteType
     state: Literal[
         "rejected_by_design",
@@ -169,6 +206,7 @@ class RouteOutcome(StrictModel):
         "rejected_by_code_risk",
         "rejected_by_smoke_test",
         "rejected_by_backtest",
+        "duplicate_of_reference",
         "backtested_not_selected",
         "selected",
     ]
@@ -182,7 +220,7 @@ class PostBacktestAnalysisRequest(StrictModel):
     optimization_id: str
     parent_spec: StrategySpec
     evidence: tuple[BacktestResult, ...] = Field(min_length=5, max_length=5)
-    route_outcomes: tuple[RouteOutcome, ...] = Field(min_length=3, max_length=3)
+    route_outcomes: tuple[RouteOutcome, ...] = Field(min_length=3, max_length=9)
 
 
 class MetricValue(StrictModel):
@@ -257,6 +295,7 @@ class SelectionResult(StrictModel):
 
 
 class CandidateRun(StrictModel):
+    round_number: int = Field(default=1, ge=1, le=3)
     candidate_type: RouteType
     state: Literal[
         "rejected_by_design",
@@ -265,6 +304,7 @@ class CandidateRun(StrictModel):
         "rejected_by_code_risk",
         "rejected_by_smoke_test",
         "rejected_by_backtest",
+        "duplicate_of_reference",
         "backtested_not_selected",
         "selected",
     ]
@@ -277,6 +317,8 @@ class CandidateRun(StrictModel):
     smoke_test: SmokeTestResult | None = None
     backtest_result: BacktestResult | None = None
     failure_reasons: tuple[str, ...] = ()
+    semantic_sha256: str | None = None
+    duplicate_of_strategy_id: str | None = None
 
 
 class AuditEvent(StrictModel):
@@ -289,13 +331,13 @@ class AuditEvent(StrictModel):
 
 class TemplateCapabilityRecord(StrictModel):
     candidate_type: RouteType
-    status: Literal["rendered", "cannot_implement", "template_error"]
+    status: Literal["rendered", "cannot_implement", "template_error", "duplicate"]
     reasons: tuple[str, ...] = ()
 
 
 class TemplateCapabilityReport(StrictModel):
     template_version: str
-    records: tuple[TemplateCapabilityRecord, ...] = Field(min_length=3, max_length=3)
+    records: tuple[TemplateCapabilityRecord, ...] = Field(min_length=3, max_length=9)
 
     @property
     def rendered_count(self) -> int:
@@ -306,7 +348,7 @@ class OptimizationResult(StrictModel):
     optimization_id: str
     status: Literal["completed", "failed"]
     evidence_summary: EvidenceSummary
-    candidates: tuple[CandidateRun, ...] = Field(min_length=3, max_length=3)
+    candidates: tuple[CandidateRun, ...] = Field(min_length=3, max_length=9)
     post_backtest_analysis: PostBacktestAnalysis | None
     selection: SelectionResult
     analysis_error: str | None = None

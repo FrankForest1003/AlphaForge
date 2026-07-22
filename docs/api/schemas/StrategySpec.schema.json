@@ -20,6 +20,29 @@
           "title": "Rebalance",
           "type": "string"
         },
+        "regime_filter": {
+          "default": "none",
+          "enum": [
+            "none",
+            "benchmark_sma"
+          ],
+          "title": "Regime Filter",
+          "type": "string"
+        },
+        "regime_lookback_days": {
+          "anyOf": [
+            {
+              "maximum": 300,
+              "minimum": 50,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Regime Lookback Days"
+        },
         "resolution": {
           "const": "daily",
           "default": "daily",
@@ -30,6 +53,13 @@
           "format": "date",
           "title": "Start Date",
           "type": "string"
+        },
+        "target_gross": {
+          "default": 0.95,
+          "maximum": 0.95,
+          "minimum": 0.25,
+          "title": "Target Gross",
+          "type": "number"
         },
         "top_k": {
           "default": 3,

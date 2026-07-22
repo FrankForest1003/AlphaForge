@@ -15,9 +15,13 @@ from alphaforge.agents.providers.mock import (
 from alphaforge.codegen.compiler import DeterministicStrategyCompiler
 from alphaforge.demo import build_demo_environment, build_demo_request
 from alphaforge.schemas.agent_outputs import CodeRiskFinding, CodeRiskReview
+from alphaforge.schemas.agent_outputs import CandidateDesign, ExecutionChanges, RiskChanges
 from alphaforge.schemas.backtest import BacktestResult, SmokeTestResult
+from alphaforge.schemas.backtest import BacktestMetrics
+from alphaforge.schemas.strategy_spec import HybridLogic
 from alphaforge.services.analysis_validator import validate_post_backtest_analysis
 from alphaforge.services.candidate_selector import CandidateSelector
+from alphaforge.services.resumer import OptimizationResumer
 
 
 class CountingAnalysisAgent(MockPostBacktestAnalysisAgent):
@@ -104,6 +108,64 @@ def test_closed_loop_uses_one_analysis_call_and_deterministic_selection() -> Non
     )
 
 
+def test_resumer_re_reviews_only_exact_completion_marker_false_positive() -> None:
+    original = build_orchestrator().run(build_demo_request())
+    candidate = original.candidates[0]
+    assert candidate.generated_code is not None
+    marker = candidate.generated_code.compiler_metadata["completion_marker"]
+    finding = CodeRiskFinding(
+        code="MISSING_COMPLETION_SIGNAL",
+        severity="blocking",
+        category="execution",
+        code_location="on_alpha_end",
+        evidence=f'self.debug("{marker}")',
+        risk="incorrect Prompt interpretation",
+        required_correction="use the registered completion contract",
+    )
+    rejected = candidate.model_copy(
+        update={
+            "state": "rejected_by_code_risk",
+            "code_risk_review": candidate.code_risk_review.model_copy(
+                update={"verdict": "changes_required", "findings": (finding,)}
+            ),
+            "smoke_test": None,
+            "backtest_result": None,
+            "failure_reasons": ("MISSING_COMPLETION_SIGNAL",),
+        }
+    )
+    partial = original.model_copy(
+        update={"candidates": (rejected, *original.candidates[1:])}
+    )
+    backtest = RecordingBacktestProvider()
+    resumed = OptimizationResumer(
+        backtest_provider=backtest,
+        analysis_agent=MockPostBacktestAnalysisAgent(),
+        lean_environment=build_demo_environment(),
+    ).resume_supported_failures(
+        partial,
+        constraints=build_demo_request().constraints,
+        code_risk_agent=MockCodeRiskAgent(),
+    )
+
+    retried = resumed.candidates[0]
+    assert retried.code_risk_review.verdict == "approve"
+    assert retried.backtest_result is not None
+    assert retried.state in {"backtested_not_selected", "selected"}
+    assert backtest.smoke_calls == 1
+    assert backtest.run_calls == 1
+
+    repeated = OptimizationResumer(
+        backtest_provider=RecordingBacktestProvider(),
+        analysis_agent=MockPostBacktestAnalysisAgent(),
+        lean_environment=build_demo_environment(),
+    ).resume_supported_failures(
+        resumed,
+        constraints=build_demo_request().constraints,
+        code_risk_agent=MockCodeRiskAgent(),
+    )
+    assert repeated.selection.selected_strategy_id == resumed.selection.selected_strategy_id
+
+
 class BarrierDesigner(MockStrategyDesigner):
     def __init__(self) -> None:
         self.barrier = threading.Barrier(3)
@@ -126,6 +188,121 @@ def test_three_route_pipelines_are_dispatched_concurrently() -> None:
     assert [event.sequence for event in result.audit_log] == list(
         range(1, len(result.audit_log) + 1)
     )
+
+
+class ReferenceCopyingDesigner(MockStrategyDesigner):
+    def design(self, request):
+        references = {
+            item.strategy_role: item.strategy_spec
+            for item in request.evidence_summary.reference_strategies
+        }
+        if request.candidate_type == "traditional":
+            logic = references["baseline_b1"].logic
+            changes = ExecutionChanges()
+        elif request.candidate_type == "ml":
+            logic = references["baseline_b3"].logic
+            changes = ExecutionChanges()
+        else:
+            return super().design(request)
+        return CandidateDesign(
+            candidate_type=request.candidate_type,
+            logic=logic,
+            execution_changes=changes,
+            risk_changes=RiskChanges(),
+            design_reasons=("copy reference to exercise deterministic deduplication",),
+            expected_tradeoffs=("duplicate must not consume a backtest",),
+        )
+
+
+def test_reference_semantic_duplicates_are_not_compiled_or_backtested() -> None:
+    backtest = RecordingBacktestProvider()
+    orchestrator = OptimisationOrchestrator(
+        designer=ReferenceCopyingDesigner(),
+        code_risk_agent=MockCodeRiskAgent(),
+        backtest_provider=backtest,
+        analysis_agent=MockPostBacktestAnalysisAgent(),
+        lean_environment=build_demo_environment(),
+    )
+    result = orchestrator.run(build_demo_request())
+    duplicates = [c for c in result.candidates if c.state == "duplicate_of_reference"]
+    assert {c.duplicate_of_strategy_id for c in duplicates} == {
+        "baseline_b1_momentum_v1",
+        "baseline_b3_gbdt_v1",
+    }
+    assert backtest.run_calls == 1
+
+
+class RecordingRoundDesigner(MockStrategyDesigner):
+    def __init__(self):
+        self.requests = []
+
+    def design(self, request):
+        self.requests.append(request)
+        return super().design(request)
+
+
+class NoImprovementBacktest(RecordingBacktestProvider):
+    def run(self, spec, code):
+        result = super().run(spec, code)
+        return result.model_copy(
+            update={
+                "metrics": BacktestMetrics(
+                    cagr=0.05,
+                    sharpe_ratio=0.5,
+                    sortino_ratio=0.6,
+                    max_drawdown=0.2,
+                    annual_volatility=0.15,
+                    turnover=0.8,
+                    total_fees=120.0,
+                )
+            }
+        )
+
+
+def test_second_round_receives_same_route_prior_attempt_and_remains_unique() -> None:
+    designer = RecordingRoundDesigner()
+    backtest = NoImprovementBacktest()
+    orchestrator = OptimisationOrchestrator(
+        designer=designer,
+        code_risk_agent=MockCodeRiskAgent(),
+        backtest_provider=backtest,
+        analysis_agent=MockPostBacktestAnalysisAgent(),
+        lean_environment=build_demo_environment(),
+    )
+    request = build_demo_request()
+    request = request.model_copy(
+        update={"constraints": request.constraints.model_copy(update={"max_rounds": 2})}
+    )
+    result = orchestrator.run(request)
+    assert len(result.candidates) == 6
+    assert backtest.run_calls == 6
+    round_two = [request for request in designer.requests if request.round_number == 2]
+    assert len(round_two) == 3
+    assert all(len(request.prior_attempts) == 1 for request in round_two)
+
+
+def test_completed_result_can_continue_only_from_the_next_round() -> None:
+    designer = RecordingRoundDesigner()
+    backtest = NoImprovementBacktest()
+    orchestrator = OptimisationOrchestrator(
+        designer=designer,
+        code_risk_agent=MockCodeRiskAgent(),
+        backtest_provider=backtest,
+        analysis_agent=MockPostBacktestAnalysisAgent(),
+        lean_environment=build_demo_environment(),
+    )
+    request = build_demo_request()
+    first_two = request.model_copy(
+        update={"constraints": request.constraints.model_copy(update={"max_rounds": 2})}
+    )
+    partial = orchestrator.run(first_two)
+    continued = orchestrator.run(request, initial_result=partial)
+    assert len(partial.candidates) == 6
+    assert len(continued.candidates) == 9
+    assert [candidate.round_number for candidate in continued.candidates[-3:]] == [3, 3, 3]
+    round_three = [item for item in designer.requests if item.round_number == 3]
+    assert len(round_three) == 3
+    assert all(len(item.prior_attempts) == 2 for item in round_three)
 
 
 class InvalidAnalysisAgent(MockPostBacktestAnalysisAgent):

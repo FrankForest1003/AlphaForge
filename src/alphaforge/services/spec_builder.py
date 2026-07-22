@@ -32,8 +32,13 @@ class SpecBuilder:
         round_number: int = 1,
     ) -> BuiltCandidate:
         execution = parent_spec.execution
-        if design.execution_changes.top_k is not None:
-            execution = execution.model_copy(update={"top_k": design.execution_changes.top_k})
+        execution_updates = {
+            field: value
+            for field, value in design.execution_changes.model_dump().items()
+            if value is not None
+        }
+        if execution_updates:
+            execution = execution.model_copy(update=execution_updates)
 
         candidate = StrategySpec.model_validate(
             parent_spec.model_copy(

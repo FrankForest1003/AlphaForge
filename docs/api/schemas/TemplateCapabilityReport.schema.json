@@ -24,7 +24,8 @@
           "enum": [
             "rendered",
             "cannot_implement",
-            "template_error"
+            "template_error",
+            "duplicate"
           ],
           "title": "Status",
           "type": "string"
@@ -44,7 +45,7 @@
       "items": {
         "$ref": "#/$defs/TemplateCapabilityRecord"
       },
-      "maxItems": 3,
+      "maxItems": 9,
       "minItems": 3,
       "title": "Records",
       "type": "array"

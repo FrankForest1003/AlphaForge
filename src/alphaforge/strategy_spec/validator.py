@@ -18,6 +18,9 @@ _ALLOWED_CHANGE_ROOTS = (
     "/candidate_type",
     "/logic",
     "/execution/top_k",
+    "/execution/target_gross",
+    "/execution/regime_filter",
+    "/execution/regime_lookback_days",
 )
 
 

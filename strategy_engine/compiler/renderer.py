@@ -108,6 +108,9 @@ class QCTemplateRenderer:
             "__INITIAL_CASH__": repr(float(spec.execution.initial_cash)),
             "__SYMBOLS__": repr(list(spec.universe.symbols)),
             "__TOP_K__": str(spec.execution.top_k),
+            "__TARGET_GROSS__": repr(spec.execution.target_gross),
+            "__REGIME_FILTER__": spec.execution.regime_filter,
+            "__REGIME_LOOKBACK_DAYS__": repr(spec.execution.regime_lookback_days),
             "__MAX_POSITION_WEIGHT__": repr(spec.risk.max_position_weight),
             "__WARMUP_DAYS__": str(self._warmup_days(spec)),
             "__ALGORITHM_CLASS__": self.algorithm_class(spec.strategy_id),
@@ -157,11 +160,15 @@ class QCTemplateRenderer:
             raise TemplateRenderError(f"imports and classes are forbidden in region: {region.name}")
 
     def _warmup_days(self, spec: StrategySpec) -> int:
+        regime_days = spec.execution.regime_lookback_days or 0
         if spec.logic.kind == "traditional":
-            return spec.logic.lookback_days + 1  # type: ignore[union-attr]
+            return max(spec.logic.lookback_days + 1, regime_days)  # type: ignore[union-attr]
         ml = spec.logic.ml if isinstance(spec.logic, HybridLogic) else spec.logic
         assert isinstance(ml, MLLogic)
-        return ml.training_window_days + 126 + ml.prediction_horizon_days
+        return max(
+            ml.training_window_days + 126 + ml.prediction_horizon_days,
+            regime_days,
+        )
 
     def _model_import(self, logic: MLLogic | None) -> str:
         if logic is None:

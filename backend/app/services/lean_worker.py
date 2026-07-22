@@ -123,6 +123,9 @@ class LeanWorkerClient:
     def result(self, run_id: str) -> dict[str, Any]:
         return self._request("GET", f"/v1/jobs/{run_id}/result")
 
+    def jobs(self, *, limit: int = 500) -> list[dict[str, Any]]:
+        return self._request("GET", f"/v1/jobs?limit={limit}")
+
 
 class LocalLeanBacktestProvider:
     """BacktestProvider that deploys digest-bound code to Local LEAN Worker."""
@@ -193,29 +196,81 @@ class LocalLeanBacktestProvider:
             if not result.get("evaluation", {}).get("eligible_for_comparison"):
                 reasons = result.get("evaluation", {}).get("rejection_reasons", [])
                 return self._failed(spec, submission["run_id"], ",".join(reasons))
-            summary = result["summary"]
-            statistics = result["statistics"]
-            metrics = BacktestMetrics(
-                cagr=float(summary["cagr"]),
-                sharpe_ratio=float(summary["sharpe_ratio"]),
-                sortino_ratio=float(summary["sortino_ratio"]),
-                max_drawdown=float(summary["maximum_drawdown"]),
-                annual_volatility=float(statistics["annual_standard_deviation"]),
-                turnover=float(summary["portfolio_turnover"]),
-                total_fees=float(summary["total_fees"]),
-            )
-            return BacktestResult(
-                run_id=submission["run_id"],
-                strategy_id=spec.strategy_id,
-                strategy_role="candidate",
-                status="completed",
-                dataset_split="validation",
-                provider="local_lean_worker_v1.1.3",
-                metrics=metrics,
-                warnings=(),
-            )
+            return self._normalize_completed(spec, submission["run_id"], result)
         except Exception as exc:
             return self._failed(spec, "worker-request-failed", f"{type(exc).__name__}: {exc}")
+
+    def recover_latest_full(self, spec: StrategySpec) -> BacktestResult | None:
+        expected_start = spec.execution.start_date.isoformat()
+        expected_end = spec.execution.end_date.isoformat()
+        for job in self.client.jobs():
+            parameters = job.get("parameters", {})
+            if (
+                job.get("strategy_id") != spec.strategy_id
+                or job.get("state") != "completed"
+                or parameters.get("start_date") != expected_start
+                or parameters.get("end_date") != expected_end
+            ):
+                continue
+            result = self.client.result(job["run_id"])
+            if result.get("evaluation", {}).get("eligible_for_comparison"):
+                return self._normalize_completed(spec, job["run_id"], result)
+        return None
+
+    def recover_latest_smoke(self, spec: StrategySpec) -> SmokeTestResult | None:
+        expected_start = spec.execution.start_date.isoformat()
+        for job in self.client.jobs():
+            parameters = job.get("parameters", {})
+            if (
+                job.get("strategy_id") != spec.strategy_id
+                or job.get("state") not in self.client.TERMINAL_STATES
+                or parameters.get("start_date") == expected_start
+            ):
+                continue
+            try:
+                result = self.client.result(job["run_id"])
+            except LeanWorkerError:
+                return SmokeTestResult(
+                    strategy_id=spec.strategy_id,
+                    status="failed",
+                    diagnostics=(f"WORKER_STATE:{job.get('state', 'failed')}",),
+                    provider="local_lean_worker_v1.1.3",
+                )
+            eligible = bool(result.get("evaluation", {}).get("eligible_for_comparison"))
+            return SmokeTestResult(
+                strategy_id=spec.strategy_id,
+                status="passed" if eligible else "failed",
+                diagnostics=tuple(
+                    result.get("evaluation", {}).get("rejection_reasons", [])
+                ),
+                provider="local_lean_worker_v1.1.3",
+            )
+        return None
+
+    def _normalize_completed(
+        self, spec: StrategySpec, run_id: str, result: dict[str, Any]
+    ) -> BacktestResult:
+        summary = result["summary"]
+        statistics = result["statistics"]
+        metrics = BacktestMetrics(
+            cagr=float(summary["cagr"]),
+            sharpe_ratio=float(summary["sharpe_ratio"]),
+            sortino_ratio=float(summary["sortino_ratio"]),
+            max_drawdown=float(summary["maximum_drawdown"]),
+            annual_volatility=float(statistics["annual_standard_deviation"]),
+            turnover=float(summary["portfolio_turnover"]),
+            total_fees=float(summary["total_fees"]),
+        )
+        return BacktestResult(
+            run_id=run_id,
+            strategy_id=spec.strategy_id,
+            strategy_role="candidate",
+            status="completed",
+            dataset_split="validation",
+            provider="local_lean_worker_v1.1.3",
+            metrics=metrics,
+            warnings=(),
+        )
 
     def _failed(self, spec: StrategySpec, run_id: str, reason: str) -> BacktestResult:
         return BacktestResult(

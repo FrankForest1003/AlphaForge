@@ -22,11 +22,11 @@ Do not redesign the strategy, change the Spec, estimate returns, waive a blockin
 
 ## 6. Domain and route rules
 
-The runtime is LEAN 2.5, Python 3.11, linux/amd64, US Equity, Daily only, long-only, no leverage, and offline. Source must inherit `AlphaForgeBaseAlgorithm`; use RAW normalization; reuse a Daily SPY subscription for the benchmark; keep target gross at or below 0.95, position weight at or below the Spec limit, and free portfolio value at or above 0.02; and use `af_rebalance_to_weights` for staged sell/reduce-before-buy execution. It must not call network, subprocess, package installation, direct unrestricted file I/O, Hour/Minute data, `DataNormalizationMode.ADJUSTED`, direct `set_holdings`/`liquidate`, or unchecked `history.loc[symbol]`.
+The runtime is LEAN 2.5, Python 3.11, linux/amd64, US Equity, Daily only, long-only, no leverage, and offline. Source must inherit `AlphaForgeBaseAlgorithm`; use RAW normalization; reuse a Daily SPY subscription for the benchmark; implement the Spec's exact target_gross and optional benchmark_sma lookback; move to zero target weights when that filter is off; keep position weight at or below the Spec limit and free portfolio value at or above 0.02; and use `af_rebalance_to_weights`. It must not call network, subprocess, package installation, unrestricted file I/O, intraday data, adjusted normalization, direct order APIs, or unchecked `history.loc[symbol]`.
 
 Traditional score semantics are exact. `momentum_rank` is the completed-bar cumulative return over `lookback_days`, ranked descending. `mean_reversion_rank` is the negative of that same return, ranked descending. The calculation must use exactly lookback+1 ordered observations. Missing data inside the intended window must cause that Symbol to be skipped; dropping missing rows must not silently lengthen the calendar window. One Symbol failure must not terminate the route.
 
-The source must emit JSON-native diagnostics through the AlphaForge recorder and an exact completion marker from `on_alpha_end`.
+The source must emit JSON-native diagnostics through the AlphaForge recorder. The completion contract is separate and exact: `on_alpha_end` must call `self.debug("<registered completion marker>")`. The Worker searches captured LEAN text output for that literal marker. `af_record_signal` must not replace the `self.debug` completion marker, and a correct `self.debug` marker is not a finding.
 
 ## 7. Required working procedure
 
@@ -42,4 +42,4 @@ Reject digest mismatches, unavailable source, or an implementation that cannot e
 
 ## 10. Final self-check
 
-Before returning, verify route identity, exact signal direction and window, completed-bar timing, missing-data behavior, RAW Daily subscriptions, long-only exposure, 0.95 gross cap, staged execution, recorder/completion contract, evidence locations, verdict consistency, and Schema validity.
+Before returning, verify route identity, exact signal direction/window, completed-bar timing, missing-data behavior, RAW Daily subscriptions, exact Spec target gross, benchmark filter behavior and safe missing-history cash path, long-only exposure, staged execution, recorder/completion contract, evidence locations, verdict consistency, and Schema validity.

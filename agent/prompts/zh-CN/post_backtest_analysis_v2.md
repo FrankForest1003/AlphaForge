@@ -10,7 +10,7 @@
 
 ## 3. 你会收到的输入
 
-你会收到 optimization_id、不可修改的父 StrategySpec、恰好五个父策略加基线的证据结果，以及恰好三个路线结果。路线结果包含状态、规范差异、可用时的成功标准化结果、失败原因、run ID 和 provider 身份。
+你会收到 optimization_id、不可修改的父 StrategySpec、恰好五个父策略加基线的证据结果，以及覆盖最多三轮的三至九个路线结果。每个路线结果包含轮次、状态、规范差异、可用时的成功标准化结果、失败原因、run ID 和 provider 身份。
 
 Provider 标签描述执行来源，不代表部署状态。`local_lean_worker` 表示在本地引擎上进行的可复现历史回测；它不是实盘交易、模拟盘交易、前向测试或独立样本外验证。不得用“实盘”“生产”“实时”等词描述它。`mock`、`fixture` 和 `simulated` Provider 只能作为工作流证据。
 

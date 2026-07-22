@@ -35,9 +35,12 @@ class __ALGORITHM_CLASS__(AlphaForgeBaseAlgorithm):
             benchmark_security.set_leverage(1)
             benchmark = benchmark_security.symbol
         self.af_use_security_benchmark(benchmark)
+        self.benchmark_symbol = benchmark
 
         self.top_k = __TOP_K__
-        self.target_gross = 0.95
+        self.target_gross = __TARGET_GROSS__
+        self.regime_filter = "__REGIME_FILTER__"
+        self.regime_lookback_days = __REGIME_LOOKBACK_DAYS__
         self.max_position_weight = __MAX_POSITION_WEIGHT__
         self.settings.minimum_order_margin_portfolio_percentage = 0
         self.settings.free_portfolio_value_percentage = 0.02
@@ -56,6 +59,16 @@ class __ALGORITHM_CLASS__(AlphaForgeBaseAlgorithm):
         if self.transactions.get_open_orders():
             return
         self._last_rebalance_date = self.time.date()
+        if not self.regime_allows_risk():
+            self.af_record_signal(
+                "alphaforge_regime_filter_off",
+                {
+                    "filter": self.regime_filter,
+                    "lookback_days": self.regime_lookback_days,
+                },
+            )
+            self.af_rebalance_to_weights({}, "AlphaForge regime filter")
+            return
         raw_scores = self.compute_scores()
         scores = {
             symbol: float(score)
@@ -95,6 +108,27 @@ class __ALGORITHM_CLASS__(AlphaForgeBaseAlgorithm):
             },
         )
         self.af_rebalance_to_weights(target_weights, "AlphaForge monthly rebalance")
+
+    def regime_allows_risk(self):
+        if self.regime_filter == "none":
+            return True
+        history = self.history(
+            [self.benchmark_symbol], self.regime_lookback_days, Resolution.DAILY
+        )
+        frames = af_split_history_frames(history)
+        frame = frames.get(self.benchmark_symbol.value.upper())
+        if frame is None or frame.empty or "close" not in frame.columns:
+            return False
+        close = frame["close"].astype(float).iloc[-self.regime_lookback_days:]
+        if len(close) != self.regime_lookback_days or close.isna().any():
+            return False
+        latest = float(close.iloc[-1])
+        moving_average = float(close.mean())
+        return (
+            np.isfinite(latest)
+            and np.isfinite(moving_average)
+            and latest > moving_average
+        )
 
     def on_alpha_end(self):
         self.debug("__COMPLETION_MARKER__")

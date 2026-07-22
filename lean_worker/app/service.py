@@ -367,9 +367,30 @@ def validate_generated_source(request: GeneratedStrategyDeployment) -> None:
         if denied:
             raise HTTPException(status_code=422, detail=f"Forbidden import: {denied}")
 
+    target_gross_values = []
+    for node in ast.walk(strategy_class):
+        if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+            continue
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        value = node.value
+        for target in targets:
+            if (
+                isinstance(target, ast.Attribute)
+                and isinstance(target.value, ast.Name)
+                and target.value.id == "self"
+                and target.attr == "target_gross"
+                and isinstance(value, ast.Constant)
+                and isinstance(value.value, (int, float))
+            ):
+                target_gross_values.append(float(value.value))
+    if len(target_gross_values) != 1 or not 0.0 < target_gross_values[0] <= 0.95:
+        raise HTTPException(
+            status_code=422,
+            detail="Generated source must assign one constant target_gross in (0, 0.95]",
+        )
+
     required_markers = (
         "DataNormalizationMode.RAW",
-        "self.target_gross = 0.95",
         "self.settings.free_portfolio_value_percentage = 0.02",
         "self.af_rebalance_to_weights(",
         request.expected_marker,
