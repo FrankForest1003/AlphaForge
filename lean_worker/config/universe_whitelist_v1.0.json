@@ -1,15 +1,5 @@
 {
-  "schema_version": "1.0",
   "universe_id": "alphaforge_us_equity_30_v1.0",
-  "display_name": "AlphaForge Default 30-Stock Universe",
-  "frozen": true,
-  "asset_class": "US Equity",
-  "resolution": "Daily",
-  "selection_constraints": {
-    "minimum_stocks": 5,
-    "maximum_stocks": 30,
-    "default_top_k": 3
-  },
   "tradable_symbols": [
     {"display_ticker":"MSFT","lean_ticker":"MSFT","tiingo_ticker":"MSFT","exchange":"Q","sector":"Information Technology"},
     {"display_ticker":"AAPL","lean_ticker":"AAPL","tiingo_ticker":"AAPL","exchange":"Q","sector":"Information Technology"},

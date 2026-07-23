@@ -1,20 +1,13 @@
-from .baseline import BaselineBatchView, BaselineRunView
-from .experiment import (
-    BattleCreate,
-    BattleView,
-    CodeValidationRequest,
-    CodeValidationView,
-    ExperimentContract,
-    GuidedStrategySpec,
+from app.schemas.experiment import (
+    ForgeRunRequest,
+    GuidedHumanStrategy,
+    HumanStrategyRequest,
+    RunSettings,
 )
 
 __all__ = [
-    "BaselineBatchView",
-    "BaselineRunView",
-    "BattleCreate",
-    "BattleView",
-    "CodeValidationRequest",
-    "CodeValidationView",
-    "ExperimentContract",
-    "GuidedStrategySpec",
+    "ForgeRunRequest",
+    "GuidedHumanStrategy",
+    "HumanStrategyRequest",
+    "RunSettings",
 ]

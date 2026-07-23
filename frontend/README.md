@@ -1,49 +1,20 @@
-# AlphaForge Arena Frontend v2.0
+# AlphaForge Frontend
 
-This Streamlit prototype implements the fair-battle product flow defined in
-`AlphaForge_团队同步与AI开发上下文_v2.0.md`.
+Streamlit 工作区提供：
 
-## Local run (Windows)
+- 30 只本地股票的 checkbox 候选池；
+- 日期、初始资金、benchmark、交易费和滑点设置；
+- 引导式策略构建器和完整 Python 源码编辑器；
+- 创建运行、自动轮询实时进度和策略源码三个导航视图；
+- URL `run_id` 定位和打开已有运行；
+- 参考策略、用户策略和生成策略的状态与回测摘要；
+- 用户策略与生成策略的完整源码展示和下载；
+- 生成策略的审查历史、行为事实、修改请求和累计 token。
 
-```powershell
-conda activate alphaforge-frontend
-cd frontend
-python -m pip install -r requirements.txt
-$env:ALPHAFORGE_MOCK_MODE = "false"
-$env:ALPHAFORGE_API_BASE_URL = "http://127.0.0.1:8000/v1"
-python -m streamlit run app.py
+前端只通过 `ALPHAFORGE_API_BASE_URL` 访问 Backend，不包含本地 Mock 数据。
+
+本地测试：
+
+```bash
+PYTHONPATH=frontend .venv/bin/python -m pytest frontend/tests -q
 ```
-
-## Docker demo
-
-```powershell
-cd frontend
-docker build -t alphaforge-frontend:v2 .
-docker run --rm -p 8501:8501 -e ALPHAFORGE_MOCK_MODE=true alphaforge-frontend:v2
-```
-
-Open <http://localhost:8501>.
-
-## Backend integration
-
-The page layer never calls FastAPI directly. Add real methods in
-`api_client/client.py`, then start with:
-
-```powershell
-$env:ALPHAFORGE_MOCK_MODE = "false"
-$env:ALPHAFORGE_API_BASE_URL = "http://127.0.0.1:8000/v1"
-python -m streamlit run app.py
-```
-
-Live mode is the default and never falls back to fabricated metrics. Set
-`ALPHAFORGE_MOCK_MODE=true` only for the explicitly labelled UI demo.
-
-Guided Mode offers Multi-Horizon Momentum, Risk-Adjusted Momentum, and Low Volatility.
-The selected template is run as an independent real LEAN Human job and displayed
-beside the four public baselines under the same immutable experiment contract.
-
-LEAN Code starts from a runnable `UserStrategy(AlphaForgeBaseAlgorithm)` example.
-The submitted source is frozen with the Battle, statically checked for its API
-contract and restricted capabilities, then admitted only after an isolated LEAN
-smoke run completes. Passing admission proves executability, not profitability.
-

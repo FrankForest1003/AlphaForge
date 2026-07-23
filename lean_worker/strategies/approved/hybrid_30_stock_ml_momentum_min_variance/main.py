@@ -50,11 +50,6 @@ class HybridThirtyStockMLMomentumMinVariance(AlphaForgeBaseAlgorithm):
         value = self.get_parameter(name)
         return value if value not in (None, "") else default
 
-    def _bool_parameter(self, name, default):
-        return str(self._parameter(name, str(default))).strip().lower() in {
-            "1", "true", "yes", "on"
-        }
-
     def _selected_tickers(self):
         raw = str(self._parameter("symbols", ",".join(self.DEFAULT_UNIVERSE)))
         tickers = []
@@ -65,8 +60,8 @@ class HybridThirtyStockMLMomentumMinVariance(AlphaForgeBaseAlgorithm):
         unknown = sorted(set(tickers).difference(self.DEFAULT_UNIVERSE))
         if unknown:
             raise ValueError(f"Symbols outside AlphaForge whitelist: {unknown}")
-        if not 5 <= len(tickers) <= 30:
-            raise ValueError("The selectable stock pool must contain 5 to 30 whitelist symbols")
+        if not tickers:
+            raise ValueError("Select at least one stock")
         return tickers
 
     def initialize_strategy(self):
@@ -98,8 +93,9 @@ class HybridThirtyStockMLMomentumMinVariance(AlphaForgeBaseAlgorithm):
                 slippage_bps=self.slippage_bps,
             )
             self.symbols.append(self.af_track_symbol(equity.symbol))
-        # SPY is the performance benchmark and a broad-market feature.
-        spy = self.add_equity('SPY', Resolution.DAILY)
+        # The selected benchmark is also used as a broad-market feature.
+        benchmark_ticker = str(self._parameter("benchmark", "SPY")).strip().upper()
+        spy = self.add_equity(benchmark_ticker, Resolution.DAILY)
         self.af_configure_security(spy)
         self.spy = spy.symbol
         # QQQ is used as the technology-market regime filter.
@@ -108,36 +104,35 @@ class HybridThirtyStockMLMomentumMinVariance(AlphaForgeBaseAlgorithm):
         self.qqq = qqq.symbol
         self.af_use_security_benchmark(self.spy)
         self.all_symbols = self.symbols + [self.spy, self.qqq]
-        self.settings.free_portfolio_value_percentage = 0.02
         # ---------------------------------------------------------------------
         # 3. Machine-learning configuration
         # ---------------------------------------------------------------------
         # Predict excess return over the next 21 trading days.
-        self.forward_horizon = int(self._parameter("forecast_horizon", "21"))
-        self.training_window = int(self._parameter("training_bars", "504"))
-        self.random_seed = int(self._parameter("random_seed", "42"))
+        self.forward_horizon = 21
+        self.training_window = 504
+        self.random_seed = 42
         self.model = GradientBoostingRegressor(loss='huber', n_estimators=60, learning_rate=0.05, max_depth=2, min_samples_leaf=30, subsample=0.75, random_state=self.random_seed)
         self.model_ready = False
         self.feature_names = ['ret_21', 'ret_63', 'ret_126', 'sma_20_gap', 'sma_100_gap', 'macd_gap', 'rsi_14', 'volatility_20', 'spy_ret_21', 'spy_trend']
         # The classic signal remains dominant to reduce ML overfitting.
-        self.classic_weight = float(self._parameter("classic_weight", "0.85"))
+        self.classic_weight = 0.85
         self.ml_weight = 1.0 - self.classic_weight
         # ---------------------------------------------------------------------
         # 4. Portfolio construction and risk parameters
         # ---------------------------------------------------------------------
-        self.number_of_holdings = int(self._parameter("top_k", "3"))
+        self.number_of_holdings = min(3, len(tickers))
         self.holding_buffer_rank = min(
             len(tickers),
-            int(self._parameter("holding_buffer_rank", "5")),
+            5,
         )
-        self.maximum_total_exposure = float(self._parameter("target_gross", "0.95"))
-        self.maximum_stock_weight = float(self._parameter("max_position_weight", "0.35"))
+        self.maximum_total_exposure = 0.95
+        self.maximum_stock_weight = 0.35
         self.minimum_weight_change = 0.04
         self.stop_loss = 0.12
         self.cooldown_days = 21
         self.cooldown_until = {}
-        self.maximum_portfolio_drawdown = float(self._parameter("max_drawdown", "0.20"))
-        self.risk_filter_enabled = self._bool_parameter("risk_filter_enabled", True)
+        self.maximum_portfolio_drawdown = 0.20
+        self.risk_filter_enabled = True
         self.pause_days = 60
         self.portfolio_peak = float(self.portfolio.total_portfolio_value)
         self.pause_until = None

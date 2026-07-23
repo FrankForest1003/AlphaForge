@@ -123,6 +123,7 @@ class AlphaForgeBaseAlgorithm(QCAlgorithm):
     """
 
     def initialize(self):
+        self.settings.free_portfolio_value_percentage = 0.02
         self._af_tracked_symbols = []
         self._af_equity_curve = []
         self._af_benchmark_curve = []
@@ -158,7 +159,7 @@ class AlphaForgeBaseAlgorithm(QCAlgorithm):
         slippage_bps: float = 0.0,
         leverage: float = 1.0,
     ):
-        """Apply the immutable ExperimentContract execution assumptions."""
+        """Apply the shared market and execution settings for this run."""
         security.set_data_normalization_mode(DataNormalizationMode.RAW)
         security.set_leverage(float(leverage))
         security.set_fee_model(AlphaForgeBpsFeeModel(fee_bps))

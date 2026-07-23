@@ -17,11 +17,6 @@ class ClassicThirtyStockMeanReversion(AlphaForgeBaseAlgorithm):
         value = self.get_parameter(name)
         return value if value not in (None, "") else default
 
-    def _bool_parameter(self, name, default):
-        return str(self._parameter(name, str(default))).strip().lower() in {
-            "1", "true", "yes", "on"
-        }
-
     def _selected_tickers(self):
         raw = str(self._parameter("symbols", ",".join(self.DEFAULT_UNIVERSE)))
         tickers = []
@@ -32,8 +27,8 @@ class ClassicThirtyStockMeanReversion(AlphaForgeBaseAlgorithm):
         unknown = sorted(set(tickers).difference(self.DEFAULT_UNIVERSE))
         if unknown:
             raise ValueError(f"Symbols outside AlphaForge whitelist: {unknown}")
-        if not 5 <= len(tickers) <= 30:
-            raise ValueError("The selectable stock pool must contain 5 to 30 whitelist symbols")
+        if not tickers:
+            raise ValueError("Select at least one stock")
         return tickers
 
     def initialize_strategy(self):
@@ -42,17 +37,16 @@ class ClassicThirtyStockMeanReversion(AlphaForgeBaseAlgorithm):
         self.set_start_date(start.year, start.month, start.day)
         self.set_end_date(end.year, end.month, end.day)
         self.set_cash(float(self._parameter("initial_cash", "100000")))
-        self.lookback = int(self._parameter("lookback", "21"))
-        self.top_k = int(self._parameter("top_k", "3"))
-        self.target_gross = float(self._parameter("target_gross", "0.95"))
-        self.max_position_weight = float(self._parameter("max_position_weight", "0.35"))
-        self.risk_filter_enabled = self._bool_parameter("risk_filter_enabled", True)
-        self.risk_sma_period = int(self._parameter("risk_sma_period", "200"))
+        self.lookback = 21
+        self.top_k = 3
+        self.target_gross = 0.95
+        self.max_position_weight = 0.35
+        self.risk_filter_enabled = True
+        self.risk_sma_period = 200
         self.fee_bps = float(self._parameter("transaction_cost_bps", "10"))
         self.slippage_bps = float(self._parameter("slippage_bps", "5"))
         tickers = self._selected_tickers()
-        if not 1 <= self.top_k <= len(tickers):
-            raise ValueError("top_k must be between 1 and the selected stock-pool size")
+        self.top_k = min(3, len(tickers))
 
         self.symbols = []
         for ticker in tickers:
@@ -64,7 +58,8 @@ class ClassicThirtyStockMeanReversion(AlphaForgeBaseAlgorithm):
             )
             self.symbols.append(self.af_track_symbol(security.symbol))
 
-        spy = self.add_equity("SPY", Resolution.DAILY)
+        benchmark_ticker = str(self._parameter("benchmark", "SPY")).strip().upper()
+        spy = self.add_equity(benchmark_ticker, Resolution.DAILY)
         self.af_configure_security(spy)
         self.spy = spy.symbol
         qqq = self.add_equity("QQQ", Resolution.DAILY)
@@ -72,7 +67,6 @@ class ClassicThirtyStockMeanReversion(AlphaForgeBaseAlgorithm):
         self.qqq = qqq.symbol
         self.af_use_security_benchmark(self.spy)
         self.settings.minimum_order_margin_portfolio_percentage = 0
-        self.settings.free_portfolio_value_percentage = 0.02
 
         self.reversion = {
             symbol: self.roc(symbol, self.lookback, Resolution.DAILY)

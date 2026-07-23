@@ -1,97 +1,78 @@
 from pathlib import Path
-import json
-import tempfile
-import unittest
 
-from worker.result_parser import parse_log_file, reconstruct_closed_trades
+from worker.result_parser import parse_log_file
 
 
-class ParserTests(unittest.TestCase):
-    def test_closed_trade(self):
-        trades = reconstruct_closed_trades([
-            {"symbol": "AAPL", "fill_quantity": 10, "fill_price": 100, "time": "t1", "order_id": 1},
-            {"symbol": "AAPL", "fill_quantity": -10, "fill_price": 110, "time": "t2", "order_id": 2},
-        ])
-        self.assertEqual(len(trades), 1)
-        self.assertEqual(trades[0]["profit_loss"], 100)
+def test_parser_returns_only_status_summary_and_errors(tmp_path: Path):
+    log = tmp_path / "console.log"
+    log.write_text(
+        "STATISTICS:: Compounding Annual Return 12.5%\n"
+        "STATISTICS:: Drawdown 8.0%\n"
+        "STATISTICS:: Sharpe Ratio 1.2\n"
+        "STATISTICS:: End Equity 112500\n"
+        "STATISTICS:: Drawdown Recovery 12\n"
+        "DATA USAGE:: Failed data requests 0\n"
+        "DATA USAGE:: Failed data requests percentage 0%\n"
+        "Engine.Main(): Analysis Complete.\n"
+        "MARKER\n",
+        encoding="utf-8",
+    )
+    result = parse_log_file(
+        log,
+        exit_code=0,
+        run_id="r",
+        expected_marker="MARKER",
+        timed_out=False,
+    )
 
-    def test_parser_merges_details(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            log = root / "console.log"
-            detail = root / "alphaforge_details.json"
-            log.write_text(
-                "STATISTICS:: Total Orders 2\n"
-                "STATISTICS:: Sharpe Ratio 1.2\n"
-                "DATA USAGE:: Failed data requests 0\n"
-                "Engine.Main(): Analysis Complete.\n"
-                "PythonInitializer.Shutdown(): ended\n"
-                "Program.Main(): Exiting Lean...\n"
-                "MARKER\n",
-                encoding="utf-8",
-            )
-            detail.write_text(json.dumps({
-                "equity_curve": [{"time": "t", "portfolio_value": 100, "cash": 100, "holdings_value": 0}],
-                "position_snapshots": [{"positions": []}],
-                "orders": [], "order_events": [], "signals": [],
-                "ml": {"training_runs": [], "predictions": [], "model_artifacts": []},
-            }), encoding="utf-8")
-            result = parse_log_file(
-                log, detail_path=detail, exit_code=0, run_id="r",
-                algorithm_class="A", algorithm_file="a.py",
-                expected_marker="MARKER", timed_out=False,
-                manifest={"strategy": {}, "environment": {}},
-            )
-            self.assertEqual(result["status"], "completed")
-            self.assertTrue(result["engine"]["clean_shutdown"])
-            self.assertEqual(result["summary"]["total_orders"], 2)
-
-    def test_lean_error_prefix_does_not_turn_explicit_warning_into_failure(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            log = root / "console.log"
-            detail = root / "alphaforge_details.json"
-            log.write_text(
-                "ERROR:: Warning: order LimitPrice was rounded to 183.04\n"
-                "Engine.Main(): Analysis Complete.\n"
-                "PythonInitializer.Shutdown(): ended\n"
-                "Program.Main(): Exiting Lean...\n"
-                "MARKER\n",
-                encoding="utf-8",
-            )
-            detail.write_text(
-                json.dumps(
-                    {
-                        "equity_curve": [],
-                        "position_snapshots": [],
-                        "orders": [],
-                        "order_events": [],
-                        "signals": [],
-                        "ml": {
-                            "training_runs": [],
-                            "predictions": [],
-                            "model_artifacts": [],
-                        },
-                    }
-                ),
-                encoding="utf-8",
-            )
-            result = parse_log_file(
-                log,
-                detail_path=detail,
-                exit_code=0,
-                run_id="warning-run",
-                algorithm_class="A",
-                algorithm_file="a.py",
-                expected_marker="MARKER",
-                timed_out=False,
-                manifest={"strategy": {}, "environment": {}},
-            )
-
-            self.assertEqual(result["status"], "completed")
-            self.assertEqual(result["diagnostics"]["error_lines"], [])
-            self.assertEqual(len(result["diagnostics"]["warning_lines"]), 1)
+    assert set(result) == {"run_id", "status", "summary", "errors"}
+    assert result["status"] == "completed"
+    assert result["summary"] == {
+        "cagr": 0.125,
+        "maximum_drawdown": 0.08,
+        "sharpe_ratio": 1.2,
+        "end_equity": 112500.0,
+    }
+    assert result["errors"] == []
 
 
-if __name__ == "__main__":
-    unittest.main()
+def test_explicit_warning_is_not_a_failure(tmp_path: Path):
+    log = tmp_path / "console.log"
+    log.write_text(
+        "ERROR:: Warning: order LimitPrice was rounded\n"
+        "Engine.Main(): Analysis Complete.\n"
+        "MARKER\n",
+        encoding="utf-8",
+    )
+    result = parse_log_file(
+        log,
+        exit_code=0,
+        run_id="r",
+        expected_marker="MARKER",
+        timed_out=False,
+    )
+
+    assert result["status"] == "completed"
+    assert result["errors"] == []
+
+
+def test_repeated_order_errors_are_aggregated(tmp_path: Path):
+    log = tmp_path / "console.log"
+    log.write_text(
+        "ERROR:: Order Error: first\n"
+        "ERROR:: Order Error: second\n"
+        "Engine.Main(): Analysis Complete.\n",
+        encoding="utf-8",
+    )
+    result = parse_log_file(
+        log,
+        exit_code=0,
+        run_id="r",
+        expected_marker=None,
+        timed_out=False,
+    )
+
+    assert result["status"] == "failed"
+    assert result["errors"] == [
+        "2 order errors; first error: ERROR:: Order Error: first"
+    ]
