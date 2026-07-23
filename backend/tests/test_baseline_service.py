@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from agent import DeepSeekAcceptanceAgent, DeepSeekDesigner, DeepSeekRepairAgent
+from agent.client import DeepSeekCallError
 from app.schemas import GuidedHumanStrategy, HumanStrategyRequest, RunSettings
 from app.services.baseline_service import (
     BASELINES,
@@ -21,6 +22,20 @@ from app.services.baseline_service import (
 
 
 SYMBOLS = {"MSFT", "AAPL", "NVDA", "GOOGL", "AMZN"}
+
+
+def fake_agent_trace(label):
+    return {
+        "provider": "DeepSeek",
+        "base_url": "https://api.deepseek.com",
+        "request_parameters": {"model": "deepseek-v4-pro"},
+        "dynamic_context": {"label": label},
+        "raw_response": {"choices": [{"message": {"content": f"response-{label}"}}]},
+        "response_content": f"response-{label}",
+        "parsed_payload": {"label": label},
+        "usage": {"total_tokens": 1},
+        "error": None,
+    }
 
 
 class FakeWorker:
@@ -82,6 +97,7 @@ class FakeDesigner:
         return {
             "source_code": f"class UserStrategy:  # {track}\n    pass\n",
             "usage": {"total_tokens": 1},
+            "trace": fake_agent_trace(f"designer-{track}"),
         }
 
 
@@ -119,6 +135,7 @@ class FakeRepairer:
                 "completion_tokens": 2,
                 "total_tokens": 12,
             },
+            "trace": fake_agent_trace(f"repair-{track}-{repair_attempt}"),
         }
 
 
@@ -152,6 +169,7 @@ class FakeAcceptanceAgent:
         return {
             "report": report,
             "usage": {"prompt_tokens": 4, "completion_tokens": 1, "total_tokens": 5},
+            "trace": fake_agent_trace(f"acceptance-{len(self.calls)}"),
         }
 
 
@@ -440,6 +458,19 @@ def test_deepseek_prompt_keeps_static_text_first_and_requests_only_source_code()
     assert "unassisted" not in prompt.lower()
     assert request["extra_body"] == {"thinking": {"type": "enabled"}}
     assert result["usage"]["total_tokens"] == 120
+    assert "messages" not in result["trace"]["request_parameters"]
+    assert result["trace"]["dynamic_context"]["designer_track"] == "ML"
+    assert result["trace"]["dynamic_context"]["run_settings"]["symbols"] == [
+        "MSFT",
+        "AAPL",
+        "NVDA",
+        "GOOGL",
+        "AMZN",
+    ]
+    assert "FULL ORIGINAL DOCUMENT TEXT" not in json.dumps(result["trace"])
+    assert result["trace"]["response_content"] == Completions.content
+    assert result["trace"]["raw_response"]["choices"][0]["message"]["content"] == Completions.content
+    assert "test-key" not in json.dumps(result["trace"])
 
     repairer = DeepSeekRepairAgent(
         api_key="test-key",
@@ -511,6 +542,92 @@ def test_deepseek_prompt_keeps_static_text_first_and_requests_only_source_code()
     assert "FULL ORIGINAL DOCUMENT TEXT" not in acceptance_prompt
     assert "QUANTCONNECT PYTHON TEMPLATE" not in acceptance_prompt
     assert "baseline_results" not in acceptance_prompt
+
+
+def test_deepseek_invalid_json_keeps_raw_response_for_replay():
+    class Completions:
+        def create(self, **request):
+            return SimpleNamespace(
+                id="response-id",
+                choices=[SimpleNamespace(message=SimpleNamespace(content="not json"))],
+                usage=SimpleNamespace(
+                    prompt_tokens=7,
+                    completion_tokens=2,
+                    total_tokens=9,
+                ),
+            )
+
+    client = SimpleNamespace(chat=SimpleNamespace(completions=Completions()))
+    designer = DeepSeekDesigner(
+        api_key="test-key",
+        base_url="https://api.deepseek.com",
+        model="deepseek-v4-pro",
+        thinking_enabled=False,
+        lean_documentation="FULL DOCUMENT",
+        client=client,
+    )
+
+    with pytest.raises(DeepSeekCallError) as raised:
+        designer.generate(
+            track="ML",
+            run_settings=settings().model_dump(mode="json"),
+            baseline_results=[],
+        )
+
+    trace = raised.value.trace
+    assert trace["response_content"] == "not json"
+    assert trace["raw_response"]["id"] == "response-id"
+    assert trace["usage"]["total_tokens"] == 9
+    assert trace["error"]["type"] == "invalid_json"
+    assert "test-key" not in json.dumps(trace)
+
+
+def test_forge_trace_persists_every_agent_call_and_worker_source(tmp_path):
+    worker = AlwaysFailCandidateWorker()
+    service = ForgeService(
+        worker=worker,
+        designer=FakeDesigner(),
+        repairer=FakeRepairer(),
+        acceptance_agent=FakeAcceptanceAgent(),
+        allowed_symbols=SYMBOLS,
+        allowed_benchmarks={"SPY"},
+        trace_root=tmp_path,
+    )
+
+    completed = wait_for(service, service.create(settings(), human_code())["run_id"])
+    trace = service.get_trace(completed["run_id"])
+
+    assert trace["state"] == "completed"
+    assert len(trace["agent_calls"]) == 12
+    assert len(trace["worker_attempts"]) == 12
+    traditional = [
+        item for item in trace["worker_attempts"] if item["track"] == "Traditional"
+    ]
+    assert [item["attempt"] for item in traditional] == [0, 1, 2, 3]
+    assert traditional[0]["source_code"].endswith("pass\n")
+    assert traditional[-1]["source_code"].endswith("# repaired 3\n")
+    assert all(item["result"]["status"] == "failed" for item in traditional)
+    assert all("complete console log" in item["console_log"] for item in traditional)
+    assert all(item["outcome"] == "runtime_failure" for item in traditional)
+    assert all(item["call"]["request_parameters"] for item in trace["agent_calls"])
+    assert all(item["call"]["dynamic_context"] for item in trace["agent_calls"])
+
+    persisted_path = tmp_path / f"{completed['run_id']}.json"
+    assert persisted_path.is_file()
+    persisted_text = persisted_path.read_text(encoding="utf-8")
+    assert "API_KEY" not in persisted_text
+    assert "test-key" not in persisted_text
+
+    reloaded = ForgeService(
+        worker=FakeWorker(),
+        designer=FakeDesigner(),
+        repairer=FakeRepairer(),
+        acceptance_agent=FakeAcceptanceAgent(),
+        allowed_symbols=SYMBOLS,
+        allowed_benchmarks={"SPY"},
+        trace_root=tmp_path,
+    ).get_trace(completed["run_id"])
+    assert reloaded == trace
 
 
 def test_behavior_evidence_uses_filled_orders_and_invested_snapshots():

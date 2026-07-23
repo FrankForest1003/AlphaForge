@@ -57,6 +57,7 @@ forge = ForgeService(
     acceptance_agent=acceptance_agent,
     allowed_symbols=tradable_symbols,
     allowed_benchmarks=benchmarks,
+    trace_root=settings.trace_root,
 )
 
 app = FastAPI(
@@ -125,3 +126,11 @@ def get_forge_run(run_id: str) -> dict[str, Any]:
     if run is None:
         raise HTTPException(status_code=404, detail="unknown run_id")
     return run
+
+
+@app.get("/v1/forge-runs/{run_id}/trace")
+def get_forge_run_trace(run_id: str) -> dict[str, Any]:
+    trace = forge.get_trace(run_id)
+    if trace is None:
+        raise HTTPException(status_code=404, detail="unknown run_id trace")
+    return trace

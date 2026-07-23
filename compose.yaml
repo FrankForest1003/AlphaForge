@@ -53,10 +53,13 @@ services:
       ALPHAFORGE_WORKER_TOKEN: ${ALPHAFORGE_API_TOKEN:-local-dev-token}
       ALPHAFORGE_UNIVERSE_CONFIG: /app/configs/universe_whitelist_v1.0.json
       ALPHAFORGE_LEAN_DOCS_PATH: /app/docs/lean-text
+      ALPHAFORGE_TRACE_ROOT: /runtime/forge-traces
       API_KEY: ${API_KEY:-}
       BASE_URL: ${BASE_URL:-https://api.deepseek.com}
       MODEL: ${MODEL:-deepseek-v4-pro}
       THINKING_ENABLED: ${THINKING_ENABLED:-true}
+    volumes:
+      - ./backend/workspace/forge_traces:/runtime/forge-traces
     depends_on:
       lean-worker:
         condition: service_healthy
