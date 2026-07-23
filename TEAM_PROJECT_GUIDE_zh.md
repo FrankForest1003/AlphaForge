@@ -4,7 +4,7 @@ AlphaForge 是一个本地演示系统：四个公共策略先在相同设置下
 
 ## 服务
 
-- `frontend/`：Streamlit 工作区，包含创建运行、实时进度和策略源码三个视图。
+- `frontend/`：Vite + React 单页应用，包含创建运行、实时进度、结果比较和策略源码视图。
 - `agent/`：DeepSeek 客户端、固定提示词、Designer、Repair 和 Acceptance Agent。
 - `backend/`：运行设置、八个策略与 Agent 闭环的编排和状态查询。
 - `lean_worker/`：真实 QuantConnect LEAN 执行环境。
@@ -32,6 +32,25 @@ docker compose up --build
 10. 前端自动轮询运行状态，通过 URL 中的 `run_id` 打开运行，并在策略工作区展示和下载 Human 与三个 Designer 的完整源码。
 
 Backend 的运行状态保存在进程内存中。Backend 重启后不能继续查询旧 Forge Run；Worker 的日志和结果文件保存在 `lean_worker/workspace/`。
+
+## 当前进度（2026-07-23）
+
+- React 前端、FastAPI Backend、真实本地 LEAN Worker 和四个公共基线已经接通。
+- DeepSeek Designer、Repair、Acceptance 闭环已经接通；API Key 只通过根目录 `.env` 注入。
+- Hybrid 基线此前会保留已经退出候选池的旧仓位，再叠加新目标仓位，造成总目标超过购买力；失败后还可能撤销已经处于 `Invalid` 的订单。共享调仓器和 Hybrid 策略现已修复这两条路径。
+- 共享调仓器会把目标总仓位限制在 95%，按最小报价单位向下对齐买入限价，并且不再撤销终态订单。Hybrid 会明确卖出落选持仓、在交易成本过滤后重新限制总仓位，并把同日多个止损合并为一次调仓。
+- Hybrid 的信号/最小方差权重从 42.5%/57.5% 调整为 70%/30%，仍保留协方差分散，但在当前实验区间提高了风险调整后表现。
+
+验收记录：
+
+| Worker Run | 股票池 | 状态 | CAGR | Sharpe | 最大回撤 | 拒单 |
+|---|---:|---|---:|---:|---:|---:|
+| `20260723-061822-624705de` | 5 | completed | 27.418% | 1.030 | 18.7% | 0 |
+| `20260723-061912-b436de9c` | 30 | completed | 15.476% | 0.585 | 20.7% | 0 |
+
+两次验收均使用 2020-01-02 至 2024-12-31、初始资金 100,000 美元、SPY benchmark、10 bps 交易费和 5 bps 滑点。30 股票运行用于完整目录兼容性检查，不代表其收益一定优于更集中的候选池。
+
+旧 Forge Run `forge-96e7de2ab08d` 的历史状态不会被原地改写，因此前端仍会如实显示该次运行失败及其诊断指标。要让 Baseline Comparison 展示修复后的 `completed` 结果，需要在前端新建一次 Forge Run。
 
 ## RunSettings
 

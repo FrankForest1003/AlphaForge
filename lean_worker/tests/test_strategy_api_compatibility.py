@@ -72,3 +72,16 @@ def test_worker_exposes_read_only_behavior_details():
     assert '@app.get("/v1/jobs/{run_id}/details")' in service
     assert 'result_path.parent / "alphaforge_details.json"' in service
     assert "path.relative_to(RESULTS_ROOT)" in service
+
+
+def test_hybrid_exits_stale_holdings_and_caps_execution_gross():
+    hybrid = _text(
+        "strategies/approved/hybrid_30_stock_ml_momentum_min_variance/main.py"
+    )
+    assert "if symbol not in selected:" in hybrid
+    assert "execution_weights[symbol] = 0.0" in hybrid
+    assert "execution_gross = sum(" in hybrid
+    assert "execution_cap = min(" in hybrid
+    assert "if execution_gross > execution_cap" in hybrid
+    assert "self.signal_allocation_weight = 0.70" in hybrid
+    assert "self.minimum_variance_allocation_weight = 0.30" in hybrid

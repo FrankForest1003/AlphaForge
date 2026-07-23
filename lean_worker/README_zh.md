@@ -26,6 +26,8 @@ Worker 在 Docker 中运行真实 QuantConnect LEAN Python 回测。它提供四
 
 它们读取相同的候选池、日期、初始资金、benchmark、交易费和滑点。策略内部的信号、调仓、持仓数量和风险规则是各基线自身实现。
 
+Hybrid 基线的调仓执行会明确清理落选持仓，并在交易成本过滤后再次限制总目标仓位。共享 `af_rebalance_to_weights` 对所有策略实施 95% 目标总仓位上限、按最小报价单位向下对齐买入限价，并跳过已经 `Filled`、`Canceled` 或 `Invalid` 的撤单请求。LEAN 的订单错误仍会被严格解析为失败，不会因为已经生成收益指标而被忽略。
+
 ## 数据与结果
 
 行情位于 `workspace/data/`。数据同步使用：

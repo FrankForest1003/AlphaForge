@@ -9,17 +9,14 @@
 # 2. A Gradient Boosting model estimates 21-day stock alpha relative to SPY.
 # 3. A QQQ trend filter controls whether the strategy is fully invested or in cash.
 # 4. Ledoit-Wolf covariance shrinkage produces more stable minimum-variance weights.
-# 5. The final portfolio blends 42.5% signal weights with 57.5% minimum-variance weights.
+# 5. The final portfolio blends 70% signal weights with 30% minimum-variance weights.
 # 6. Risk controls include position stops, cooldown periods, and a portfolio drawdown pause.
 #
-# Reported QuantConnect result for this configuration:
-# - Backtest period: 2020-07-01 to 2026-07-10
-# - CAGR: 29.081%
-# - Sharpe Ratio: 1.088
-# - Sortino Ratio: 1.220
-# - Maximum Drawdown: 18.6%
-# - Alpha: 0.127
-# - Information Ratio: 0.550
+# Local LEAN validation after execution-safety fixes (2026-07-23):
+# - Five-stock run, 2020-01-02 to 2024-12-31: CAGR 27.418%,
+#   Sharpe 1.030, maximum drawdown 18.7%, no rejected orders.
+# - Full 30-stock compatibility run over the same period completed without
+#   rejected orders. These historical results are diagnostics, not guarantees.
 #
 # =============================================================================
 from AlgorithmImports import *
@@ -140,8 +137,10 @@ class HybridThirtyStockMLMomentumMinVariance(AlphaForgeBaseAlgorithm):
         self.score_dispersion_center = 0.15
         self.score_dispersion_scale = 0.10
         self.transaction_cost_multiplier = 1.0
-        self.signal_allocation_weight = 0.425
-        self.minimum_variance_allocation_weight = 0.575
+        # Preserve covariance diversification while letting the stronger
+        # cross-sectional signal contribute more than the original 42.5% mix.
+        self.signal_allocation_weight = 0.70
+        self.minimum_variance_allocation_weight = 0.30
         self.portfolio_peak = float(self.portfolio.total_portfolio_value)
         self.pause_until = None
         # Warm up enough data for the 200-day trend filter and indicators.
@@ -525,6 +524,12 @@ class HybridThirtyStockMLMomentumMinVariance(AlphaForgeBaseAlgorithm):
         for symbol in execution_symbols:
             target_weight = desired_weights.get(symbol, 0.0)
             current_weight = float(self.portfolio[symbol].holdings_value) / portfolio_value if portfolio_value > 0 else 0.0
+            # A dropped holding must exit. Applying the edge/cost filter to it
+            # used to preserve stale positions and could push gross exposure
+            # above 100% when the new selections were added.
+            if symbol not in selected:
+                execution_weights[symbol] = 0.0
+                continue
             weight_difference = abs(target_weight - current_weight)
             expected_edge = abs(float(candidate_predictions.get(symbol, 0.0)))
             expected_utility_gain = weight_difference * expected_edge
@@ -537,6 +542,20 @@ class HybridThirtyStockMLMomentumMinVariance(AlphaForgeBaseAlgorithm):
                 max(0.0, (expected_edge - transaction_cost_rate) / expected_edge),
             )
             execution_weights[symbol] = current_weight + dampening * (target_weight - current_weight)
+        execution_gross = sum(
+            max(0.0, float(weight))
+            for weight in execution_weights.values()
+        )
+        execution_cap = min(
+            current_total_exposure,
+            self.maximum_total_exposure,
+        )
+        if execution_gross > execution_cap and execution_gross > 0:
+            scale = execution_cap / execution_gross
+            execution_weights = {
+                symbol: max(0.0, float(weight)) * scale
+                for symbol, weight in execution_weights.items()
+            }
         self.af_rebalance_to_weights(
             execution_weights,
             "Monthly hybrid ML momentum and minimum-variance rebalance",
@@ -572,6 +591,7 @@ class HybridThirtyStockMLMomentumMinVariance(AlphaForgeBaseAlgorithm):
             self.portfolio_peak = portfolio_value
             self.debug(f'{self.time.date()}: portfolio drawdown reached {portfolio_drawdown:.2%}. All positions were liquidated. Trading paused until {self.pause_until.date()}.')
             return
+        stopped_symbols = []
         for symbol in self.symbols:
             holding = self.portfolio[symbol]
             if not holding.invested:
@@ -582,9 +602,24 @@ class HybridThirtyStockMLMomentumMinVariance(AlphaForgeBaseAlgorithm):
                 continue
             position_return = current_price / average_price - 1.0
             if position_return <= -self.stop_loss:
-                self.liquidate(symbol)
+                stopped_symbols.append(symbol)
                 self.cooldown_until[symbol] = self.time + timedelta(days=self.cooldown_days)
                 self.debug(f'{self.time.date()}: {symbol} stop loss triggered. Return={position_return:.2%}. Cooldown until {self.cooldown_until[symbol].date()}.')
+        if stopped_symbols:
+            stopped_set = set(stopped_symbols)
+            remaining_weights = {
+                other: max(
+                    0.0,
+                    float(self.portfolio[other].holdings_value) / portfolio_value,
+                )
+                for other in self.symbols
+                if other not in stopped_set and self.portfolio[other].invested
+            }
+            names = ",".join(symbol.value for symbol in stopped_symbols)
+            self.af_rebalance_to_weights(
+                remaining_weights,
+                f"Stop-loss exit: {names}",
+            )
 
     def on_alpha_end(self):
         self.debug("ALPHAFORGE_HYBRID_30_ML_MOMENTUM_MIN_VARIANCE_COMPLETED")

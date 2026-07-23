@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 from pathlib import Path
 from typing import Any
@@ -226,6 +227,12 @@ class AlphaForgeBaseAlgorithm(QCAlgorithm):
             "invalid",
         }
 
+    @classmethod
+    def _af_ticket_can_cancel(cls, ticket) -> bool:
+        """Do not ask LEAN to cancel a ticket that is already terminal."""
+        status = getattr(ticket, "status", None)
+        return status is None or not cls._af_order_status_closed(status)
+
     def _af_register_rebalance_ticket(self, ticket, *, purpose: str, symbol):
         if ticket is None or self._af_rebalance_state is None:
             return
@@ -300,6 +307,20 @@ class AlphaForgeBaseAlgorithm(QCAlgorithm):
                 deltas[symbol] = delta
         return deltas
 
+    def _af_round_down_limit_price(self, symbol, price: float) -> float:
+        """Align a buy cap to the security tick without exceeding the cap."""
+        security = self.securities[symbol]
+        symbol_properties = getattr(security, "symbol_properties", None)
+        minimum_price_variation = _number(
+            getattr(symbol_properties, "minimum_price_variation", 0.01)
+        )
+        if minimum_price_variation <= 0:
+            minimum_price_variation = 0.01
+        price_units = math.floor(
+            max(0.0, float(price)) / minimum_price_variation + 1e-10
+        )
+        return round(price_units * minimum_price_variation, 8)
+
     def _af_submit_adjustment_phase(self, *, reductions: bool):
         state = self._af_rebalance_state
         if state is None:
@@ -324,7 +345,10 @@ class AlphaForgeBaseAlgorithm(QCAlgorithm):
                 current_quantity = int(_number(self.portfolio[symbol].quantity))
                 desired_quantity = current_quantity + quantity
                 target_value = portfolio_value * state["targets"][symbol]
-                limit_price = target_value / desired_quantity
+                limit_price = self._af_round_down_limit_price(
+                    symbol,
+                    target_value / desired_quantity,
+                )
                 ticket = self.limit_order(
                     symbol,
                     quantity,
@@ -416,13 +440,24 @@ class AlphaForgeBaseAlgorithm(QCAlgorithm):
         )
         self.af_clear_pending_rebalance()
 
-    def _af_fail_rebalance(self, reason: str):
+    def _af_fail_rebalance(self, reason: str, failed_order_id: int | None = None):
         state = self._af_rebalance_state
         if state is None:
             return
         state["phase"] = "failed"
         state["failure_reason"] = reason
+        if failed_order_id is not None:
+            state["active_order_ids"].discard(failed_order_id)
+            state["closed_order_ids"].add(failed_order_id)
+        remaining_order_ids = sorted(state["active_order_ids"])
         state["active_order_ids"] = set()
+        for order_id in remaining_order_ids:
+            ticket = state["orders"][order_id]["ticket"]
+            if not self._af_ticket_can_cancel(ticket):
+                state["closed_order_ids"].add(order_id)
+                continue
+            state["expected_cancel_ids"].add(order_id)
+            ticket.cancel("AlphaForge rebalance failed; cancel remaining order")
         self._af_record_rebalance_event(
             "staged_rebalance_failed",
             {
@@ -492,7 +527,15 @@ class AlphaForgeBaseAlgorithm(QCAlgorithm):
             state["expected_cancel_ids"] = set(state["active_order_ids"])
             for order_id in sorted(state["active_order_ids"]):
                 ticket = state["orders"][order_id]["ticket"]
-                ticket.cancel("AlphaForge daily target repricing")
+                if self._af_ticket_can_cancel(ticket):
+                    ticket.cancel("AlphaForge daily target repricing")
+                else:
+                    state["active_order_ids"].discard(order_id)
+                    state["closed_order_ids"].add(order_id)
+                    state["expected_cancel_ids"].discard(order_id)
+            if not state["active_order_ids"]:
+                state["repricing"] = False
+                state["phase"] = "await_sizing_bar"
             return
 
         if state["active_order_ids"]:
@@ -520,6 +563,23 @@ class AlphaForgeBaseAlgorithm(QCAlgorithm):
         if not clean:
             self.af_liquidate_all(tag)
             return
+        gross_target = sum(clean.values())
+        maximum_gross_target = 0.95
+        if gross_target > maximum_gross_target:
+            scale = maximum_gross_target / gross_target
+            clean = {
+                symbol: weight * scale
+                for symbol, weight in clean.items()
+            }
+            self._af_record_rebalance_event(
+                "staged_rebalance_target_scaled",
+                {
+                    "tag": tag,
+                    "requested_gross": gross_target,
+                    "admitted_gross": sum(clean.values()),
+                    "maximum_gross": maximum_gross_target,
+                },
+            )
 
         state = self._af_rebalance_state
         if state is not None and state.get("phase") != "failed":
@@ -536,9 +596,15 @@ class AlphaForgeBaseAlgorithm(QCAlgorithm):
                     },
                 )
                 for order_id in sorted(state["active_order_ids"]):
-                    state["orders"][order_id]["ticket"].cancel(
-                        "AlphaForge target replacement"
-                    )
+                    ticket = state["orders"][order_id]["ticket"]
+                    if self._af_ticket_can_cancel(ticket):
+                        ticket.cancel("AlphaForge target replacement")
+                    else:
+                        state["active_order_ids"].discard(order_id)
+                        state["closed_order_ids"].add(order_id)
+                        state["expected_cancel_ids"].discard(order_id)
+                if not state["active_order_ids"]:
+                    self._af_activate_replacement()
                 return
             state["replacement"] = {"targets": clean, "tag": tag}
             self._af_activate_replacement()
@@ -673,10 +739,16 @@ class AlphaForgeBaseAlgorithm(QCAlgorithm):
             order_id = int(order_event.order_id)
             metadata = state["orders"][order_id]
             expected_cancel = order_id in state.get("expected_cancel_ids", set())
-            if self._af_order_status_failed(order_event.status) and not expected_cancel:
+            if state.get("phase") == "failed":
+                if self._af_order_status_closed(order_event.status):
+                    state["closed_order_ids"].add(order_id)
+                    state["active_order_ids"].discard(order_id)
+                    state.get("expected_cancel_ids", set()).discard(order_id)
+            elif self._af_order_status_failed(order_event.status) and not expected_cancel:
                 self._af_fail_rebalance(
                     f"{metadata['purpose']} order {order_id} ended as "
-                    f"{self._af_order_status_text(order_event.status)}: {event['message']}"
+                    f"{self._af_order_status_text(order_event.status)}: {event['message']}",
+                    failed_order_id=order_id,
                 )
             elif self._af_order_status_closed(order_event.status):
                 state["closed_order_ids"].add(order_id)

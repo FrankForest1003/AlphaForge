@@ -1,5 +1,6 @@
 from datetime import date, datetime
 import importlib.util
+import math
 from pathlib import Path
 import sys
 import types
@@ -79,8 +80,9 @@ class TransactionsLike:
 
 
 class TicketLike:
-    def __init__(self, order_id):
+    def __init__(self, order_id, status="Submitted"):
         self.order_id = order_id
+        self.status = status
         self.cancel_requests = []
 
     def cancel(self, message):
@@ -271,7 +273,7 @@ class RuntimeSupportTests(unittest.TestCase):
         self.assertEqual(meta_buy[3], 69)
         self.assertAlmostEqual(
             meta_buy[4]["limit_price"],
-            100_000 * targets[meta] / 69,
+            math.floor((100_000 * targets[meta] / 69) * 100) / 100,
         )
         self.assertIsNotNone(algorithm._af_pending_target_weights)
 
@@ -367,6 +369,46 @@ class RuntimeSupportTests(unittest.TestCase):
 
         self.assertEqual(algorithm._af_target_deltas(), {})
 
+    def test_oversized_target_is_scaled_to_shared_gross_limit(self):
+        algorithm, symbols, _ = self._execution_algorithm()
+        old, meta, nvda, _ = symbols
+        algorithm.portfolio[old].quantity = 0
+        algorithm.portfolio[old].holdings_value = 0
+
+        algorithm.af_rebalance_to_weights(
+            {meta: 0.60, nvda: 0.60},
+            "oversized target",
+        )
+
+        self.assertAlmostEqual(
+            sum(algorithm._af_rebalance_state["targets"].values()),
+            0.95,
+        )
+        scaling_event = next(
+            event
+            for event in algorithm._af_rebalance_events
+            if event["name"] == "staged_rebalance_target_scaled"
+        )
+        self.assertAlmostEqual(scaling_event["payload"]["requested_gross"], 1.20)
+        self.assertAlmostEqual(scaling_event["payload"]["admitted_gross"], 0.95)
+
+    def test_terminal_ticket_is_not_cancelable(self):
+        self.assertFalse(
+            self.module.AlphaForgeBaseAlgorithm._af_ticket_can_cancel(
+                TicketLike(1, status="Invalid")
+            )
+        )
+        self.assertFalse(
+            self.module.AlphaForgeBaseAlgorithm._af_ticket_can_cancel(
+                TicketLike(2, status="Filled")
+            )
+        )
+        self.assertTrue(
+            self.module.AlphaForgeBaseAlgorithm._af_ticket_can_cancel(
+                TicketLike(3, status="Submitted")
+            )
+        )
+
     def test_post_fill_market_drift_does_not_trigger_daily_churn(self):
         algorithm, symbols, _ = self._execution_algorithm()
         old, meta, nvda, amzn = symbols
@@ -425,6 +467,24 @@ class RuntimeSupportTests(unittest.TestCase):
         self.assertEqual(
             algorithm._af_rebalance_events[-1]["name"],
             "staged_rebalance_failed",
+        )
+        failed_ticket = algorithm._af_rebalance_state["orders"][order_id]["ticket"]
+        self.assertEqual(failed_ticket.cancel_requests, [])
+        remaining_tickets = [
+            metadata["ticket"]
+            for candidate_order_id, metadata in algorithm._af_rebalance_state[
+                "orders"
+            ].items()
+            if candidate_order_id != order_id
+            and metadata["purpose"] == "adjust_buys"
+        ]
+        self.assertTrue(remaining_tickets)
+        self.assertTrue(
+            all(
+                ticket.cancel_requests
+                == ["AlphaForge rebalance failed; cancel remaining order"]
+                for ticket in remaining_tickets
+            )
         )
 
 
