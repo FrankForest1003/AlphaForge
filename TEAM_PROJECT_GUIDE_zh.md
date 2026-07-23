@@ -31,12 +31,13 @@ docker compose up --build
 9. Human 结果忠实展示 Worker 状态、指标、行为事实和完整源码，不调用 Designer、Repair 或 Acceptance Agent。
 10. 前端自动轮询运行状态，通过 URL 中的 `run_id` 打开运行，并在策略工作区展示和下载 Human 与三个 Designer 的完整源码。
 
-Backend 的运行状态保存在进程内存中。Backend 重启后不能继续查询旧 Forge Run；Worker 的日志和结果文件保存在 `lean_worker/workspace/`。
+Backend 的普通运行状态保存在进程内存中。每次 Designer、Repair 和 Acceptance 调用另有独立的持久化 Agent Trace，保存在 `backend/workspace/forge_traces/`；Backend 重启后仍可通过 Trace 接口读取。Worker 的日志和结果文件保存在 `lean_worker/workspace/`。
 
 ## 当前进度（2026-07-23）
 
 - React 前端、FastAPI Backend、真实本地 LEAN Worker 和四个公共基线已经接通。
 - DeepSeek Designer、Repair、Acceptance 闭环已经接通；API Key 只通过根目录 `.env` 注入。
+- Backend 按轮次持久化 DeepSeek 请求中的动态上下文、SDK 原始响应、原始响应文本、解析结果、token usage、错误和耗时，并把每版候选源码与对应 Worker 结果、完整日志、行为事实及验收报告关联起来。
 - Hybrid 基线此前会保留已经退出候选池的旧仓位，再叠加新目标仓位，造成总目标超过购买力；失败后还可能撤销已经处于 `Invalid` 的订单。共享调仓器和 Hybrid 策略现已修复这两条路径。
 - 共享调仓器会把目标总仓位限制在 95%，按最小报价单位向下对齐买入限价，并且不再撤销终态订单。Hybrid 会明确卖出落选持仓、在交易成本过滤后重新限制总仓位，并把同日多个止损合并为一次调仓。
 - Hybrid 的信号/最小方差权重从 42.5%/57.5% 调整为 70%/30%，仍保留协方差分散，但在当前实验区间提高了风险调整后表现。
@@ -86,6 +87,8 @@ Backend 使用 `.env` 中的 `API_KEY`、`BASE_URL`、`MODEL` 和 `THINKING_ENAB
 
 Acceptance Agent 只在 Worker 返回 `completed` 后调用。它不接收 LEAN 文档、QC 模板或基线结果；上下文由固定 A1–A5 规则、轨道要求、RunSettings、完整候选源码、完整 Worker 结果、完整控制台日志、精确行为事实和验收轮次组成。A1 要求至少一笔成交、至少一个非零持仓快照和正的最大总敞口。A1–A5 全部通过才接受候选，收益和风险指标不属于验收条件。
 
+每个 Forge Run 的 Agent Trace 独立于普通运行响应。Trace 保存模型、thinking、token 上限等 API 参数和每轮发生变化的上下文，并保存 API 返回的完整 SDK 响应结构、原始 `content` 与解析后的 JSON。system prompt、LEAN 文档、QC 模板、固定验收规则和固定输出说明仍会正常发送给 Agent，但不在每次 Trace 中重复保存。Trace 不保存或返回 `API_KEY`。它还逐轮保存送入 Worker 的完整源码、运行参数、Worker Run ID、`result.json` 内容、完整控制台日志、行为事实、验收报告和该轮结果。Worker 原始 details 继续只保存在 Worker 结果目录，不在 Trace 中复制第二份。
+
 Designer 模板给出两种 History DataFrame 范式：单标的使用普通 `history(TradeBar, ...)`，多标的使用 `af_split_history_frames(history(...))`。`history[TradeBar](...)` 返回对象序列，不能作为 pandas DataFrame 下标访问。日线 long-only 组合使用 `af_rebalance_to_weights`，由共享基类等待减仓成交后再按新价格计算买单。
 
 ## API
@@ -97,6 +100,7 @@ Backend：
 - `GET /v1/catalog/baselines`
 - `POST /v1/forge-runs`，请求体包含 `settings` 和 `human_strategy`
 - `GET /v1/forge-runs/{run_id}`
+- `GET /v1/forge-runs/{run_id}/trace`，返回可跨 Backend 重启读取的完整 Agent 复盘记录
 
 Worker：
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from agent.client import DeepSeekJSONClient
+from agent.client import DeepSeekCallError, DeepSeekJSONClient
 from agent.prompts import QC_TEMPLATE, REPAIR_SYSTEM_PROMPT, TRACK_BRIEFS
 
 
@@ -70,16 +70,39 @@ class DeepSeekRepairAgent:
         ]
 
     def repair(self, **context: Any) -> dict[str, Any]:
+        trace_context = {
+            "designer_track": context["track"],
+            "repair_attempt": context["repair_attempt"],
+            "run_settings": context["run_settings"],
+            "baseline_results": context["baseline_results"],
+            "submitted_source_code": context["source_code"],
+            "worker_result": context["worker_result"],
+            "lean_console_log": context["lean_console_log"],
+            "repair_trigger": context["repair_trigger"],
+        }
+        if context.get("acceptance_report") is not None:
+            trace_context["acceptance_report"] = context["acceptance_report"]
         completed = self.deepseek.complete_json(
             self.messages(**context),
+            trace_context=trace_context,
             max_tokens=16_000,
             empty_error="DeepSeek returned an empty response",
             invalid_error="DeepSeek did not return valid JSON",
         )
         payload = completed["payload"]
         if not isinstance(payload.get("source_code"), str):
-            raise ValueError("DeepSeek response must contain one source_code string")
+            raise DeepSeekCallError(
+                "DeepSeek response must contain one source_code string",
+                trace=completed["trace"],
+            )
         source_code = payload["source_code"].strip()
         if not source_code:
-            raise ValueError("DeepSeek returned empty source_code")
-        return {"source_code": source_code, "usage": completed["usage"]}
+            raise DeepSeekCallError(
+                "DeepSeek returned empty source_code",
+                trace=completed["trace"],
+            )
+        return {
+            "source_code": source_code,
+            "usage": completed["usage"],
+            "trace": completed["trace"],
+        }

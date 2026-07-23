@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import copy
+import json
 import threading
 import time
 import uuid
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from agent import ACCEPTANCE_CHECK_IDS, DESIGNER_TRACKS
@@ -276,7 +278,7 @@ class UserStrategy(AlphaForgeBaseAlgorithm):
 
 
 class ForgeService:
-    """One in-memory flow for baselines and accepted Designer candidates."""
+    """Run the Forge flow and retain a separate replay trace for every Agent call."""
 
     def __init__(
         self,
@@ -287,6 +289,7 @@ class ForgeService:
         acceptance_agent: Any,
         allowed_symbols: set[str],
         allowed_benchmarks: set[str],
+        trace_root: Path | None = None,
     ) -> None:
         self.worker = worker
         self.designer = designer
@@ -295,8 +298,162 @@ class ForgeService:
         self.allowed_symbols = {item.upper() for item in allowed_symbols}
         self.allowed_benchmarks = {item.upper() for item in allowed_benchmarks}
         self._runs: dict[str, dict[str, Any]] = {}
+        self._traces: dict[str, dict[str, Any]] = {}
+        self.trace_root = trace_root.resolve() if trace_root is not None else None
+        if self.trace_root is not None:
+            self.trace_root.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="forge")
+
+    def _trace_path(self, run_id: str) -> Path:
+        if self.trace_root is None:
+            raise RuntimeError("Agent trace persistence is not configured")
+        if not run_id.startswith("forge-") or not run_id[6:].isalnum():
+            raise ValueError("invalid Forge run_id")
+        return self.trace_root / f"{run_id}.json"
+
+    def _persist_trace_locked(self, run_id: str) -> None:
+        if self.trace_root is None:
+            return
+        path = self._trace_path(run_id)
+        temporary = path.with_suffix(".json.tmp")
+        temporary.write_text(
+            json.dumps(self._traces[run_id], ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        temporary.replace(path)
+
+    def _initialize_trace(
+        self,
+        *,
+        run_id: str,
+        settings: RunSettings,
+    ) -> None:
+        trace = {
+            "schema_version": "1.0",
+            "run_id": run_id,
+            "created_at": utc_now(),
+            "updated_at": utc_now(),
+            "state": "queued",
+            "error": None,
+            "run_settings": settings.model_dump(mode="json"),
+            "baseline_results": [],
+            "agent_calls": [],
+            "worker_attempts": [],
+        }
+        with self._lock:
+            self._traces[run_id] = trace
+            self._persist_trace_locked(run_id)
+
+    def _trace_change(self, run_id: str, **values: Any) -> None:
+        with self._lock:
+            self._traces[run_id].update(copy.deepcopy(values))
+            self._traces[run_id]["updated_at"] = utc_now()
+            self._persist_trace_locked(run_id)
+
+    def _record_agent_call(
+        self,
+        *,
+        run_id: str,
+        track: str,
+        stage: str,
+        attempt: int,
+        trace: dict[str, Any] | None,
+        error: Exception | None = None,
+    ) -> None:
+        entry = {
+            "sequence": 0,
+            "track": track,
+            "stage": stage,
+            "attempt": attempt,
+            "call": copy.deepcopy(trace),
+        }
+        if entry["call"] is None:
+            entry["call"] = {
+                "request_parameters": None,
+                "dynamic_context": None,
+                "raw_response": None,
+                "error": (
+                    {
+                        "type": type(error).__name__,
+                        "message": str(error),
+                    }
+                    if error is not None
+                    else None
+                ),
+            }
+        elif error is not None and entry["call"].get("error") is None:
+            entry["call"]["error"] = {
+                "type": type(error).__name__,
+                "message": str(error),
+            }
+        with self._lock:
+            calls = self._traces[run_id]["agent_calls"]
+            entry["sequence"] = len(calls) + 1
+            calls.append(entry)
+            self._traces[run_id]["updated_at"] = utc_now()
+            self._persist_trace_locked(run_id)
+
+    def _record_worker_attempt(
+        self,
+        *,
+        run_id: str,
+        track: str,
+        attempt: int,
+        worker_run_id: str,
+        source_code: str,
+        parameters: dict[str, str],
+    ) -> None:
+        entry = {
+            "track": track,
+            "attempt": attempt,
+            "worker_run_id": worker_run_id,
+            "submitted_at": utc_now(),
+            "finished_at": None,
+            "source_code": source_code,
+            "parameters": copy.deepcopy(parameters),
+            "result": None,
+            "console_log": None,
+            "behavior_evidence": None,
+            "acceptance_report": None,
+            "outcome": "running",
+            "error": None,
+        }
+        with self._lock:
+            self._traces[run_id]["worker_attempts"].append(entry)
+            self._traces[run_id]["updated_at"] = utc_now()
+            self._persist_trace_locked(run_id)
+
+    def _update_worker_attempt(
+        self,
+        *,
+        run_id: str,
+        worker_run_id: str,
+        **values: Any,
+    ) -> None:
+        with self._lock:
+            attempts = self._traces[run_id]["worker_attempts"]
+            entry = next(
+                item for item in attempts if item["worker_run_id"] == worker_run_id
+            )
+            entry.update(copy.deepcopy(values))
+            self._traces[run_id]["updated_at"] = utc_now()
+            self._persist_trace_locked(run_id)
+
+    def get_trace(self, run_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            trace = self._traces.get(run_id)
+            if trace is not None:
+                return copy.deepcopy(trace)
+        if self.trace_root is None:
+            return None
+        try:
+            path = self._trace_path(run_id)
+        except ValueError:
+            return None
+        if not path.is_file():
+            return None
+        return json.loads(path.read_text(encoding="utf-8"))
 
     def create(
         self,
@@ -366,6 +523,7 @@ class ForgeService:
             "updated_at": utc_now(),
             "error": None,
         }
+        self._initialize_trace(run_id=run_id, settings=settings)
         with self._lock:
             self._runs[run_id] = run
         self._executor.submit(self._execute, run_id, settings, human_source)
@@ -525,6 +683,14 @@ class ForgeService:
         for repair_attempt in range(MAX_REPAIR_ATTEMPTS + 1):
             submitted = self.worker.submit_custom(source_code, parameters)
             worker_run_id = submitted["run_id"]
+            self._record_worker_attempt(
+                run_id=run_id,
+                track=track,
+                attempt=repair_attempt,
+                worker_run_id=worker_run_id,
+                source_code=source_code,
+                parameters=parameters,
+            )
             try:
                 result = self._wait_for_worker(
                     run_id,
@@ -541,25 +707,80 @@ class ForgeService:
                     stage=f"Validating {track} candidate · attempt {len(acceptance_history) + 1}",
                 )
                 self._change_item(run_id, "candidates", index, state="validating")
-                console_log = self.worker.log(worker_run_id)
-                behavior_evidence = build_behavior_evidence(
-                    self.worker.details(worker_run_id)
-                )
-                evaluated = self.acceptance_agent.evaluate(
-                    track=track,
-                    run_settings=settings.model_dump(mode="json"),
-                    critical_log_evidence=extract_critical_log_evidence(console_log),
-                    source_code=source_code,
-                    worker_result=result,
-                    lean_console_log=console_log,
+                try:
+                    console_log = self.worker.log(worker_run_id)
+                    behavior_evidence = build_behavior_evidence(
+                        self.worker.details(worker_run_id)
+                    )
+                except Exception as exc:
+                    self._update_worker_attempt(
+                        run_id=run_id,
+                        worker_run_id=worker_run_id,
+                        finished_at=utc_now(),
+                        result=result,
+                        outcome="evidence_failed",
+                        error={"type": type(exc).__name__, "message": str(exc)},
+                    )
+                    raise
+                self._update_worker_attempt(
+                    run_id=run_id,
+                    worker_run_id=worker_run_id,
+                    finished_at=utc_now(),
+                    result=result,
+                    console_log=console_log,
                     behavior_evidence=behavior_evidence,
-                    acceptance_attempt=len(acceptance_history) + 1,
+                    outcome="awaiting_acceptance",
+                    error=None,
                 )
+                acceptance_attempt = len(acceptance_history) + 1
+                try:
+                    evaluated = self.acceptance_agent.evaluate(
+                        track=track,
+                        run_settings=settings.model_dump(mode="json"),
+                        critical_log_evidence=extract_critical_log_evidence(console_log),
+                        source_code=source_code,
+                        worker_result=result,
+                        lean_console_log=console_log,
+                        behavior_evidence=behavior_evidence,
+                        acceptance_attempt=acceptance_attempt,
+                    )
+                    self._record_agent_call(
+                        run_id=run_id,
+                        track=track,
+                        stage="acceptance",
+                        attempt=acceptance_attempt,
+                        trace=evaluated.get("trace"),
+                    )
+                except Exception as exc:
+                    self._record_agent_call(
+                        run_id=run_id,
+                        track=track,
+                        stage="acceptance",
+                        attempt=acceptance_attempt,
+                        trace=getattr(exc, "trace", None),
+                        error=exc,
+                    )
+                    self._update_worker_attempt(
+                        run_id=run_id,
+                        worker_run_id=worker_run_id,
+                        outcome="acceptance_call_failed",
+                        error={"type": type(exc).__name__, "message": str(exc)},
+                    )
+                    raise
                 usage = self._add_usage(usage, evaluated.get("usage", {}))
                 self._change_item(run_id, "candidates", index, usage=usage)
-                report = validate_acceptance_report(
-                    evaluated.get("report", {}), behavior_evidence
-                )
+                try:
+                    report = validate_acceptance_report(
+                        evaluated.get("report", {}), behavior_evidence
+                    )
+                except Exception as exc:
+                    self._update_worker_attempt(
+                        run_id=run_id,
+                        worker_run_id=worker_run_id,
+                        outcome="acceptance_response_invalid",
+                        error={"type": type(exc).__name__, "message": str(exc)},
+                    )
+                    raise
                 acceptance_history.append(
                     {
                         "attempt": len(acceptance_history) + 1,
@@ -578,6 +799,12 @@ class ForgeService:
                     usage=usage,
                 )
                 if report["decision"] == "accept":
+                    self._update_worker_attempt(
+                        run_id=run_id,
+                        worker_run_id=worker_run_id,
+                        acceptance_report=report,
+                        outcome="accepted",
+                    )
                     self._change_item(
                         run_id,
                         "candidates",
@@ -586,6 +813,12 @@ class ForgeService:
                         error=None,
                     )
                     return
+                self._update_worker_attempt(
+                    run_id=run_id,
+                    worker_run_id=worker_run_id,
+                    acceptance_report=report,
+                    outcome="acceptance_revision",
+                )
                 if repair_attempt == MAX_REPAIR_ATTEMPTS:
                     self._change_item(
                         run_id,
@@ -599,6 +832,22 @@ class ForgeService:
                 acceptance_report = report
                 repair_reason = report["repair_request"]
             else:
+                try:
+                    console_log = self.worker.log(worker_run_id)
+                except Exception:
+                    console_log = "\n".join(result.get("errors", []))
+                repair_reason = (
+                    "; ".join(result.get("errors", [])) or "LEAN run failed"
+                )
+                self._update_worker_attempt(
+                    run_id=run_id,
+                    worker_run_id=worker_run_id,
+                    finished_at=utc_now(),
+                    result=result,
+                    console_log=console_log,
+                    outcome="runtime_failure",
+                    error={"type": "worker_failure", "message": repair_reason},
+                )
                 if repair_attempt == MAX_REPAIR_ATTEMPTS:
                     self._change_item(
                         run_id,
@@ -610,13 +859,6 @@ class ForgeService:
                     return
                 repair_trigger = "runtime_failure"
                 acceptance_report = None
-                repair_reason = (
-                    "; ".join(result.get("errors", [])) or "LEAN run failed"
-                )
-                try:
-                    console_log = self.worker.log(worker_run_id)
-                except Exception:
-                    console_log = "\n".join(result.get("errors", []))
 
             next_attempt = repair_attempt + 1
             self._change(
@@ -631,17 +873,35 @@ class ForgeService:
                 repair_attempts=next_attempt,
                 error=repair_reason,
             )
-            repaired = self.repairer.repair(
-                track=track,
-                run_settings=settings.model_dump(mode="json"),
-                baseline_results=baseline_results,
-                source_code=source_code,
-                worker_result=result,
-                lean_console_log=console_log,
-                repair_attempt=next_attempt,
-                repair_trigger=repair_trigger,
-                acceptance_report=acceptance_report,
-            )
+            try:
+                repaired = self.repairer.repair(
+                    track=track,
+                    run_settings=settings.model_dump(mode="json"),
+                    baseline_results=baseline_results,
+                    source_code=source_code,
+                    worker_result=result,
+                    lean_console_log=console_log,
+                    repair_attempt=next_attempt,
+                    repair_trigger=repair_trigger,
+                    acceptance_report=acceptance_report,
+                )
+                self._record_agent_call(
+                    run_id=run_id,
+                    track=track,
+                    stage="repair",
+                    attempt=next_attempt,
+                    trace=repaired.get("trace"),
+                )
+            except Exception as exc:
+                self._record_agent_call(
+                    run_id=run_id,
+                    track=track,
+                    stage="repair",
+                    attempt=next_attempt,
+                    trace=getattr(exc, "trace", None),
+                    error=exc,
+                )
+                raise
             source_code = repaired["source_code"]
             usage = self._add_usage(usage, repaired.get("usage", {}))
             self._change_item(
@@ -682,6 +942,8 @@ class ForgeService:
                         "summary": result.get("summary", {}),
                     }
                 )
+
+            self._trace_change(run_id, baseline_results=evidence, state="running")
 
             self._change(
                 run_id,
@@ -726,6 +988,13 @@ class ForgeService:
                     index, track = futures[future]
                     try:
                         generated = future.result()
+                        self._record_agent_call(
+                            run_id=run_id,
+                            track=track,
+                            stage="designer",
+                            attempt=0,
+                            trace=generated.get("trace"),
+                        )
                         generated_candidates[index] = generated
                         self._change_item(
                             run_id,
@@ -737,6 +1006,14 @@ class ForgeService:
                             error=None,
                         )
                     except Exception as exc:
+                        self._record_agent_call(
+                            run_id=run_id,
+                            track=track,
+                            stage="designer",
+                            attempt=0,
+                            trace=getattr(exc, "trace", None),
+                            error=exc,
+                        )
                         self._change_item(
                             run_id,
                             "candidates",
@@ -773,5 +1050,7 @@ class ForgeService:
                     )
 
             self._change(run_id, state="completed", stage="Finished")
+            self._trace_change(run_id, state="completed", error=None)
         except Exception as exc:
             self._change(run_id, state="failed", stage="Stopped", error=str(exc))
+            self._trace_change(run_id, state="failed", error=str(exc))

@@ -14,6 +14,7 @@ class Settings:
     worker_token: str
     universe_path: Path
     lean_docs_path: Path
+    trace_root: Path
     api_key: str
     base_url: str
     model: str
@@ -51,6 +52,12 @@ def load_settings() -> Settings:
             os.getenv(
                 "ALPHAFORGE_LEAN_DOCS_PATH",
                 REPOSITORY_ROOT / "docs" / "lean" / "text" / "alphaforge-python-v1",
+            )
+        ).resolve(),
+        trace_root=Path(
+            os.getenv(
+                "ALPHAFORGE_TRACE_ROOT",
+                REPOSITORY_ROOT / "backend" / "workspace" / "forge_traces",
             )
         ).resolve(),
         api_key=os.getenv("API_KEY", "").strip(),

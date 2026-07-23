@@ -75,8 +75,22 @@ class DeepSeekAcceptanceAgent:
     def evaluate(self, **context: Any) -> dict[str, Any]:
         completed = self.deepseek.complete_json(
             self.messages(**context),
+            trace_context={
+                "designer_track": context["track"],
+                "run_settings": context["run_settings"],
+                "critical_log_evidence": context["critical_log_evidence"],
+                "source_code": context["source_code"],
+                "worker_result": context["worker_result"],
+                "lean_console_log": context["lean_console_log"],
+                "behavior_evidence": context["behavior_evidence"],
+                "acceptance_attempt": context["acceptance_attempt"],
+            },
             max_tokens=12_000,
             empty_error="DeepSeek acceptance agent returned an empty response",
             invalid_error="DeepSeek acceptance agent did not return valid JSON",
         )
-        return {"report": completed["payload"], "usage": completed["usage"]}
+        return {
+            "report": completed["payload"],
+            "usage": completed["usage"],
+            "trace": completed["trace"],
+        }

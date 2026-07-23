@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from agent.client import DeepSeekJSONClient
+from agent.client import DeepSeekCallError, DeepSeekJSONClient
 from agent.prompts import (
     DESIGNER_SYSTEM_PROMPT,
     QC_TEMPLATE,
@@ -73,14 +73,29 @@ class DeepSeekDesigner:
                 run_settings=run_settings,
                 baseline_results=baseline_results,
             ),
+            trace_context={
+                "designer_track": track,
+                "run_settings": run_settings,
+                "baseline_results": baseline_results,
+            },
             max_tokens=16_000,
             empty_error="DeepSeek returned an empty response",
             invalid_error="DeepSeek did not return valid JSON",
         )
         payload = completed["payload"]
         if not isinstance(payload.get("source_code"), str):
-            raise ValueError("DeepSeek response must contain one source_code string")
+            raise DeepSeekCallError(
+                "DeepSeek response must contain one source_code string",
+                trace=completed["trace"],
+            )
         source_code = payload["source_code"].strip()
         if not source_code:
-            raise ValueError("DeepSeek returned empty source_code")
-        return {"source_code": source_code, "usage": completed["usage"]}
+            raise DeepSeekCallError(
+                "DeepSeek returned empty source_code",
+                trace=completed["trace"],
+            )
+        return {
+            "source_code": source_code,
+            "usage": completed["usage"],
+            "trace": completed["trace"],
+        }
