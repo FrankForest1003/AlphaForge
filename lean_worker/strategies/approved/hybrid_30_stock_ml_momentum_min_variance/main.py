@@ -25,7 +25,7 @@ import numpy as np
 import pandas as pd
 from sklearn.ensemble import GradientBoostingRegressor
 from sklearn.covariance import LedoitWolf
-from alphaforge_base import AlphaForgeBaseAlgorithm
+from alphaforge_base import AlphaForgeBaseAlgorithm, AlphaForgeStagedRebalancer
 
 
 class HybridThirtyStockMLMomentumMinVariance(AlphaForgeBaseAlgorithm):
@@ -61,7 +61,8 @@ class HybridThirtyStockMLMomentumMinVariance(AlphaForgeBaseAlgorithm):
             raise ValueError("Select at least one stock")
         return tickers
 
-    def initialize_strategy(self):
+    def initialize(self):
+        self._af_execution = AlphaForgeStagedRebalancer(self)
         # ---------------------------------------------------------------------
         # 1. Backtest configuration
         # ---------------------------------------------------------------------
@@ -320,7 +321,7 @@ class HybridThirtyStockMLMomentumMinVariance(AlphaForgeBaseAlgorithm):
         qqq_volatility_20 = float(qqq_close.pct_change().dropna().tail(20).std() * np.sqrt(252))
         # Move fully to cash when QQQ is below its 200-day moving average.
         if self.risk_filter_enabled and qqq_price <= qqq_sma_200:
-            self.af_liquidate_all("Risk-off: QQQ below SMA200")
+            self._af_execution.af_liquidate_all("Risk-off: QQQ below SMA200")
             self.debug(f'{self.time.date()}: RISK-OFF | QQQ={qqq_price:.2f}, QQQ SMA200={qqq_sma_200:.2f}. Portfolio moved to cash.')
             return
         if qqq_price > qqq_sma_50 and qqq_sma_50 > qqq_sma_200 and (spy_price > spy_sma_200):
@@ -374,7 +375,7 @@ class HybridThirtyStockMLMomentumMinVariance(AlphaForgeBaseAlgorithm):
             predicted_alpha = float(self.model.predict(latest_features.values.reshape(1, -1))[0])
             candidates.append({'symbol': symbol, 'classic_score': classic_score, 'ml_prediction': predicted_alpha, 'volatility': annual_volatility})
         if not candidates:
-            self.af_liquidate_all("No stocks passed hybrid selection filters")
+            self._af_execution.af_liquidate_all("No stocks passed hybrid selection filters")
             self.debug(f'{self.time.date()}: no stocks passed the selection filters.')
             return
         candidate_frame = pd.DataFrame(candidates).set_index('symbol')
@@ -401,7 +402,7 @@ class HybridThirtyStockMLMomentumMinVariance(AlphaForgeBaseAlgorithm):
                 break
         selected = selected[:self.number_of_holdings]
         if not selected:
-            self.af_liquidate_all("No stocks passed hybrid selection filters")
+            self._af_execution.af_liquidate_all("No stocks passed hybrid selection filters")
             return
         selected_scores_source = (
             candidate_frame['combined_score']
@@ -556,7 +557,7 @@ class HybridThirtyStockMLMomentumMinVariance(AlphaForgeBaseAlgorithm):
                 symbol: max(0.0, float(weight)) * scale
                 for symbol, weight in execution_weights.items()
             }
-        self.af_rebalance_to_weights(
+        self._af_execution.af_rebalance_to_weights(
             execution_weights,
             "Monthly hybrid ML momentum and minimum-variance rebalance",
         )
@@ -568,7 +569,7 @@ class HybridThirtyStockMLMomentumMinVariance(AlphaForgeBaseAlgorithm):
     # -------------------------------------------------------------------------
     # Daily risk monitoring
     # -------------------------------------------------------------------------
-    def on_alpha_data(self, data):
+    def on_data(self, data):
         """
         Enforce portfolio-level drawdown control and per-position stop losses.
         """
@@ -586,7 +587,7 @@ class HybridThirtyStockMLMomentumMinVariance(AlphaForgeBaseAlgorithm):
         self.portfolio_peak = max(self.portfolio_peak, portfolio_value)
         portfolio_drawdown = 1.0 - portfolio_value / self.portfolio_peak if self.portfolio_peak > 0 else 0.0
         if portfolio_drawdown >= self.maximum_portfolio_drawdown:
-            self.af_liquidate_all("Portfolio drawdown pause")
+            self._af_execution.af_liquidate_all("Portfolio drawdown pause")
             self.pause_until = self.time + timedelta(days=self.pause_days)
             self.portfolio_peak = portfolio_value
             self.debug(f'{self.time.date()}: portfolio drawdown reached {portfolio_drawdown:.2%}. All positions were liquidated. Trading paused until {self.pause_until.date()}.')
@@ -616,10 +617,10 @@ class HybridThirtyStockMLMomentumMinVariance(AlphaForgeBaseAlgorithm):
                 if other not in stopped_set and self.portfolio[other].invested
             }
             names = ",".join(symbol.value for symbol in stopped_symbols)
-            self.af_rebalance_to_weights(
+            self._af_execution.af_rebalance_to_weights(
                 remaining_weights,
                 f"Stop-loss exit: {names}",
             )
 
-    def on_alpha_end(self):
+    def on_end_of_algorithm(self):
         self.debug("ALPHAFORGE_HYBRID_30_ML_MOMENTUM_MIN_VARIANCE_COMPLETED")

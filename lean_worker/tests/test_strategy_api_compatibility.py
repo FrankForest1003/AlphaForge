@@ -17,7 +17,7 @@ def test_daily_only_benchmark_does_not_request_hour_data():
     assert "af_use_security_benchmark(self.spy)" in ml
 
 
-def test_cash_buffer_is_a_single_shared_base_default():
+def test_cash_buffer_is_not_imposed_by_shared_base():
     base = _text("runtime_support/alphaforge_base.py")
     strategies = [
         _text("strategies/approved/classic_30_stock_top3_momentum/main.py"),
@@ -25,14 +25,15 @@ def test_cash_buffer_is_a_single_shared_base_default():
         _text("strategies/approved/ml_30_stock_gradient_boosting/main.py"),
         _text("strategies/approved/hybrid_30_stock_ml_momentum_min_variance/main.py"),
     ]
-    assert "self.settings.free_portfolio_value_percentage = 0.02" in base
+    assert "free_portfolio_value_percentage" not in base
     assert all("free_portfolio_value_percentage" not in strategy for strategy in strategies)
 
 
-def test_top3_strategies_use_staged_rebalance():
+def test_approved_strategies_opt_into_staged_rebalance():
     base = _text("runtime_support/alphaforge_base.py")
     classic = _text("strategies/approved/classic_30_stock_top3_momentum/main.py")
     ml = _text("strategies/approved/ml_30_stock_gradient_boosting/main.py")
+    assert "class AlphaForgeStagedRebalancer" in base
     assert "def af_rebalance_to_weights" in base
     assert "def _af_submit_opening_orders" in base
     assert "opening price probe" not in base
@@ -42,8 +43,28 @@ def test_top3_strategies_use_staged_rebalance():
     assert "self.af_clear_pending_rebalance()" in base
     assert "af_rebalance_to_weights(" in classic
     assert "af_rebalance_to_weights(" in ml
+    assert "AlphaForgeStagedRebalancer" in classic
+    assert "AlphaForgeStagedRebalancer" in ml
     assert "set_holdings(targets, True)" not in classic
     assert "set_holdings(targets, True)" not in ml
+
+
+def test_strategies_use_standard_quantconnect_lifecycle():
+    base = _text("runtime_support/alphaforge_base.py")
+    run_job = _text("worker/run_job.py")
+    strategies = [
+        _text("strategies/approved/classic_30_stock_top3_momentum/main.py"),
+        _text("strategies/approved/classic_30_stock_mean_reversion/main.py"),
+        _text("strategies/approved/ml_30_stock_gradient_boosting/main.py"),
+        _text("strategies/approved/hybrid_30_stock_ml_momentum_min_variance/main.py"),
+    ]
+    assert "class AlphaForgeRuntimeObserver" in base
+    assert "install_runtime_observer" in run_job
+    assert "ast.parse(source" in run_job
+    assert "AlphaForgeObservedAlgorithm" not in run_job
+    assert all("def initialize(self)" in strategy for strategy in strategies)
+    assert all("initialize_strategy" not in strategy for strategy in strategies)
+    assert all("on_alpha_data" not in strategy for strategy in strategies)
 
 
 def test_partial_history_symbols_do_not_block_full_universe():

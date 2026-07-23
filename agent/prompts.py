@@ -44,6 +44,14 @@ submission; filled orders. For each stage, cite the source expression and the ob
 execution fact that establishes its output. Record pass when the proof reaches filled
 orders. Record fail at the first stage whose required output is absent.
 
+When the source calls self.af_rebalance_daily_weights, completion of the staged target
+is part of this execution proof. Cite staged_rebalance_started_count,
+staged_rebalance_completed_count, staged_rebalance_replacement_count, and
+canceled_order_count. Record pass only when staged_rebalance_completed_count is greater
+than zero. When staged rebalances started but none completed, record fail even if some
+individual orders filled, and request alignment of target-update cadence with the
+multi-bar execution lifecycle.
+
 For ML and Hybrid code, include separate numeric cardinality calculations for training
 and inference. Each calculation states the available row count, each row loss caused by
 pct_change/rolling/shift, the label horizon where applicable, and the surviving row
@@ -52,6 +60,12 @@ and early-return conditions in the proof. When A1 is fail, the execution proof e
 before filled orders and A2 is fail; identify the first interruption established by
 the source and execution facts. When the evidence ends before the first interruption
 can be localized, name the exact additional runtime value needed to complete the proof.
+
+Treat supplied runtime facts as authoritative. Describe a stage without a recorded
+runtime event as "not observed". Attribute a concrete cause only when the source and
+runtime facts establish it together. When evidence is insufficient to distinguish
+multiple causes, keep the failed stage precise and request one structured
+af_record_signal or af_record_ml_* event that would distinguish them.
 
 A3 DESIGN TRACK INTEGRITY
 Traditional passes when the evidence traces a non-ML market signal into symbol selection
@@ -94,7 +108,10 @@ results outside the acceptance decision.
 QC_TEMPLATE = '''from datetime import datetime
 
 from AlgorithmImports import *
-from alphaforge_base import AlphaForgeBaseAlgorithm, af_split_history_frames
+from alphaforge_base import (
+    AlphaForgeBaseAlgorithm,
+    af_split_history_frames,
+)
 
 
 class UserStrategy(AlphaForgeBaseAlgorithm):
@@ -102,14 +119,12 @@ class UserStrategy(AlphaForgeBaseAlgorithm):
         value = self.get_parameter(name)
         return value if value not in (None, "") else default
 
-    def initialize_strategy(self):
+    def initialize(self):
         start = datetime.fromisoformat(self._parameter("start_date", "2020-01-02"))
         end = datetime.fromisoformat(self._parameter("end_date", "2024-12-31"))
         self.set_start_date(start.year, start.month, start.day)
         self.set_end_date(end.year, end.month, end.day)
         self.set_cash(float(self._parameter("initial_cash", "100000")))
-        self.target_gross = 0.95
-
         tickers = [
             ticker.strip().upper()
             for ticker in self._parameter("symbols", "MSFT,AAPL,NVDA,GOOGL,AMZN").split(",")
@@ -134,19 +149,52 @@ class UserStrategy(AlphaForgeBaseAlgorithm):
         self.benchmark_symbol = benchmark.symbol
         self.af_use_security_benchmark(self.benchmark_symbol)
 
-        # Canonical DataFrame history calls:
+        # AlphaForge provides Daily equity data for strategy subscriptions and History.
+        # Choose a strategy-appropriate Daily warm-up and guard trading while
+        # self.is_warming_up is true.
+        # Canonical DataFrame history calls and ticker-key lookup:
         # one_symbol = self.history(TradeBar, self.symbols[0], 252, Resolution.DAILY)
         # by_ticker = af_split_history_frames(
         #     self.history(self.symbols, 252, Resolution.DAILY)
         # )
+        # frame = by_ticker.get(self.symbols[0].value.upper())
         # Never index self.history[TradeBar](...) as a pandas DataFrame.
-        # Keep total absolute target weights at or below self.target_gross.
-        # For a long-only basket on Daily data, submit a {Symbol: weight} mapping
-        # with self.af_rebalance_to_weights(target_weights, "rebalance reason") so
-        # reductions fill before new purchases are sized.
-        # Add the strategy's indicators, models, schedules, and state here.
+        # Record the actual decision path as it runs:
+        # self.af_record_signal(
+        #     "momentum_63d",
+        #     {"symbol": symbol.value, "value": float(momentum)},
+        # )
+        # self.af_record_ml_training({
+        #     "model_type": type(model).__name__,
+        #     "training_rows": int(len(X_train)),
+        #     "feature_names": list(X_train.columns),
+        #     "label_horizon_days": int(label_horizon),
+        # })
+        # self.af_record_ml_prediction({
+        #     "symbol": symbol.value,
+        #     "predicted_value": float(prediction),
+        #     "selected": bool(symbol in selected_symbols),
+        # })
+        # For a Daily-resolution basket rotation where new purchases use cash
+        # released by removals or reductions, submit the complete desired
+        # long-only weight map through this optional execution helper:
+        # self.af_rebalance_daily_weights(
+        #     {symbol: target_weight for symbol in selected_symbols},
+        #     "Strategy rebalance",
+        # )
+        # The helper waits for removal/reduction fills, sizes buys from a later
+        # completed Daily bar, and caps buy prices at the requested target value.
+        # The strategy retains full control of target weights, gross exposure,
+        # and cash allocation.
+        # Align the prediction or signal horizon with the target-update cadence.
+        # This helper advances across subsequent completed Daily bars, so schedule
+        # each new target after the prior staged rotation has time to complete.
+        # For example, pair a 5-day forward label with weekly target updates or a
+        # 21-day forward label with monthly target updates.
+        # Add the strategy's indicators, models, schedules, portfolio sizing,
+        # cash reserve, order handling, and state here.
 
-    def on_alpha_data(self, data):
+    def on_data(self, data):
         # Implement event-driven strategy logic here when needed.
         pass
 '''

@@ -114,17 +114,9 @@ def af_split_history_frames(history) -> dict[str, Any]:
 
 
 class AlphaForgeBaseAlgorithm(QCAlgorithm):
-    """Base contract for detailed, portable AlphaForge JSON results.
+    """Thin AlphaForge helpers for otherwise standard QCAlgorithm strategies."""
 
-    Subclasses implement:
-      - initialize_strategy(self)
-      - on_alpha_data(self, data) [optional]
-      - on_alpha_order_event(self, order_event) [optional]
-      - on_alpha_end(self) [optional]
-    """
-
-    def initialize(self):
-        self.settings.free_portfolio_value_percentage = 0.02
+    def _af_initialize_observation(self):
         self._af_tracked_symbols = []
         self._af_equity_curve = []
         self._af_benchmark_curve = []
@@ -142,10 +134,7 @@ class AlphaForgeBaseAlgorithm(QCAlgorithm):
         self._af_pending_rebalance_tag = ""
         self._af_rebalance_state = None
         self._af_rebalance_events = []
-        self.initialize_strategy()
-
-    def initialize_strategy(self):
-        raise NotImplementedError
+        self._af_execution = None
 
     def af_track_symbol(self, symbol):
         if symbol not in self._af_tracked_symbols:
@@ -186,6 +175,140 @@ class AlphaForgeBaseAlgorithm(QCAlgorithm):
 
         self.set_benchmark(benchmark_value)
         return symbol
+
+    def af_record_signal(self, name: str, payload: dict[str, Any]):
+        self._af_signals.append({"time": _time_text(self.time), "name": name, "payload": payload})
+
+    def af_record_ml_training(self, payload: dict[str, Any]):
+        item = dict(payload)
+        item.setdefault("time", _time_text(self.time))
+        self._af_ml_training_runs.append(item)
+
+    def af_record_ml_prediction(self, payload: dict[str, Any]):
+        item = dict(payload)
+        item.setdefault("time", _time_text(self.time))
+        self._af_ml_predictions.append(item)
+
+    def af_record_model_artifact(self, payload: dict[str, Any]):
+        self._af_ml_model_artifacts.append(dict(payload))
+
+    def _af_position_payload(self):
+        positions = []
+        for symbol in self._af_tracked_symbols:
+            holding = self.portfolio[symbol]
+            security = self.securities[symbol]
+            quantity = _number(holding.quantity)
+            if abs(quantity) < 1e-12 and not holding.invested:
+                continue
+            positions.append({
+                "symbol": symbol.value,
+                "quantity": quantity,
+                "average_price": _number(holding.average_price),
+                "market_price": _number(security.price),
+                "market_value": _number(holding.holdings_value),
+                "holdings_cost": _number(holding.holdings_cost),
+                "unrealized_pnl": _number(holding.unrealized_profit),
+                "unrealized_pnl_percent": _number(holding.unrealized_profit_percent),
+                "weight": 0.0 if not _number(self.portfolio.total_portfolio_value) else _number(holding.holdings_value) / _number(self.portfolio.total_portfolio_value),
+                "invested": bool(holding.invested),
+            })
+        return positions
+
+    def af_capture_snapshot(self, reason: str):
+        portfolio_value = _number(self.portfolio.total_portfolio_value)
+        cash = _number(self.portfolio.cash)
+        holdings_value = _number(self.portfolio.total_holdings_value)
+        positions = self._af_position_payload()
+        snapshot = {
+            "time": _time_text(self.time),
+            "reason": reason,
+            "portfolio_value": portfolio_value,
+            "cash": cash,
+            "holdings_value": holdings_value,
+            "gross_exposure": 0.0 if not portfolio_value else sum(abs(p["market_value"]) for p in positions) / portfolio_value,
+            "net_exposure": 0.0 if not portfolio_value else sum(p["market_value"] for p in positions) / portfolio_value,
+            "positions": positions,
+        }
+        self._af_position_snapshots.append(snapshot)
+        self._af_equity_curve.append({
+            "time": snapshot["time"],
+            "portfolio_value": portfolio_value,
+            "cash": cash,
+            "holdings_value": holdings_value,
+        })
+        if self._af_benchmark_symbol is not None:
+            benchmark_price = _number(self.securities[self._af_benchmark_symbol].price)
+            if benchmark_price > 0:
+                if self._af_benchmark_initial_price is None:
+                    self._af_benchmark_initial_price = benchmark_price
+                normalized = (
+                    benchmark_price / self._af_benchmark_initial_price
+                    if self._af_benchmark_initial_price
+                    else 1.0
+                )
+                self._af_benchmark_curve.append({
+                    "time": snapshot["time"],
+                    "symbol": self._af_benchmark_symbol.value,
+                    "price": benchmark_price,
+                    "normalized_value": normalized,
+                    "return": normalized - 1.0,
+                })
+
+    def af_rebalance_daily_weights(self, target_weights, tag: str):
+        """Execute a Daily long-only basket rotation in fill-confirmed phases.
+
+        The strategy supplies the complete desired weight map and retains
+        control of gross exposure and cash allocation.
+        """
+        execution = getattr(self, "_af_execution", None)
+        if execution is None:
+            execution = AlphaForgeStagedRebalancer(self)
+            self._af_execution = execution
+        elif not isinstance(execution, AlphaForgeStagedRebalancer):
+            raise TypeError(
+                "self._af_execution must be an AlphaForgeStagedRebalancer"
+            )
+        return execution.af_rebalance_to_weights(target_weights, tag)
+
+    def _af_write_results(self):
+        run_dir = Path(os.environ.get("ALPHAFORGE_RUN_DIR", "."))
+        run_dir.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "schema_version": "1.0",
+            "run_id": os.environ.get("ALPHAFORGE_RUN_ID"),
+            "equity_curve": self._af_equity_curve,
+            "benchmark_curve": self._af_benchmark_curve,
+            "position_snapshots": self._af_position_snapshots,
+            "orders": list(self._af_orders.values()),
+            "order_events": self._af_order_events,
+            "signals": self._af_signals,
+            "ml": {
+                "training_runs": self._af_ml_training_runs,
+                "predictions": self._af_ml_predictions,
+                "model_artifacts": self._af_ml_model_artifacts,
+            },
+            "rebalances": self._af_rebalance_events,
+        }
+        (run_dir / "alphaforge_details.json").write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2, default=str) + "\n",
+            encoding="utf-8",
+        )
+
+
+class AlphaForgeStagedRebalancer:
+    """Optional staged execution for Daily long-only basket rotations."""
+
+    def __init__(self, algorithm):
+        object.__setattr__(self, "_algorithm", algorithm)
+
+    def __getattr__(self, name: str):
+        return getattr(self._algorithm, name)
+
+    def __setattr__(self, name: str, value: Any):
+        if name == "_algorithm":
+            object.__setattr__(self, name, value)
+        else:
+            setattr(self._algorithm, name, value)
 
     def af_clear_pending_rebalance(self):
         self._af_pending_target_weights = None
@@ -563,23 +686,6 @@ class AlphaForgeBaseAlgorithm(QCAlgorithm):
         if not clean:
             self.af_liquidate_all(tag)
             return
-        gross_target = sum(clean.values())
-        maximum_gross_target = 0.95
-        if gross_target > maximum_gross_target:
-            scale = maximum_gross_target / gross_target
-            clean = {
-                symbol: weight * scale
-                for symbol, weight in clean.items()
-            }
-            self._af_record_rebalance_event(
-                "staged_rebalance_target_scaled",
-                {
-                    "tag": tag,
-                    "requested_gross": gross_target,
-                    "admitted_gross": sum(clean.values()),
-                    "maximum_gross": maximum_gross_target,
-                },
-            )
 
         state = self._af_rebalance_state
         if state is not None and state.get("phase") != "failed":
@@ -612,105 +718,43 @@ class AlphaForgeBaseAlgorithm(QCAlgorithm):
 
         self._af_start_rebalance(clean, tag)
 
-    def af_record_signal(self, name: str, payload: dict[str, Any]):
-        self._af_signals.append({"time": _time_text(self.time), "name": name, "payload": payload})
 
-    def af_record_ml_training(self, payload: dict[str, Any]):
-        item = dict(payload)
-        item.setdefault("time", _time_text(self.time))
-        self._af_ml_training_runs.append(item)
+class AlphaForgeRuntimeObserver:
+    """Worker-owned callback wrapper that records without subclassing QCAlgorithm."""
 
-    def af_record_ml_prediction(self, payload: dict[str, Any]):
-        item = dict(payload)
-        item.setdefault("time", _time_text(self.time))
-        self._af_ml_predictions.append(item)
+    @staticmethod
+    def initialize(algorithm, callback):
+        algorithm._af_initialize_observation()
+        try:
+            return callback()
+        except Exception:
+            algorithm._af_write_results()
+            raise
 
-    def af_record_model_artifact(self, payload: dict[str, Any]):
-        self._af_ml_model_artifacts.append(dict(payload))
-
-    def _af_position_payload(self):
-        positions = []
-        for symbol in self._af_tracked_symbols:
-            holding = self.portfolio[symbol]
-            security = self.securities[symbol]
-            quantity = _number(holding.quantity)
-            if abs(quantity) < 1e-12 and not holding.invested:
-                continue
-            positions.append({
-                "symbol": symbol.value,
-                "quantity": quantity,
-                "average_price": _number(holding.average_price),
-                "market_price": _number(security.price),
-                "market_value": _number(holding.holdings_value),
-                "holdings_cost": _number(holding.holdings_cost),
-                "unrealized_pnl": _number(holding.unrealized_profit),
-                "unrealized_pnl_percent": _number(holding.unrealized_profit_percent),
-                "weight": 0.0 if not _number(self.portfolio.total_portfolio_value) else _number(holding.holdings_value) / _number(self.portfolio.total_portfolio_value),
-                "invested": bool(holding.invested),
-            })
-        return positions
-
-    def af_capture_snapshot(self, reason: str):
-        portfolio_value = _number(self.portfolio.total_portfolio_value)
-        cash = _number(self.portfolio.cash)
-        holdings_value = _number(self.portfolio.total_holdings_value)
-        positions = self._af_position_payload()
-        snapshot = {
-            "time": _time_text(self.time),
-            "reason": reason,
-            "portfolio_value": portfolio_value,
-            "cash": cash,
-            "holdings_value": holdings_value,
-            "gross_exposure": 0.0 if not portfolio_value else sum(abs(p["market_value"]) for p in positions) / portfolio_value,
-            "net_exposure": 0.0 if not portfolio_value else sum(p["market_value"] for p in positions) / portfolio_value,
-            "positions": positions,
-        }
-        self._af_position_snapshots.append(snapshot)
-        self._af_equity_curve.append({
-            "time": snapshot["time"],
-            "portfolio_value": portfolio_value,
-            "cash": cash,
-            "holdings_value": holdings_value,
-        })
-        if self._af_benchmark_symbol is not None:
-            benchmark_price = _number(self.securities[self._af_benchmark_symbol].price)
-            if benchmark_price > 0:
-                if self._af_benchmark_initial_price is None:
-                    self._af_benchmark_initial_price = benchmark_price
-                normalized = (
-                    benchmark_price / self._af_benchmark_initial_price
-                    if self._af_benchmark_initial_price
-                    else 1.0
-                )
-                self._af_benchmark_curve.append({
-                    "time": snapshot["time"],
-                    "symbol": self._af_benchmark_symbol.value,
-                    "price": benchmark_price,
-                    "normalized_value": normalized,
-                    "return": normalized - 1.0,
-                })
-
-    def on_data(self, data):
-        hook = getattr(self, "on_alpha_data", None)
-        if hook:
-            hook(data)
-        if self.is_warming_up:
+    @staticmethod
+    def on_data(algorithm, data, callback):
+        if callback is not None:
+            callback(data)
+        execution = getattr(algorithm, "_af_execution", None)
+        if execution is not None:
+            execution._af_continue_rebalance_on_data()
+        if algorithm.is_warming_up:
             return
-        self._af_continue_rebalance_on_data()
-        date_key = str(self.time.date())
-        if date_key != self._af_last_daily_snapshot:
-            self._af_last_daily_snapshot = date_key
-            self.af_capture_snapshot("daily")
+        date_key = str(algorithm.time.date())
+        if date_key != algorithm._af_last_daily_snapshot:
+            algorithm._af_last_daily_snapshot = date_key
+            algorithm.af_capture_snapshot("daily")
 
-    def on_order_event(self, order_event):
-        order = self.transactions.get_order_by_id(order_event.order_id)
+    @staticmethod
+    def on_order_event(algorithm, order_event, callback):
+        order = algorithm.transactions.get_order_by_id(order_event.order_id)
         fee = 0.0
         try:
             fee = _number(order_event.order_fee.value.amount)
         except Exception:
             pass
         event = {
-            "time": _time_text(self.time),
+            "time": _time_text(algorithm.time),
             "order_id": int(order_event.order_id),
             "symbol": order_event.symbol.value,
             "status": _enum_text(order_event.status),
@@ -720,9 +764,9 @@ class AlphaForgeBaseAlgorithm(QCAlgorithm):
             "message": str(order_event.message or ""),
             "direction": "buy" if _number(order_event.fill_quantity) > 0 else ("sell" if _number(order_event.fill_quantity) < 0 else "none"),
         }
-        self._af_order_events.append(event)
+        algorithm._af_order_events.append(event)
         if order is not None:
-            self._af_orders[str(order.id)] = {
+            algorithm._af_orders[str(order.id)] = {
                 "order_id": int(order.id),
                 "time": _time_text(order.time),
                 "symbol": order.symbol.value,
@@ -733,66 +777,44 @@ class AlphaForgeBaseAlgorithm(QCAlgorithm):
                 "price": _number(order.price),
             }
         if abs(event["fill_quantity"]) > 0:
-            self.af_capture_snapshot("fill")
-        state = self._af_rebalance_state
+            algorithm.af_capture_snapshot("fill")
+        state = algorithm._af_rebalance_state
+        execution = getattr(algorithm, "_af_execution", None)
         if state is not None and int(order_event.order_id) in state["orders"]:
             order_id = int(order_event.order_id)
             metadata = state["orders"][order_id]
             expected_cancel = order_id in state.get("expected_cancel_ids", set())
             if state.get("phase") == "failed":
-                if self._af_order_status_closed(order_event.status):
+                if execution._af_order_status_closed(order_event.status):
                     state["closed_order_ids"].add(order_id)
                     state["active_order_ids"].discard(order_id)
                     state.get("expected_cancel_ids", set()).discard(order_id)
-            elif self._af_order_status_failed(order_event.status) and not expected_cancel:
-                self._af_fail_rebalance(
+            elif execution._af_order_status_failed(order_event.status) and not expected_cancel:
+                execution._af_fail_rebalance(
                     f"{metadata['purpose']} order {order_id} ended as "
-                    f"{self._af_order_status_text(order_event.status)}: {event['message']}",
+                    f"{execution._af_order_status_text(order_event.status)}: {event['message']}",
                     failed_order_id=order_id,
                 )
-            elif self._af_order_status_closed(order_event.status):
+            elif execution._af_order_status_closed(order_event.status):
                 state["closed_order_ids"].add(order_id)
                 state["active_order_ids"].discard(order_id)
                 state.get("expected_cancel_ids", set()).discard(order_id)
                 if expected_cancel and not state["active_order_ids"]:
                     if state.get("replacement") is not None:
-                        self._af_activate_replacement()
+                        execution._af_activate_replacement()
                     else:
                         state["repricing"] = False
                         state["phase"] = "await_sizing_bar"
                 else:
-                    self._af_advance_rebalance()
-        hook = getattr(self, "on_alpha_order_event", None)
-        if hook:
-            hook(order_event)
+                    execution._af_advance_rebalance()
+        if callback is not None:
+            callback(order_event)
 
-    def _af_write_results(self):
-        run_dir = Path(os.environ.get("ALPHAFORGE_RUN_DIR", "."))
-        run_dir.mkdir(parents=True, exist_ok=True)
-        payload = {
-            "schema_version": "1.0",
-            "run_id": os.environ.get("ALPHAFORGE_RUN_ID"),
-            "equity_curve": self._af_equity_curve,
-            "benchmark_curve": self._af_benchmark_curve,
-            "position_snapshots": self._af_position_snapshots,
-            "orders": list(self._af_orders.values()),
-            "order_events": self._af_order_events,
-            "signals": self._af_signals,
-            "ml": {
-                "training_runs": self._af_ml_training_runs,
-                "predictions": self._af_ml_predictions,
-                "model_artifacts": self._af_ml_model_artifacts,
-            },
-            "rebalances": self._af_rebalance_events,
-        }
-        (run_dir / "alphaforge_details.json").write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2, default=str) + "\n",
-            encoding="utf-8",
-        )
-
-    def on_end_of_algorithm(self):
-        self.af_capture_snapshot("final")
-        hook = getattr(self, "on_alpha_end", None)
-        if hook:
-            hook()
-        self._af_write_results()
+    @staticmethod
+    def on_end_of_algorithm(algorithm, callback):
+        try:
+            if callback is not None:
+                callback()
+        finally:
+            algorithm.af_capture_snapshot("final")
+            algorithm._af_write_results()

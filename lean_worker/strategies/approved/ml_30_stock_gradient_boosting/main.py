@@ -10,7 +10,11 @@ import pandas as pd
 from sklearn.ensemble import GradientBoostingRegressor
 
 from AlgorithmImports import *
-from alphaforge_base import AlphaForgeBaseAlgorithm, af_split_history_frames
+from alphaforge_base import (
+    AlphaForgeBaseAlgorithm,
+    AlphaForgeStagedRebalancer,
+    af_split_history_frames,
+)
 
 
 class MLThirtyStockGradientBoosting(AlphaForgeBaseAlgorithm):
@@ -47,7 +51,8 @@ class MLThirtyStockGradientBoosting(AlphaForgeBaseAlgorithm):
             raise ValueError("Select at least one stock")
         return tickers
 
-    def initialize_strategy(self):
+    def initialize(self):
+        self._af_execution = AlphaForgeStagedRebalancer(self)
         start = datetime.fromisoformat(self._parameter("start_date", "2016-01-04"))
         end = datetime.fromisoformat(self._parameter("end_date", "2026-07-17"))
         self.set_start_date(start.year, start.month, start.day)
@@ -101,7 +106,7 @@ class MLThirtyStockGradientBoosting(AlphaForgeBaseAlgorithm):
             self.train_predict_rebalance,
         )
 
-    def on_alpha_data(self, data):
+    def on_data(self, data):
         pass
 
     def _dataset(self, frame, spy_close):
@@ -156,7 +161,7 @@ class MLThirtyStockGradientBoosting(AlphaForgeBaseAlgorithm):
                     "selected": [],
                 },
             )
-            self.af_liquidate_all("Risk-off: QQQ below SMA")
+            self._af_execution.af_liquidate_all("Risk-off: QQQ below SMA")
             return
 
         history_symbols = list(self.symbols) + [self.spy]
@@ -311,12 +316,12 @@ class MLThirtyStockGradientBoosting(AlphaForgeBaseAlgorithm):
         )
 
         if not selected:
-            self.af_liquidate_all("ML risk-off: no positive predictions")
+            self._af_execution.af_liquidate_all("ML risk-off: no positive predictions")
             return
         target_weights = {
             symbol: float(weight) for symbol, weight in target_weight_series.items()
         }
-        self.af_rebalance_to_weights(
+        self._af_execution.af_rebalance_to_weights(
             target_weights,
             "Monthly ML Top-K rebalance",
         )
@@ -341,5 +346,5 @@ class MLThirtyStockGradientBoosting(AlphaForgeBaseAlgorithm):
                 exposure -= self.max_position_weight
         return allocation
 
-    def on_alpha_end(self):
+    def on_end_of_algorithm(self):
         self.debug("ALPHAFORGE_ML_30_GRADIENT_BOOSTING_COMPLETED")

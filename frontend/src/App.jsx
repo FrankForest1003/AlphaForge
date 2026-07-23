@@ -54,7 +54,7 @@ class UserStrategy(AlphaForgeBaseAlgorithm):
         value = self.get_parameter(name)
         return value if value not in (None, "") else default
 
-    def initialize_strategy(self):
+    def initialize(self):
         start = datetime.fromisoformat(self._parameter("start_date", "2020-01-02"))
         end = datetime.fromisoformat(self._parameter("end_date", "2024-12-31"))
         self.set_start_date(start.year, start.month, start.day)
@@ -86,15 +86,20 @@ class UserStrategy(AlphaForgeBaseAlgorithm):
             self.time_rules.after_market_open(self.symbols[0], 30),
             self.rebalance,
         )
+        self.set_warm_up(2, Resolution.DAILY)
 
     def rebalance(self):
-        weight = 0.95 / len(self.symbols)
-        self.af_rebalance_to_weights(
-            {symbol: weight for symbol in self.symbols},
-            "Monthly equal weight",
+        if self.is_warming_up:
+            return
+        weight = 0.90 / len(self.symbols)
+        targets = [PortfolioTarget(symbol, weight) for symbol in self.symbols]
+        self.set_holdings(
+            targets,
+            liquidate_existing_holdings=True,
+            tag="Monthly equal weight",
         )
 
-    def on_alpha_data(self, data):
+    def on_data(self, data):
         pass
 `;
 

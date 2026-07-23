@@ -64,7 +64,9 @@ describe("AlphaForge Studio", () => {
     const editor = screen.getByLabelText("Complete Strategy Source");
     expect(editor).toHaveValue(HUMAN_CODE_STARTER);
     expect(editor.value).toContain("class UserStrategy");
-    expect(editor.value).toContain("af_rebalance_to_weights");
+    expect(editor.value).toContain("def initialize(self)");
+    expect(editor.value).toContain("self.set_holdings(");
+    expect(editor.value).not.toContain("af_rebalance_to_weights");
   });
 
   it("shows guided strategy controls with readable labels", async () => {

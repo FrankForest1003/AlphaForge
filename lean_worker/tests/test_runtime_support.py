@@ -166,7 +166,29 @@ class RuntimeSupportTests(unittest.TestCase):
         self.assertEqual(captured["callback"](None), 123.45)
 
     def _execution_algorithm(self):
-        algorithm = self.module.AlphaForgeBaseAlgorithm()
+        module = self.module
+
+        class ApprovedExecutionAlgorithm(module.AlphaForgeBaseAlgorithm):
+            def initialize(self):
+                self._af_execution = module.AlphaForgeStagedRebalancer(self)
+
+        algorithm = ApprovedExecutionAlgorithm()
+        module.AlphaForgeRuntimeObserver.initialize(
+            algorithm,
+            algorithm.initialize,
+        )
+        algorithm.on_data = lambda data: module.AlphaForgeRuntimeObserver.on_data(
+            algorithm,
+            data,
+            None,
+        )
+        algorithm.on_order_event = (
+            lambda event: module.AlphaForgeRuntimeObserver.on_order_event(
+                algorithm,
+                event,
+                None,
+            )
+        )
         old = SymbolLike("OLD")
         meta = SymbolLike("META")
         nvda = SymbolLike("NVDA")
@@ -248,7 +270,7 @@ class RuntimeSupportTests(unittest.TestCase):
         old, meta, nvda, amzn = symbols
         targets = {meta: 0.316666, nvda: 0.316666, amzn: 0.316666}
 
-        algorithm.af_rebalance_to_weights(targets, "monthly")
+        algorithm._af_execution.af_rebalance_to_weights(targets, "monthly")
 
         self.assertEqual(algorithm._af_rebalance_state["phase"], "opening_removals")
         self.assertEqual(
@@ -300,7 +322,7 @@ class RuntimeSupportTests(unittest.TestCase):
         algorithm, symbols, submitted = self._execution_algorithm()
         old, meta, nvda, amzn = symbols
         targets = {meta: 0.316666, nvda: 0.316666, amzn: 0.316666}
-        algorithm.af_rebalance_to_weights(targets, "monthly")
+        algorithm._af_execution.af_rebalance_to_weights(targets, "monthly")
         self._apply_fill(algorithm, submitted[0][1], old, 95, -1000)
 
         for symbol, price in {meta: 455.65, nvda: 630, amzn: 170}.items():
@@ -339,11 +361,11 @@ class RuntimeSupportTests(unittest.TestCase):
     def test_new_target_replaces_incomplete_rebalance_instead_of_being_skipped(self):
         algorithm, symbols, submitted = self._execution_algorithm()
         old, meta, nvda, amzn = symbols
-        algorithm.af_rebalance_to_weights({old: 0.95}, "old target")
+        algorithm._af_execution.af_rebalance_to_weights({old: 0.95}, "old target")
         self.assertEqual(algorithm._af_rebalance_state["phase"], "await_sizing_bar")
 
         replacement = {meta: 0.316666, nvda: 0.316666, amzn: 0.316666}
-        algorithm.af_rebalance_to_weights(replacement, "new target")
+        algorithm._af_execution.af_rebalance_to_weights(replacement, "new target")
 
         self.assertEqual(algorithm._af_rebalance_state["tag"], "new target")
         self.assertEqual(algorithm._af_rebalance_state["targets"], replacement)
@@ -365,49 +387,92 @@ class RuntimeSupportTests(unittest.TestCase):
         algorithm.portfolio[meta].quantity = 69
         algorithm.portfolio[meta].holdings_value = 31_439.85
         algorithm.securities[meta].price = 455.65
-        algorithm.af_rebalance_to_weights({meta: 0.316666}, "within tolerance")
+        algorithm._af_execution.af_rebalance_to_weights({meta: 0.316666}, "within tolerance")
 
-        self.assertEqual(algorithm._af_target_deltas(), {})
+        self.assertEqual(algorithm._af_execution._af_target_deltas(), {})
 
-    def test_oversized_target_is_scaled_to_shared_gross_limit(self):
+    def test_staged_rebalancer_preserves_caller_target_weights(self):
         algorithm, symbols, _ = self._execution_algorithm()
         old, meta, nvda, _ = symbols
         algorithm.portfolio[old].quantity = 0
         algorithm.portfolio[old].holdings_value = 0
 
-        algorithm.af_rebalance_to_weights(
+        algorithm._af_execution.af_rebalance_to_weights(
             {meta: 0.60, nvda: 0.60},
             "oversized target",
         )
 
-        self.assertAlmostEqual(
-            sum(algorithm._af_rebalance_state["targets"].values()),
-            0.95,
+        self.assertEqual(
+            algorithm._af_rebalance_state["targets"],
+            {meta: 0.60, nvda: 0.60},
         )
-        scaling_event = next(
-            event
-            for event in algorithm._af_rebalance_events
-            if event["name"] == "staged_rebalance_target_scaled"
+
+    def test_daily_weight_helper_method_attaches_execution_and_preserves_targets(self):
+        algorithm, symbols, _ = self._execution_algorithm()
+        _, meta, nvda, _ = symbols
+        algorithm._af_execution = None
+
+        algorithm.af_rebalance_daily_weights(
+            {meta: 0.55, nvda: 0.40},
+            "helper target",
         )
-        self.assertAlmostEqual(scaling_event["payload"]["requested_gross"], 1.20)
-        self.assertAlmostEqual(scaling_event["payload"]["admitted_gross"], 0.95)
+
+        self.assertIsInstance(
+            algorithm._af_execution,
+            self.module.AlphaForgeStagedRebalancer,
+        )
+        self.assertEqual(
+            algorithm._af_rebalance_state["targets"],
+            {meta: 0.55, nvda: 0.40},
+        )
 
     def test_terminal_ticket_is_not_cancelable(self):
         self.assertFalse(
-            self.module.AlphaForgeBaseAlgorithm._af_ticket_can_cancel(
+            self.module.AlphaForgeStagedRebalancer._af_ticket_can_cancel(
                 TicketLike(1, status="Invalid")
             )
         )
         self.assertFalse(
-            self.module.AlphaForgeBaseAlgorithm._af_ticket_can_cancel(
+            self.module.AlphaForgeStagedRebalancer._af_ticket_can_cancel(
                 TicketLike(2, status="Filled")
             )
         )
         self.assertTrue(
-            self.module.AlphaForgeBaseAlgorithm._af_ticket_can_cancel(
+            self.module.AlphaForgeStagedRebalancer._af_ticket_can_cancel(
                 TicketLike(3, status="Submitted")
             )
         )
+
+    def test_runtime_observer_preserves_standard_on_data_and_records_snapshot(self):
+        module = self.module
+
+        class StandardStrategy(module.AlphaForgeBaseAlgorithm):
+            def initialize(self):
+                self.strategy_initialized = True
+
+            def on_data(self, data):
+                self.strategy_data = data
+
+        algorithm = StandardStrategy()
+        module.AlphaForgeRuntimeObserver.initialize(
+            algorithm,
+            algorithm.initialize,
+        )
+        algorithm.time = datetime(2024, 2, 1, 16, 0)
+        algorithm.is_warming_up = False
+        algorithm.portfolio = PortfolioLike({})
+        algorithm.securities = {}
+
+        module.AlphaForgeRuntimeObserver.on_data(
+            algorithm,
+            "daily slice",
+            algorithm.on_data,
+        )
+
+        self.assertTrue(algorithm.strategy_initialized)
+        self.assertEqual(algorithm.strategy_data, "daily slice")
+        self.assertEqual(len(algorithm._af_position_snapshots), 1)
+        self.assertEqual(algorithm._af_position_snapshots[0]["reason"], "daily")
 
     def test_post_fill_market_drift_does_not_trigger_daily_churn(self):
         algorithm, symbols, _ = self._execution_algorithm()
@@ -424,10 +489,10 @@ class RuntimeSupportTests(unittest.TestCase):
             algorithm.securities[symbol].price = price
         algorithm.portfolio.total_portfolio_value = 101_550.81
         targets = {meta: 0.316666, nvda: 0.316666, amzn: 0.316666}
-        algorithm._af_start_rebalance(targets, "filled target")
+        algorithm._af_execution._af_start_rebalance(targets, "filled target")
         algorithm._af_rebalance_state["phase"] = "await_validation"
 
-        algorithm._af_complete_rebalance()
+        algorithm._af_execution._af_complete_rebalance()
 
         self.assertIsNone(algorithm._af_rebalance_state)
         completed = algorithm._af_rebalance_events[-1]
@@ -437,7 +502,7 @@ class RuntimeSupportTests(unittest.TestCase):
     def test_invalid_buy_is_explicit_failure_and_does_not_clear_pending(self):
         algorithm, symbols, submitted = self._execution_algorithm()
         old, meta, nvda, amzn = symbols
-        algorithm.af_rebalance_to_weights(
+        algorithm._af_execution.af_rebalance_to_weights(
             {meta: 0.316666, nvda: 0.316666, amzn: 0.316666},
             "monthly",
         )

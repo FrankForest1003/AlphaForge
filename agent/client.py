@@ -106,47 +106,117 @@ class DeepSeekJSONClient:
             "parsed_payload": None,
             "usage": {},
             "error": None,
+            "attempts": [],
         }
 
-        try:
-            response = self.client.chat.completions.create(**request)
-            trace["raw_response"] = _json_safe(response)
-            content = response.choices[0].message.content
-            trace["response_content"] = content
-        except Exception as exc:
-            trace["finished_at"] = _utc_now()
-            trace["duration_ms"] = round(
-                (time.perf_counter() - started_clock) * 1000,
-                3,
-            )
-            trace["error"] = {
-                "type": type(exc).__name__,
-                "message": str(exc),
+        total_usage = {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+        }
+        payload: dict[str, Any] | None = None
+        last_parse_error: Exception | None = None
+        for attempt_index in range(2):
+            attempt_request = dict(request)
+            if attempt_index:
+                attempt_request.pop("reasoning_effort", None)
+                attempt_request["extra_body"] = {"thinking": {"type": "disabled"}}
+                attempt_request["messages"] = [
+                    *messages,
+                    {
+                        "role": "user",
+                        "content": (
+                            "Return the requested object as strict JSON with every "
+                            "required field complete."
+                        ),
+                    },
+                ]
+
+            try:
+                response = self.client.chat.completions.create(**attempt_request)
+                safe_response = _json_safe(response)
+                content = response.choices[0].message.content
+            except Exception as exc:
+                trace["finished_at"] = _utc_now()
+                trace["duration_ms"] = round(
+                    (time.perf_counter() - started_clock) * 1000,
+                    3,
+                )
+                trace["error"] = {
+                    "type": type(exc).__name__,
+                    "message": str(exc),
+                }
+                raise DeepSeekCallError(str(exc), trace=trace) from exc
+
+            usage = getattr(response, "usage", None)
+            attempt_usage = {
+                "prompt_tokens": int(getattr(usage, "prompt_tokens", 0) or 0),
+                "completion_tokens": int(
+                    getattr(usage, "completion_tokens", 0) or 0
+                ),
+                "total_tokens": int(getattr(usage, "total_tokens", 0) or 0),
             }
-            raise DeepSeekCallError(str(exc), trace=trace) from exc
+            for key in total_usage:
+                total_usage[key] += attempt_usage[key]
 
-        usage = getattr(response, "usage", None)
-        trace["usage"] = {
-            "prompt_tokens": int(getattr(usage, "prompt_tokens", 0) or 0),
-            "completion_tokens": int(getattr(usage, "completion_tokens", 0) or 0),
-            "total_tokens": int(getattr(usage, "total_tokens", 0) or 0),
-        }
+            attempt_trace = {
+                "attempt": attempt_index + 1,
+                "thinking_enabled": (
+                    attempt_request.get("extra_body", {})
+                    .get("thinking", {})
+                    .get("type")
+                    == "enabled"
+                ),
+                "raw_response": safe_response,
+                "response_content": content,
+                "usage": attempt_usage,
+                "error": None,
+            }
+            trace["attempts"].append(attempt_trace)
+            trace["raw_response"] = safe_response
+            trace["response_content"] = content
+            trace["usage"] = total_usage
+
+            if not content:
+                attempt_trace["error"] = {
+                    "type": "empty_response",
+                    "message": empty_error,
+                }
+                trace["error"] = attempt_trace["error"]
+                continue
+            try:
+                parsed = json.loads(content)
+            except json.JSONDecodeError as exc:
+                last_parse_error = exc
+                attempt_trace["error"] = {
+                    "type": "invalid_json",
+                    "message": invalid_error,
+                }
+                trace["error"] = attempt_trace["error"]
+                continue
+            if not isinstance(parsed, dict):
+                attempt_trace["error"] = {
+                    "type": "invalid_json",
+                    "message": invalid_error,
+                }
+                trace["error"] = attempt_trace["error"]
+                continue
+            payload = parsed
+            trace["error"] = None
+            break
+
         trace["finished_at"] = _utc_now()
         trace["duration_ms"] = round(
             (time.perf_counter() - started_clock) * 1000,
             3,
         )
-        if not content:
-            trace["error"] = {"type": "empty_response", "message": empty_error}
-            raise DeepSeekCallError(empty_error, trace=trace)
-        try:
-            payload = json.loads(content)
-        except json.JSONDecodeError as exc:
-            trace["error"] = {"type": "invalid_json", "message": invalid_error}
-            raise DeepSeekCallError(invalid_error, trace=trace) from exc
-        if not isinstance(payload, dict):
-            trace["error"] = {"type": "invalid_json", "message": invalid_error}
-            raise DeepSeekCallError(invalid_error, trace=trace)
+        if payload is None:
+            if trace.get("error", {}).get("type") == "empty_response":
+                raise DeepSeekCallError(empty_error, trace=trace)
+            error = DeepSeekCallError(invalid_error, trace=trace)
+            if last_parse_error is not None:
+                raise error from last_parse_error
+            raise error
 
         trace["parsed_payload"] = payload
         return {

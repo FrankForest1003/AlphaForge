@@ -40,6 +40,10 @@ BASELINES = (
 
 TERMINAL_STATES = {"completed", "completed_with_data_gaps", "failed", "timeout"}
 MAX_REPAIR_ATTEMPTS = 3
+AGENT_ACCEPTANCE_LOG_MAX_CHARS = 120_000
+AGENT_REPAIR_LOG_MAX_CHARS = 400_000
+AGENT_RESULT_ERRORS_MAX_CHARS = 100_000
+AGENT_FAILURE_EXCERPT_MAX_CHARS = 100_000
 
 
 CRITICAL_LOG_MARKERS = (
@@ -54,6 +58,17 @@ CRITICAL_LOG_MARKERS = (
     "DATA USAGE:: Failed data requests ",
 )
 
+AGENT_LOG_MARKERS = (
+    "ERROR::",
+    "Runtime Error",
+    "PythonException",
+    "Traceback",
+    "Order Error:",
+    " in main.py:",
+    "STATISTICS::",
+    "DATA USAGE::",
+)
+
 
 def extract_critical_log_evidence(console_log: str) -> str:
     return "\n".join(
@@ -61,6 +76,197 @@ def extract_critical_log_evidence(console_log: str) -> str:
         for line in console_log.splitlines()
         if any(marker in line for marker in CRITICAL_LOG_MARKERS)
     )
+
+
+def _bounded_text(text: str, *, max_chars: int, label: str) -> str:
+    if len(text) <= max_chars:
+        return text
+    header = f"[{label}: original_chars={len(text)}, bounded_chars={max_chars}]\n"
+    separator = "\n[... middle text omitted from Agent context ...]\n"
+    budget = max_chars - len(header) - len(separator)
+    head_chars = max(0, int(budget * 0.55))
+    tail_chars = max(0, budget - head_chars)
+    return header + text[:head_chars] + separator + text[-tail_chars:]
+
+
+def compact_console_log(console_log: str, *, max_chars: int) -> str:
+    """Build a bounded Agent view while the Worker trace retains the full log."""
+
+    if len(console_log) <= max_chars:
+        return console_log
+    lines = console_log.splitlines()
+    selected: set[int] = set(range(min(30, len(lines))))
+    selected.update(range(max(0, len(lines) - 100), len(lines)))
+    for index, line in enumerate(lines):
+        if any(marker in line for marker in AGENT_LOG_MARKERS):
+            selected.update(range(max(0, index - 2), min(len(lines), index + 3)))
+    excerpt = "\n".join(lines[index] for index in sorted(selected))
+    return _bounded_text(
+        excerpt,
+        max_chars=max_chars,
+        label=(
+            "AlphaForge Agent log view "
+            f"original_chars={len(console_log)} selected_lines={len(selected)}"
+        ),
+    )
+
+
+def compact_worker_result(result: dict[str, Any]) -> dict[str, Any]:
+    view = copy.deepcopy(result)
+    errors = view.get("errors")
+    if not isinstance(errors, list):
+        return view
+    error_text = "\n".join(str(item) for item in errors)
+    if len(error_text) <= AGENT_RESULT_ERRORS_MAX_CHARS:
+        return view
+    view["errors"] = [
+        _bounded_text(
+            error_text,
+            max_chars=AGENT_RESULT_ERRORS_MAX_CHARS,
+            label="AlphaForge Worker error view",
+        )
+    ]
+    view["errors_context"] = {
+        "original_error_count": len(errors),
+        "original_error_chars": len(error_text),
+    }
+    return view
+
+
+def compact_runtime_failure_evidence(
+    evidence: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    if evidence is None:
+        return None
+    view = copy.deepcopy(evidence)
+    excerpt = view.get("error_log_excerpt")
+    if isinstance(excerpt, list):
+        text = "\n".join(str(line) for line in excerpt)
+        if len(text) > AGENT_FAILURE_EXCERPT_MAX_CHARS:
+            view["error_log_excerpt"] = [
+                _bounded_text(
+                    text,
+                    max_chars=AGENT_FAILURE_EXCERPT_MAX_CHARS,
+                    label="AlphaForge failure log view",
+                )
+            ]
+            view["error_log_context"] = {
+                "original_line_count": len(excerpt),
+                "original_chars": len(text),
+            }
+    return view
+
+
+def extract_error_log_excerpt(console_log: str, order_id: int | None = None) -> list[str]:
+    lines = console_log.splitlines()
+    selected: set[int] = set()
+    order_markers = (
+        (f"ids: [{order_id}]", f"Id: {order_id},")
+        if order_id is not None
+        else ()
+    )
+    for index, line in enumerate(lines):
+        lowered = line.lower()
+        matches_order = bool(order_markers) and any(
+            marker in line for marker in order_markers
+        )
+        matches_error = order_id is None and (
+            "error::" in lowered
+            or "order error:" in lowered
+            or "traceback (most recent call last)" in lowered
+            or "unhandled exception" in lowered
+        )
+        if matches_order or matches_error:
+            selected.update(range(max(0, index - 2), min(len(lines), index + 3)))
+    return [lines[index] for index in sorted(selected)]
+
+
+def build_runtime_failure_evidence(
+    details: dict[str, Any] | None,
+    console_log: str,
+    *,
+    details_error: str | None = None,
+) -> dict[str, Any]:
+    if not isinstance(details, dict):
+        return {
+            "details_available": False,
+            "details_error": details_error or "alphaforge_details.json is unavailable",
+            "failed_orders": [],
+            "error_log_excerpt": extract_error_log_excerpt(console_log),
+        }
+
+    orders = details.get("orders")
+    if not isinstance(orders, list):
+        orders = []
+    events = details.get("order_events")
+    if not isinstance(events, list):
+        events = []
+    snapshots = details.get("position_snapshots")
+    if not isinstance(snapshots, list):
+        snapshots = []
+
+    orders_by_id = {
+        int(order["order_id"]): order
+        for order in orders
+        if isinstance(order, dict) and order.get("order_id") is not None
+    }
+
+    def time_key(value: Any) -> str:
+        return str(value or "")[:19]
+
+    failed_orders: list[dict[str, Any]] = []
+    for event in events:
+        if not isinstance(event, dict) or event.get("order_id") is None:
+            continue
+        status = str(event.get("status", "")).strip().upper().split(".")[-1]
+        message = str(event.get("message") or "")
+        lowered_message = message.lower()
+        if status not in {"INVALID", "REJECTED"} and not any(
+            marker in lowered_message
+            for marker in ("error", "insufficient", "failed", "rejected")
+        ):
+            continue
+
+        order_id = int(event["order_id"])
+        raw_order = orders_by_id.get(order_id, {})
+        event_time = time_key(event.get("time"))
+        prior_snapshots = [
+            snapshot
+            for snapshot in snapshots
+            if isinstance(snapshot, dict)
+            and time_key(snapshot.get("time")) <= event_time
+        ]
+        portfolio_before_failure = max(
+            prior_snapshots,
+            key=lambda snapshot: time_key(snapshot.get("time")),
+            default=None,
+        )
+        failed_orders.append(
+            {
+                "order": {
+                    "order_id": order_id,
+                    "symbol": raw_order.get("symbol") or event.get("symbol"),
+                    "quantity": raw_order.get("quantity"),
+                    "type": raw_order.get("type"),
+                    "status": raw_order.get("status") or event.get("status"),
+                    "submitted_at": raw_order.get("time"),
+                    "tag": raw_order.get("tag"),
+                    "price": raw_order.get("price"),
+                },
+                "event": copy.deepcopy(event),
+                "portfolio_before_failure": copy.deepcopy(
+                    portfolio_before_failure
+                ),
+                "log_excerpt": extract_error_log_excerpt(console_log, order_id),
+            }
+        )
+
+    return {
+        "details_available": True,
+        "details_error": None,
+        "failed_orders": failed_orders,
+        "error_log_excerpt": extract_error_log_excerpt(console_log),
+    }
 
 
 def build_behavior_evidence(details: dict[str, Any]) -> dict[str, Any]:
@@ -73,6 +279,18 @@ def build_behavior_evidence(details: dict[str, Any]) -> dict[str, Any]:
     rebalances = details.get("rebalances")
     if not isinstance(rebalances, list):
         rebalances = []
+    signals = details.get("signals")
+    if not isinstance(signals, list):
+        signals = []
+    ml = details.get("ml")
+    if not isinstance(ml, dict):
+        ml = {}
+    training_runs = ml.get("training_runs")
+    if not isinstance(training_runs, list):
+        training_runs = []
+    predictions = ml.get("predictions")
+    if not isinstance(predictions, list):
+        predictions = []
 
     filled = [
         order
@@ -86,6 +304,18 @@ def build_behavior_evidence(details: dict[str, Any]) -> dict[str, Any]:
         for order in orders
         if isinstance(order, dict)
         and str(order.get("status", "")).strip().upper() in rejected_statuses
+    ]
+    canceled_statuses = {"CANCELED", "CANCELLED"}
+    canceled = [
+        order
+        for order in orders
+        if isinstance(order, dict)
+        and str(order.get("status", "")).strip().upper() in canceled_statuses
+    ]
+    rebalance_names = [
+        str(event.get("name", "")).strip()
+        for event in rebalances
+        if isinstance(event, dict)
     ]
     fill_times = sorted(
         str(order["time"])
@@ -123,6 +353,7 @@ def build_behavior_evidence(details: dict[str, Any]) -> dict[str, Any]:
         "order_count": len(orders),
         "filled_order_count": len(filled),
         "rejected_order_count": len(rejected),
+        "canceled_order_count": len(canceled),
         "traded_symbols": traded_symbols,
         "first_fill_time": fill_times[0] if fill_times else None,
         "last_fill_time": fill_times[-1] if fill_times else None,
@@ -130,6 +361,26 @@ def build_behavior_evidence(details: dict[str, Any]) -> dict[str, Any]:
         "invested_snapshot_count": len(invested_snapshots),
         "max_gross_exposure": max_gross_exposure,
         "rebalance_count": len(rebalances),
+        "staged_rebalance_started_count": rebalance_names.count(
+            "staged_rebalance_removal_phase"
+        ),
+        "staged_rebalance_completed_count": rebalance_names.count(
+            "staged_rebalance_completed"
+        ),
+        "staged_rebalance_replacement_count": rebalance_names.count(
+            "staged_rebalance_replacement_requested"
+        ),
+        "latest_rebalance_event": (
+            copy.deepcopy(rebalances[-1]) if rebalances else None
+        ),
+        "signal_event_count": len(signals),
+        "latest_signal_event": copy.deepcopy(signals[-1]) if signals else None,
+        "ml_training_run_count": len(training_runs),
+        "latest_ml_training_run": (
+            copy.deepcopy(training_runs[-1]) if training_runs else None
+        ),
+        "ml_prediction_count": len(predictions),
+        "latest_ml_predictions": copy.deepcopy(predictions[-10:]),
     }
 
 
@@ -210,15 +461,16 @@ class UserStrategy(AlphaForgeBaseAlgorithm):
         value = self.get_parameter(name)
         return value if value not in (None, "") else default
 
-    def initialize_strategy(self):
+    def initialize(self):
         start = datetime.fromisoformat(self._parameter("start_date", "2020-01-02"))
         end = datetime.fromisoformat(self._parameter("end_date", "2024-12-31"))
         self.set_start_date(start.year, start.month, start.day)
         self.set_end_date(end.year, end.month, end.day)
         self.set_cash(float(self._parameter("initial_cash", "100000")))
-        self.target_gross = 0.95
+        self.target_gross = 0.90
         self.lookback_days = {strategy.lookback_days}
         self.holdings = {strategy.holdings}
+        self.pending_targets = None
 
         tickers = [
             ticker.strip().upper()
@@ -248,8 +500,11 @@ class UserStrategy(AlphaForgeBaseAlgorithm):
             self.time_rules.after_market_open(self.symbols[0], 30),
             self.rebalance,
         )
+        self.set_warm_up(self.lookback_days + 1, Resolution.DAILY)
 
     def rebalance(self):
+        if self.is_warming_up:
+            return
         frames = af_split_history_frames(
             self.history(self.symbols, self.lookback_days + 1, Resolution.DAILY)
         )
@@ -266,14 +521,35 @@ class UserStrategy(AlphaForgeBaseAlgorithm):
         ranked = sorted(scores, key=scores.get, reverse={reverse})
         selected = ranked[: min(self.holdings, len(ranked))]
         if not selected:
-            self.af_rebalance_to_weights({{}}, "No valid {signal_label.lower()} signals")
+            self.pending_targets = None
+            self.liquidate(tag="No valid {signal_label.lower()} signals")
             return
         weight = self.target_gross / len(selected)
-        targets = {{symbol: weight for symbol in selected}}
-        self.af_rebalance_to_weights(targets, "Guided Human · {signal_label}")
+        targets = [PortfolioTarget(symbol, weight) for symbol in selected]
+        if self.portfolio.invested:
+            self.pending_targets = targets
+            self.liquidate(tag="Guided Human · {signal_label} · reduce")
+            return
+        self.set_holdings(
+            targets,
+            liquidate_existing_holdings=False,
+            tag="Guided Human · {signal_label}",
+        )
 
-    def on_alpha_data(self, data):
-        pass
+    def on_data(self, data):
+        if (
+            self.is_warming_up
+            or self.pending_targets is None
+            or self.transactions.get_open_orders()
+        ):
+            return
+        targets = self.pending_targets
+        self.pending_targets = None
+        self.set_holdings(
+            targets,
+            liquidate_existing_holdings=False,
+            tag="Guided Human · {signal_label} · establish",
+        )
 '''
 
 
@@ -415,6 +691,7 @@ class ForgeService:
             "result": None,
             "console_log": None,
             "behavior_evidence": None,
+            "runtime_failure_evidence": None,
             "acceptance_report": None,
             "outcome": "running",
             "error": None,
@@ -681,6 +958,7 @@ class ForgeService:
 
         acceptance_history: list[dict[str, Any]] = []
         for repair_attempt in range(MAX_REPAIR_ATTEMPTS + 1):
+            runtime_failure_evidence = None
             submitted = self.worker.submit_custom(source_code, parameters)
             worker_run_id = submitted["run_id"]
             self._record_worker_attempt(
@@ -739,8 +1017,11 @@ class ForgeService:
                         run_settings=settings.model_dump(mode="json"),
                         critical_log_evidence=extract_critical_log_evidence(console_log),
                         source_code=source_code,
-                        worker_result=result,
-                        lean_console_log=console_log,
+                        worker_result=compact_worker_result(result),
+                        lean_console_log=compact_console_log(
+                            console_log,
+                            max_chars=AGENT_ACCEPTANCE_LOG_MAX_CHARS,
+                        ),
                         behavior_evidence=behavior_evidence,
                         acceptance_attempt=acceptance_attempt,
                     )
@@ -836,6 +1117,17 @@ class ForgeService:
                     console_log = self.worker.log(worker_run_id)
                 except Exception:
                     console_log = "\n".join(result.get("errors", []))
+                try:
+                    failure_details = self.worker.details(worker_run_id)
+                    details_error = None
+                except Exception as exc:
+                    failure_details = None
+                    details_error = f"{type(exc).__name__}: {exc}"
+                runtime_failure_evidence = build_runtime_failure_evidence(
+                    failure_details,
+                    console_log,
+                    details_error=details_error,
+                )
                 repair_reason = (
                     "; ".join(result.get("errors", [])) or "LEAN run failed"
                 )
@@ -845,6 +1137,7 @@ class ForgeService:
                     finished_at=utc_now(),
                     result=result,
                     console_log=console_log,
+                    runtime_failure_evidence=runtime_failure_evidence,
                     outcome="runtime_failure",
                     error={"type": "worker_failure", "message": repair_reason},
                 )
@@ -879,10 +1172,16 @@ class ForgeService:
                     run_settings=settings.model_dump(mode="json"),
                     baseline_results=baseline_results,
                     source_code=source_code,
-                    worker_result=result,
-                    lean_console_log=console_log,
+                    worker_result=compact_worker_result(result),
+                    lean_console_log=compact_console_log(
+                        console_log,
+                        max_chars=AGENT_REPAIR_LOG_MAX_CHARS,
+                    ),
                     repair_attempt=next_attempt,
                     repair_trigger=repair_trigger,
+                    runtime_failure_evidence=compact_runtime_failure_evidence(
+                        runtime_failure_evidence
+                    ),
                     acceptance_report=acceptance_report,
                 )
                 self._record_agent_call(
