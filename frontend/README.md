@@ -1,20 +1,29 @@
-# AlphaForge Frontend
+# AlphaForge Studio
 
-Streamlit 工作区提供：
+当前前端是 Vite + React 单页应用，提供以下页面：
 
-- 30 只本地股票的 checkbox 候选池；
-- 日期、初始资金、benchmark、交易费和滑点设置；
-- 引导式策略构建器和完整 Python 源码编辑器；
-- 创建运行、自动轮询实时进度和策略源码三个导航视图；
-- URL `run_id` 定位和打开已有运行；
-- 参考策略、用户策略和生成策略的状态与回测摘要；
-- 用户策略与生成策略的完整源码展示和下载；
-- 生成策略的审查历史、行为事实、修改请求和累计 token。
+- `Build`：选择股票候选池和统一回测设置，并通过 Guided Setup 或完整 Python 代码提交 Human Strategy。
+- `Results`：自动刷新运行状态，以图表和统一格式的表格比较策略结果，并展示 Generated Strategy 的验收历史。
+- `Strategy Code`：查看 Human Strategy 和 Generated Strategy 的完整源码。
 
-前端只通过 `ALPHAFORGE_API_BASE_URL` 访问 Backend，不包含本地 Mock 数据。
+完整代码模式默认加载一个可直接修改的 `UserStrategy` 基础模板。
 
-本地测试：
+## 本地运行
 
 ```bash
-PYTHONPATH=frontend .venv/bin/python -m pytest frontend/tests -q
+npm install
+npm run dev
 ```
+
+开发服务器监听 `8501`，并将浏览器发往 `/api` 的请求代理到
+`ALPHAFORGE_API_PROXY_TARGET`，默认是 `http://127.0.0.1:8000`。
+
+## 测试和构建
+
+```bash
+npm test
+npm run build
+```
+
+项目根目录的 `compose.yaml` 使用同一前端构建，并把 API 代理目标设置为
+Docker 网络中的 `http://backend:8000`。

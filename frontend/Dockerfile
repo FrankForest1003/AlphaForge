@@ -1,16 +1,18 @@
-FROM python:3.11-slim
-
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    ALPHAFORGE_API_BASE_URL=http://backend:8000/v1
+FROM node:22-alpine
 
 WORKDIR /app
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+
+COPY package.json package-lock.json ./
+RUN npm ci
+
 COPY . .
+RUN npm run build
+
+ENV ALPHAFORGE_API_PROXY_TARGET=http://backend:8000
 
 EXPOSE 8501
-HEALTHCHECK --interval=20s --timeout=5s --start-period=20s --retries=3 \
-  CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8501/_stcore/health')"
 
-CMD ["python", "-m", "streamlit", "run", "app.py"]
+HEALTHCHECK --interval=20s --timeout=5s --start-period=15s --retries=3 \
+  CMD wget -qO- http://127.0.0.1:8501/ >/dev/null || exit 1
+
+CMD ["npm", "run", "preview", "--", "--host", "0.0.0.0", "--port", "8501"]

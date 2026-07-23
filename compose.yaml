@@ -69,7 +69,7 @@ services:
     ports:
       - "127.0.0.1:${ALPHAFORGE_FRONTEND_PORT:-8501}:8501"
     environment:
-      ALPHAFORGE_API_BASE_URL: http://backend:8000/v1
+      ALPHAFORGE_API_PROXY_TARGET: http://backend:8000
     depends_on:
       backend:
         condition: service_healthy
