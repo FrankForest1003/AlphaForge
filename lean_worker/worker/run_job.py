@@ -2,8 +2,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
-import importlib.metadata
 import json
 import os
 import re
@@ -12,7 +10,6 @@ import subprocess
 import sys
 import threading
 import time
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -49,18 +46,6 @@ class ExclusiveFileLock:
     def __exit__(self, exc_type, exc, tb):
         if self.acquired:
             self.path.unlink(missing_ok=True)
-
-
-def utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def write_json(path: Path, data: Any) -> None:
@@ -229,17 +214,6 @@ def stream_process(command: list[str], cwd: Path, env: dict[str, str], log_path:
     return exit_code, timed_out
 
 
-def package_versions() -> dict[str, str]:
-    names = ["numpy", "pandas", "scipy", "scikit-learn", "joblib", "xgboost", "lightgbm", "fastapi", "pydantic"]
-    result = {}
-    for name in names:
-        try:
-            result[name] = importlib.metadata.version(name)
-        except importlib.metadata.PackageNotFoundError:
-            result[name] = "not-installed"
-    return result
-
-
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--algorithm", required=True, type=Path)
@@ -283,9 +257,7 @@ def main() -> int:
     job_support = job_dir / "alphaforge_base.py"
     job_config = job_dir / "config.json"
     console_log = result_dir / "console.log"
-    detail_path = result_dir / "alphaforge_details.json"
     result_path = result_dir / "result.json"
-    manifest_path = result_dir / "manifest.json"
     shutil.copy2(args.algorithm, job_main)
     shutil.copy2(support_source, job_support)
 
@@ -297,54 +269,6 @@ def main() -> int:
         parameters,
     )
     job_config.write_text(generated, encoding="utf-8", newline="\n")
-
-    lean_commit_path = lean_root / "LEAN_COMMIT.txt"
-    catalog_root = data_folder / "alphaforge-catalog"
-    dataset_manifest_path = catalog_root / "dataset_manifest.json"
-    quality_report_path = catalog_root / "quality_report.json"
-    dataset_manifest = (
-        json.loads(dataset_manifest_path.read_text(encoding="utf-8"))
-        if dataset_manifest_path.is_file()
-        else None
-    )
-    quality_report = (
-        json.loads(quality_report_path.read_text(encoding="utf-8"))
-        if quality_report_path.is_file()
-        else None
-    )
-
-    manifest = {
-        "schema_version": "1.1",
-        "run_id": run_id,
-        "created_at_utc": utc_now(),
-        "runtime_version": os.environ.get("ALPHAFORGE_RUNTIME_VERSION", "1.1.3"),
-        "lean_commit": lean_commit_path.read_text().strip() if lean_commit_path.is_file() else None,
-        "dataset": {
-            "manifest": dataset_manifest,
-            "quality_summary": {
-                "ready": quality_report.get("ready") if quality_report else None,
-                "common_end_date": quality_report.get("common_end_date") if quality_report else None,
-                "missing_symbols": quality_report.get("missing_symbols", []) if quality_report else [],
-                "failed_quality_symbols": quality_report.get("failed_quality_symbols", []) if quality_report else [],
-            },
-            "manifest_sha256": sha256_file(dataset_manifest_path) if dataset_manifest_path.is_file() else None,
-            "quality_report_sha256": sha256_file(quality_report_path) if quality_report_path.is_file() else None,
-        },
-        "strategy": {
-            "source": str(args.algorithm),
-            "job_copy": str(job_main),
-            "class_name": args.algorithm_class,
-            "sha256": sha256_file(job_main),
-            "parameters": parameters,
-        },
-        "environment": {
-            "python": sys.version,
-            "packages": package_versions(),
-            "platform": "linux/amd64",
-            "pythonhashseed": os.environ.get("PYTHONHASHSEED"),
-        },
-    }
-    write_json(manifest_path, manifest)
 
     backup = release_config.read_bytes()
     exit_code = None
@@ -373,23 +297,11 @@ def main() -> int:
 
     result = parse_log_file(
         console_log,
-        detail_path=detail_path,
         exit_code=exit_code,
         run_id=run_id,
-        algorithm_class=args.algorithm_class,
-        algorithm_file=str(job_main),
         expected_marker=args.expected_marker,
         timed_out=timed_out,
-        manifest=manifest,
     )
-    result["artifacts"] = {
-        "result": str(result_path),
-        "console_log": str(console_log),
-        "details": str(detail_path) if detail_path.is_file() else None,
-        "manifest": str(manifest_path),
-        "generated_config": str(job_config),
-        "model_directory": str(model_dir),
-    }
     write_json(result_path, result)
     print(f"RUN_ID={run_id}")
     print(f"STATUS={result['status']}")

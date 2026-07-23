@@ -1,6 +1,5 @@
 from pathlib import Path
 
-
 def _text(relative):
     root = Path(__file__).resolve().parents[1]
     return (root / relative).read_text(encoding="utf-8")
@@ -18,14 +17,29 @@ def test_daily_only_benchmark_does_not_request_hour_data():
     assert "af_use_security_benchmark(self.spy)" in ml
 
 
+def test_cash_buffer_is_a_single_shared_base_default():
+    base = _text("runtime_support/alphaforge_base.py")
+    strategies = [
+        _text("strategies/approved/classic_30_stock_top3_momentum/main.py"),
+        _text("strategies/approved/classic_30_stock_mean_reversion/main.py"),
+        _text("strategies/approved/ml_30_stock_gradient_boosting/main.py"),
+        _text("strategies/approved/hybrid_30_stock_ml_momentum_min_variance/main.py"),
+    ]
+    assert "self.settings.free_portfolio_value_percentage = 0.02" in base
+    assert all("free_portfolio_value_percentage" not in strategy for strategy in strategies)
+
+
 def test_top3_strategies_use_staged_rebalance():
     base = _text("runtime_support/alphaforge_base.py")
     classic = _text("strategies/approved/classic_30_stock_top3_momentum/main.py")
     ml = _text("strategies/approved/ml_30_stock_gradient_boosting/main.py")
     assert "def af_rebalance_to_weights" in base
-    assert "phase 1 remove" in base
-    assert "free_portfolio_value_percentage" in base
-    assert "effective_target" in base
+    assert "def _af_submit_opening_orders" in base
+    assert "opening price probe" not in base
+    assert "def _af_submit_adjustment_phase" in base
+    assert "self.limit_order(" in base
+    assert "AlphaForge daily target repricing" in base
+    assert "self.af_clear_pending_rebalance()" in base
     assert "af_rebalance_to_weights(" in classic
     assert "af_rebalance_to_weights(" in ml
     assert "set_holdings(targets, True)" not in classic
@@ -53,8 +67,8 @@ def test_ml_history_access_avoids_pandas_mapper_missing_key_exception():
     assert "history_not_available_in_requested_window" in ml
 
 
-def test_guided_low_volatility_uses_safe_history_and_staged_execution():
-    guided = _text("strategies/approved/guided_30_stock_low_volatility/main.py")
-    assert "af_split_history_frames(history)" in guided
-    assert "self.af_rebalance_to_weights(" in guided
-    assert "ALPHAFORGE_GUIDED_30_LOW_VOLATILITY_COMPLETED" in guided
+def test_worker_exposes_read_only_behavior_details():
+    service = _text("app/service.py")
+    assert '@app.get("/v1/jobs/{run_id}/details")' in service
+    assert 'result_path.parent / "alphaforge_details.json"' in service
+    assert "path.relative_to(RESULTS_ROOT)" in service

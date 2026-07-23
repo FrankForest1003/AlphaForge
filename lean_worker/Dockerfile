@@ -61,7 +61,6 @@ COPY worker /app/worker
 COPY runtime_support /app/runtime_support
 COPY config /app/config
 COPY tools /app/tools
-COPY client /app/client
 COPY docker/entrypoint.sh /usr/local/bin/alphaforge-entrypoint
 
 RUN chmod +x /usr/local/bin/alphaforge-entrypoint \

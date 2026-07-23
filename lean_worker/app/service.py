@@ -1,10 +1,8 @@
 from __future__ import annotations
 
 import hmac
-import hashlib
 import json
 import os
-import re
 import subprocess
 import sys
 import threading
@@ -14,9 +12,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, Header, HTTPException, Query
+from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
+
+from app.io_utils import atomic_write_text
 
 CONFIG_PATH = Path(os.environ.get("ALPHAFORGE_WORKER_CONFIG", "/app/config/worker.json"))
 CONFIG = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
@@ -35,7 +35,7 @@ JOB_INDEX = RUNTIME_ROOT / "service" / "jobs"
 JOB_INDEX.mkdir(parents=True, exist_ok=True)
 CUSTOM_SOURCE_ROOT = RUNTIME_ROOT / "service" / "custom_sources"
 CUSTOM_SOURCE_ROOT.mkdir(parents=True, exist_ok=True)
-CUSTOM_EXPECTED_MARKER = "ALPHAFORGE_USER_STRATEGY_COMPLETED"
+RESULTS_ROOT = (RUNTIME_ROOT / "results").resolve()
 
 app = FastAPI(
     title="AlphaForge Local LEAN Runtime",
@@ -56,7 +56,7 @@ class SubmitRequest(BaseModel):
 
 
 class CustomSubmitRequest(BaseModel):
-    algorithm_code: str = Field(min_length=1, max_length=65_536)
+    algorithm_code: str = Field(min_length=1)
     parameters: dict[str, Any] = Field(default_factory=dict)
     timeout_seconds: int | None = Field(default=None, ge=1, le=3600)
 
@@ -149,7 +149,8 @@ def record_path(run_id: str) -> Path:
 
 
 def save_record(record: dict[str, Any]) -> None:
-    record_path(record["run_id"]).write_text(
+    atomic_write_text(
+        record_path(record["run_id"]),
         json.dumps(record, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
@@ -197,41 +198,11 @@ def ensure_data_ready(item: dict[str, Any]) -> None:
         )
 
 
-def validate_custom_envelope(code: str) -> None:
-    """Defense in depth; the backend performs the authoritative AST admission."""
-    required = (
-        "class UserStrategy(AlphaForgeBaseAlgorithm)",
-        "def initialize_strategy(",
-        "def on_alpha_end(",
-        CUSTOM_EXPECTED_MARKER,
-    )
-    missing = [value for value in required if value not in code]
-    if missing:
-        raise HTTPException(
-            status_code=422,
-            detail={"message": "Custom strategy envelope is incomplete", "missing": missing},
-        )
-    forbidden = re.compile(
-        r"(^|\W)(os|sys|subprocess|socket|pathlib|requests|urllib|open|exec|eval|__import__)\b"
-    )
-    match = forbidden.search(code)
-    if match:
-        raise HTTPException(
-            status_code=422,
-            detail=f"Custom strategy contains a blocked capability: {match.group(2)}",
-        )
-
-
-def custom_source(code: str) -> tuple[str, Path]:
-    digest = hashlib.sha256(code.encode("utf-8")).hexdigest()
-    path = (CUSTOM_SOURCE_ROOT / f"{digest}.py").resolve()
+def custom_source(run_id: str, code: str) -> Path:
+    path = (CUSTOM_SOURCE_ROOT / f"{run_id}.py").resolve()
     path.relative_to(CUSTOM_SOURCE_ROOT)
-    if path.is_file():
-        if path.read_text(encoding="utf-8") != code:
-            raise HTTPException(status_code=409, detail="Immutable source hash collision")
-    else:
-        path.write_text(code, encoding="utf-8")
-    return digest, path
+    path.write_text(code, encoding="utf-8")
+    return path
 
 
 def execute(run_id: str) -> None:
@@ -247,7 +218,6 @@ def execute(run_id: str) -> None:
                     raise RuntimeError("Immutable custom strategy source is missing")
                 item = {
                     "algorithm_class": "UserStrategy",
-                    "expected_marker": CUSTOM_EXPECTED_MARKER,
                 }
             else:
                 item = load_registry()[record["strategy_id"]]
@@ -330,36 +300,6 @@ def data_status(x_worker_token: str | None = Header(default=None)) -> dict[str, 
     return data_status_payload()
 
 
-@app.get("/v1/universes/default")
-def default_universe(x_worker_token: str | None = Header(default=None)) -> dict[str, Any]:
-    authorize(x_worker_token)
-    universe = read_json(UNIVERSE_PATH)
-    if universe is None:
-        raise HTTPException(status_code=500, detail="Default universe configuration is missing")
-    return universe
-
-
-@app.get("/v1/strategies")
-def strategies(x_worker_token: str | None = Header(default=None)) -> list[dict[str, Any]]:
-    authorize(x_worker_token)
-    return list(load_registry().values())
-
-
-@app.get("/v1/jobs")
-def jobs(
-    limit: int = Query(default=50, ge=1, le=500),
-    x_worker_token: str | None = Header(default=None),
-) -> list[dict[str, Any]]:
-    authorize(x_worker_token)
-    records = []
-    for path in JOB_INDEX.glob("*.json"):
-        record = read_json(path)
-        if record:
-            records.append(record)
-    records.sort(key=lambda item: item.get("created_at", ""), reverse=True)
-    return records[:limit]
-
-
 @app.post("/v1/jobs", status_code=202)
 def submit(request: SubmitRequest, x_worker_token: str | None = Header(default=None)) -> dict[str, str]:
     authorize(x_worker_token)
@@ -397,7 +337,6 @@ def submit_custom(
     x_worker_token: str | None = Header(default=None),
 ) -> dict[str, str]:
     authorize(x_worker_token)
-    validate_custom_envelope(request.algorithm_code)
     symbols = [
         value.strip().upper()
         for value in str(request.parameters.get("symbols", "")).split(",")
@@ -405,18 +344,20 @@ def submit_custom(
     ]
     item = {
         "requires_real_data": True,
-        "required_symbols": [*symbols, "SPY", "QQQ"],
+        "required_symbols": [
+            *symbols,
+            str(request.parameters.get("benchmark", "SPY")).upper(),
+        ],
         "default_parameters": {},
     }
     ensure_data_ready(item)
     parameters = resolve_parameters(item, request.parameters)
-    digest, source_path = custom_source(request.algorithm_code)
     run_id = datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:8]
-    strategy_id = f"custom:{digest[:12]}"
+    source_path = custom_source(run_id, request.algorithm_code)
+    strategy_id = "custom"
     record = {
         "run_id": run_id,
         "strategy_id": strategy_id,
-        "source_hash": digest,
         "custom_algorithm_path": str(source_path),
         "state": "queued",
         "created_at": now(),
@@ -455,35 +396,38 @@ def result(run_id: str, x_worker_token: str | None = Header(default=None)):
     return FileResponse(path, media_type="application/json", filename=f"{run_id}-result.json")
 
 
-@app.get("/v1/jobs/{run_id}/artifacts")
-def artifacts(run_id: str, x_worker_token: str | None = Header(default=None)) -> dict[str, Any]:
+@app.get("/v1/jobs/{run_id}/log")
+def log(run_id: str, x_worker_token: str | None = Header(default=None)):
     authorize(x_worker_token)
-    result_dir = (RUNTIME_ROOT / "results" / run_id).resolve()
-    if not result_dir.is_dir():
+    record = read_record(run_id)
+    if record is None:
         raise HTTPException(status_code=404, detail="Unknown run_id")
-    return {
-        "run_id": run_id,
-        "files": [
-            {"name": path.name, "size_bytes": path.stat().st_size}
-            for path in sorted(result_dir.iterdir())
-            if path.is_file()
-        ],
-    }
-
-
-@app.get("/v1/jobs/{run_id}/artifacts/{name}")
-def artifact(
-    run_id: str,
-    name: str,
-    x_worker_token: str | None = Header(default=None),
-):
-    authorize(x_worker_token)
-    result_dir = (RUNTIME_ROOT / "results" / run_id).resolve()
-    path = (result_dir / name).resolve()
+    path = Path(record.get("log_path") or "").resolve()
     try:
-        path.relative_to(result_dir)
+        path.relative_to(RESULTS_ROOT)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail="Invalid artifact path") from exc
+        raise HTTPException(status_code=409, detail="Log is not ready") from exc
     if not path.is_file():
-        raise HTTPException(status_code=404, detail="Artifact not found")
-    return FileResponse(path, filename=path.name)
+        raise HTTPException(status_code=409, detail="Log is not ready")
+    return FileResponse(path, media_type="text/plain; charset=utf-8")
+
+
+@app.get("/v1/jobs/{run_id}/details")
+def details(run_id: str, x_worker_token: str | None = Header(default=None)):
+    authorize(x_worker_token)
+    record = read_record(run_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Unknown run_id")
+    result_path = Path(record.get("result_path") or "").resolve()
+    path = (result_path.parent / "alphaforge_details.json").resolve()
+    try:
+        path.relative_to(RESULTS_ROOT)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail="Details are not ready") from exc
+    if not result_path.is_file() or not path.is_file():
+        raise HTTPException(status_code=409, detail="Details are not ready")
+    return FileResponse(
+        path,
+        media_type="application/json",
+        filename=f"{run_id}-details.json",
+    )

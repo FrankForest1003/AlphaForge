@@ -16,6 +16,7 @@ class LeanWorkerClient:
         self.headers = {"X-Worker-Token": token} if token else {}
 
     def _request(self, method: str, path: str, **kwargs: Any) -> Any:
+        parse_json = kwargs.pop("parse_json", True)
         try:
             response = requests.request(
                 method,
@@ -25,7 +26,7 @@ class LeanWorkerClient:
                 **kwargs,
             )
             response.raise_for_status()
-            return response.json()
+            return response.json() if parse_json else response.text
         except requests.RequestException as exc:
             detail = ""
             if getattr(exc, "response", None) is not None:
@@ -34,9 +35,6 @@ class LeanWorkerClient:
 
     def health(self) -> dict[str, Any]:
         return self._request("GET", "/health")
-
-    def data_status(self) -> dict[str, Any]:
-        return self._request("GET", "/v1/data/status")
 
     def submit(self, strategy_id: str, parameters: dict[str, Any]) -> dict[str, Any]:
         return self._request(
@@ -64,3 +62,9 @@ class LeanWorkerClient:
 
     def result(self, run_id: str) -> dict[str, Any]:
         return self._request("GET", f"/v1/jobs/{run_id}/result")
+
+    def log(self, run_id: str) -> str:
+        return self._request("GET", f"/v1/jobs/{run_id}/log", parse_json=False)
+
+    def details(self, run_id: str) -> dict[str, Any]:
+        return self._request("GET", f"/v1/jobs/{run_id}/details")

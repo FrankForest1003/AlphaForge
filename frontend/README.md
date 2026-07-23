@@ -1,49 +1,29 @@
-# AlphaForge Arena Frontend v2.0
+# AlphaForge Studio
 
-This Streamlit prototype implements the fair-battle product flow defined in
-`AlphaForge_团队同步与AI开发上下文_v2.0.md`.
+当前前端是 Vite + React 单页应用，提供以下页面：
 
-## Local run (Windows)
+- `Build`：选择股票候选池和统一回测设置，并通过 Guided Setup 或完整 Python 代码提交 Human Strategy。
+- `Results`：自动刷新运行状态，以图表和统一格式的表格比较策略结果，并展示 Generated Strategy 的验收历史。
+- `Strategy Code`：查看 Human Strategy 和 Generated Strategy 的完整源码。
 
-```powershell
-conda activate alphaforge-frontend
-cd frontend
-python -m pip install -r requirements.txt
-$env:ALPHAFORGE_MOCK_MODE = "false"
-$env:ALPHAFORGE_API_BASE_URL = "http://127.0.0.1:8000/v1"
-python -m streamlit run app.py
+完整代码模式默认加载一个可直接修改的 `UserStrategy` 基础模板。
+
+## 本地运行
+
+```bash
+npm install
+npm run dev
 ```
 
-## Docker demo
+开发服务器监听 `8501`，并将浏览器发往 `/api` 的请求代理到
+`ALPHAFORGE_API_PROXY_TARGET`，默认是 `http://127.0.0.1:8000`。
 
-```powershell
-cd frontend
-docker build -t alphaforge-frontend:v2 .
-docker run --rm -p 8501:8501 -e ALPHAFORGE_MOCK_MODE=true alphaforge-frontend:v2
+## 测试和构建
+
+```bash
+npm test
+npm run build
 ```
 
-Open <http://localhost:8501>.
-
-## Backend integration
-
-The page layer never calls FastAPI directly. Add real methods in
-`api_client/client.py`, then start with:
-
-```powershell
-$env:ALPHAFORGE_MOCK_MODE = "false"
-$env:ALPHAFORGE_API_BASE_URL = "http://127.0.0.1:8000/v1"
-python -m streamlit run app.py
-```
-
-Live mode is the default and never falls back to fabricated metrics. Set
-`ALPHAFORGE_MOCK_MODE=true` only for the explicitly labelled UI demo.
-
-Guided Mode offers Multi-Horizon Momentum, Risk-Adjusted Momentum, and Low Volatility.
-The selected template is run as an independent real LEAN Human job and displayed
-beside the four public baselines under the same immutable experiment contract.
-
-LEAN Code starts from a runnable `UserStrategy(AlphaForgeBaseAlgorithm)` example.
-The submitted source is frozen with the Battle, statically checked for its API
-contract and restricted capabilities, then admitted only after an isolated LEAN
-smoke run completes. Passing admission proves executability, not profitability.
-
+项目根目录的 `compose.yaml` 使用同一前端构建，并把 API 代理目标设置为
+Docker 网络中的 `http://backend:8000`。
