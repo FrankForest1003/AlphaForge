@@ -59,6 +59,11 @@ class MLThirtyStockGradientBoosting(AlphaForgeBaseAlgorithm):
         self.target_gross = 0.95
         self.max_position_weight = 0.35
         self.random_seed = 42
+        self.gb_n_estimators = 150
+        self.gb_learning_rate = 0.04
+        self.gb_max_depth = 2
+        self.gb_min_samples_leaf = 20
+        self.cross_sectional_scale_floor = 0.000001
         self.risk_filter_enabled = True
         self.risk_sma_period = 200
         self.fee_bps = float(self._parameter("transaction_cost_bps", "10"))
@@ -111,10 +116,30 @@ class MLThirtyStockGradientBoosting(AlphaForgeBaseAlgorithm):
         features["volatility_21d"] = daily.rolling(21).std() * math.sqrt(252)
         features["sma_gap_63d"] = close / close.rolling(63).mean() - 1.0
         features["relative_return_21d"] = close.pct_change(21) - spy_aligned.pct_change(21)
-        target = close.shift(-self.horizon) / close - 1.0
+        # Both legs are indexed to the same decision date.  The negative shift
+        # only creates labels for completed future horizons; those rows are
+        # dropped before every model fit.
+        stock_forward_return = close.shift(-self.horizon) / close - 1.0
+        spy_forward_return = spy_aligned.shift(-self.horizon) / spy_aligned - 1.0
+        target = stock_forward_return - spy_forward_return
         train = features.copy()
         train["target"] = target
         return features, train.dropna()
+
+    def _cross_sectional_normalize(self, features):
+        """Robustly standardize each feature across symbols on each date."""
+        values = features[self.FEATURE_NAMES].astype(float)
+        median = values.groupby(level=0).transform("median")
+        median_absolute_deviation = (values - median).abs().groupby(level=0).transform("median")
+        robust_scale = 1.4826 * median_absolute_deviation
+        standard_scale = values.groupby(level=0).transform("std")
+        scale = robust_scale.where(
+            robust_scale > self.cross_sectional_scale_floor,
+            standard_scale,
+        ).fillna(self.cross_sectional_scale_floor)
+        scale = scale.clip(lower=self.cross_sectional_scale_floor)
+        normalized = (values - median) / scale
+        return normalized.replace([np.inf, -np.inf], np.nan).fillna(0.0)
 
     def train_predict_rebalance(self):
         if self.is_warming_up:
@@ -190,21 +215,34 @@ class MLThirtyStockGradientBoosting(AlphaForgeBaseAlgorithm):
             return
 
         combined = pd.concat(train_frames, axis=0)
+        combined.loc[:, self.FEATURE_NAMES] = self._cross_sectional_normalize(combined)
+        current_matrix = pd.DataFrame.from_dict(current_rows, orient="index")
+        current_matrix.index.name = "symbol"
+        current_median = current_matrix[self.FEATURE_NAMES].median(axis=0)
+        current_mad = (current_matrix[self.FEATURE_NAMES] - current_median).abs().median(axis=0)
+        current_std = current_matrix[self.FEATURE_NAMES].std(axis=0)
+        current_scale = (1.4826 * current_mad).where(
+            1.4826 * current_mad > self.cross_sectional_scale_floor,
+            current_std,
+        ).fillna(self.cross_sectional_scale_floor).clip(lower=self.cross_sectional_scale_floor)
+        current_matrix.loc[:, self.FEATURE_NAMES] = (
+            (current_matrix[self.FEATURE_NAMES] - current_median) / current_scale
+        ).replace([np.inf, -np.inf], np.nan).fillna(0.0)
         x_train = combined[self.FEATURE_NAMES].to_numpy(dtype=float)
         y_train = combined["target"].to_numpy(dtype=float)
         self.model = GradientBoostingRegressor(
             random_state=self.random_seed,
-            n_estimators=150,
-            learning_rate=0.04,
-            max_depth=2,
-            min_samples_leaf=20,
+            n_estimators=self.gb_n_estimators,
+            learning_rate=self.gb_learning_rate,
+            max_depth=self.gb_max_depth,
+            min_samples_leaf=self.gb_min_samples_leaf,
             loss="huber",
         )
         self.model.fit(x_train, y_train)
         predictions = {
             symbol: float(
                 self.model.predict(
-                    np.asarray([current_rows[symbol].to_numpy(dtype=float)])
+                    np.asarray([current_matrix.loc[symbol, self.FEATURE_NAMES].to_numpy(dtype=float)])
                 )[0]
             )
             for symbol in current_rows
@@ -230,11 +268,11 @@ class MLThirtyStockGradientBoosting(AlphaForgeBaseAlgorithm):
                 "skipped_symbols": skipped_symbols,
             }
         )
-        per_asset = (
-            min(self.max_position_weight, self.target_gross / len(selected))
-            if selected
-            else 0.0
-        )
+        positive_predictions = pd.Series(
+            {symbol: prediction for symbol, prediction in ranked if symbol in selected},
+            dtype=float,
+        ).clip(lower=0.0)
+        target_weight_series = self._allocate_with_cap(positive_predictions)
         for rank, (symbol, prediction) in enumerate(ranked, 1):
             self.af_record_ml_prediction(
                 {
@@ -242,7 +280,7 @@ class MLThirtyStockGradientBoosting(AlphaForgeBaseAlgorithm):
                     "predicted_return": prediction,
                     "rank": rank,
                     "selected": symbol in selected,
-                    "target_weight": per_asset if symbol in selected else 0.0,
+                    "target_weight": float(target_weight_series.get(symbol, 0.0)),
                 }
             )
         self.af_record_signal(
@@ -250,7 +288,11 @@ class MLThirtyStockGradientBoosting(AlphaForgeBaseAlgorithm):
             {
                 "predictions": {symbol.value: value for symbol, value in ranked},
                 "selected": [symbol.value for symbol in selected],
-                "target_weight_each": per_asset,
+                "target_weight_each": float(target_weight_series.mean()),
+                "target_weights": {
+                    symbol.value: float(weight)
+                    for symbol, weight in target_weight_series.items()
+                },
             },
         )
 
@@ -271,11 +313,33 @@ class MLThirtyStockGradientBoosting(AlphaForgeBaseAlgorithm):
         if not selected:
             self.af_liquidate_all("ML risk-off: no positive predictions")
             return
-        target_weights = {symbol: per_asset for symbol in selected}
+        target_weights = {
+            symbol: float(weight) for symbol, weight in target_weight_series.items()
+        }
         self.af_rebalance_to_weights(
             target_weights,
             "Monthly ML Top-K rebalance",
         )
+
+    def _allocate_with_cap(self, raw_weights):
+        """Allocate positive expected excess returns under gross and name caps."""
+        weights = raw_weights.replace([np.inf, -np.inf], np.nan).fillna(0.0).clip(lower=0.0)
+        allocation = pd.Series(0.0, index=weights.index, dtype=float)
+        if weights.empty or weights.sum() <= 0:
+            return allocation
+        remaining = list(weights.index)
+        exposure = min(self.target_gross, self.max_position_weight * len(remaining))
+        while remaining and exposure > 0:
+            proposal = weights.loc[remaining] / weights.loc[remaining].sum() * exposure
+            capped = proposal[proposal > self.max_position_weight].index.tolist()
+            if not capped:
+                allocation.loc[remaining] = proposal
+                break
+            for symbol in capped:
+                allocation.loc[symbol] = self.max_position_weight
+                remaining.remove(symbol)
+                exposure -= self.max_position_weight
+        return allocation
 
     def on_alpha_end(self):
         self.debug("ALPHAFORGE_ML_30_GRADIENT_BOOSTING_COMPLETED")
