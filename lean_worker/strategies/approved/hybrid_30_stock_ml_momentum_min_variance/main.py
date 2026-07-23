@@ -116,7 +116,12 @@ class HybridThirtyStockMLMomentumMinVariance(AlphaForgeBaseAlgorithm):
         self.forward_horizon = int(self._parameter("forecast_horizon", "21"))
         self.training_window = int(self._parameter("training_bars", "504"))
         self.random_seed = int(self._parameter("random_seed", "42"))
-        self.model = GradientBoostingRegressor(loss='huber', n_estimators=60, learning_rate=0.05, max_depth=2, min_samples_leaf=30, subsample=0.75, random_state=self.random_seed)
+        self.gb_n_estimators = int(self._parameter("gb_n_estimators", "60"))
+        self.gb_learning_rate = float(self._parameter("gb_learning_rate", "0.05"))
+        self.gb_max_depth = int(self._parameter("gb_max_depth", "2"))
+        self.gb_min_samples_leaf = int(self._parameter("gb_min_samples_leaf", "30"))
+        self.gb_subsample = float(self._parameter("gb_subsample", "0.75"))
+        self.model = GradientBoostingRegressor(loss='huber', n_estimators=self.gb_n_estimators, learning_rate=self.gb_learning_rate, max_depth=self.gb_max_depth, min_samples_leaf=self.gb_min_samples_leaf, subsample=self.gb_subsample, random_state=self.random_seed)
         self.model_ready = False
         self.feature_names = ['ret_21', 'ret_63', 'ret_126', 'sma_20_gap', 'sma_100_gap', 'macd_gap', 'rsi_14', 'volatility_20', 'spy_ret_21', 'spy_trend']
         # The classic signal remains dominant to reduce ML overfitting.
@@ -132,13 +137,23 @@ class HybridThirtyStockMLMomentumMinVariance(AlphaForgeBaseAlgorithm):
         )
         self.maximum_total_exposure = float(self._parameter("target_gross", "0.95"))
         self.maximum_stock_weight = float(self._parameter("max_position_weight", "0.35"))
-        self.minimum_weight_change = 0.04
-        self.stop_loss = 0.12
-        self.cooldown_days = 21
+        self.minimum_weight_change = float(self._parameter("minimum_weight_change", "0.04"))
+        self.stop_loss = float(self._parameter("stop_loss", "0.12"))
+        self.cooldown_days = int(self._parameter("cooldown_days", "21"))
         self.cooldown_until = {}
         self.maximum_portfolio_drawdown = float(self._parameter("max_drawdown", "0.20"))
         self.risk_filter_enabled = self._bool_parameter("risk_filter_enabled", True)
-        self.pause_days = 60
+        self.pause_days = int(self._parameter("pause_days", "60"))
+        self.covariance_loading_factor = float(self._parameter("covariance_loading_factor", "0.000001"))
+        self.score_power_min = float(self._parameter("score_power_min", "1.25"))
+        self.score_power_max = float(self._parameter("score_power_max", "1.90"))
+        self.score_dispersion_center = float(self._parameter("score_dispersion_center", "0.15"))
+        self.score_dispersion_scale = float(self._parameter("score_dispersion_scale", "0.10"))
+        self.transaction_cost_multiplier = float(self._parameter("transaction_cost_multiplier", "1.0"))
+        self.signal_allocation_weight = float(self._parameter("signal_allocation_weight", "0.425"))
+        self.minimum_variance_allocation_weight = float(
+            self._parameter("minimum_variance_allocation_weight", "0.575")
+        )
         self.portfolio_peak = float(self.portfolio.total_portfolio_value)
         self.pause_until = None
         # Warm up enough data for the 200-day trend filter and indicators.
@@ -439,12 +454,11 @@ class HybridThirtyStockMLMomentumMinVariance(AlphaForgeBaseAlgorithm):
         else:
             score_gap = 0.0
 
-        if score_gap >= 0.3:
-            score_power = 1.9
-        elif score_gap >= 0.15:
-            score_power = 1.6
-        else:
-            score_power = 1.25
+        dispersion_scale = max(self.score_dispersion_scale, np.finfo(float).eps)
+        scaled_dispersion = (score_gap - self.score_dispersion_center) / dispersion_scale
+        score_power = self.score_power_min + (
+            self.score_power_max - self.score_power_min
+        ) * 0.5 * (1.0 + np.tanh(scaled_dispersion))
 
         raw_weights = pd.Series(
             np.power(
@@ -476,7 +490,12 @@ class HybridThirtyStockMLMomentumMinVariance(AlphaForgeBaseAlgorithm):
             covariance = LedoitWolf().fit(
                 selected_returns.values
             ).covariance_ * 252
-
+            diagonal = np.diag(covariance).copy()
+            loading = self.covariance_loading_factor * np.maximum(
+                diagonal,
+                np.finfo(float).eps,
+            )
+            covariance = covariance + np.diag(loading)
             precision = np.linalg.pinv(covariance)
             ones = np.ones(len(selected))
             minimum_variance_raw = precision @ ones
@@ -500,20 +519,36 @@ class HybridThirtyStockMLMomentumMinVariance(AlphaForgeBaseAlgorithm):
 
         # Blend expected-return information with covariance-aware risk control.
         target_weights = (
-            0.425 * score_weights
-            + 0.575 * min_variance_weights
+            self.signal_allocation_weight * score_weights
+            + self.minimum_variance_allocation_weight * min_variance_weights
         )
         portfolio_value = float(self.portfolio.total_portfolio_value)
+        desired_weights = {symbol: float(target_weights[symbol]) for symbol in selected}
+        current_holdings = [symbol for symbol in self.symbols if self.portfolio[symbol].invested]
+        candidate_predictions = candidate_frame['ml_prediction'].to_dict()
         execution_weights = {}
-        for symbol in selected:
-            target_weight = float(target_weights[symbol])
+        transaction_cost_rate = (
+            (self.fee_bps + self.slippage_bps) / 10000.0
+            * self.transaction_cost_multiplier
+        )
+        execution_symbols = selected + [
+            symbol for symbol in current_holdings if symbol not in selected
+        ]
+        for symbol in execution_symbols:
+            target_weight = desired_weights.get(symbol, 0.0)
             current_weight = float(self.portfolio[symbol].holdings_value) / portfolio_value if portfolio_value > 0 else 0.0
             weight_difference = abs(target_weight - current_weight)
-            execution_weights[symbol] = (
-                current_weight
-                if self.portfolio[symbol].invested and weight_difference < self.minimum_weight_change
-                else target_weight
+            expected_edge = abs(float(candidate_predictions.get(symbol, 0.0)))
+            expected_utility_gain = weight_difference * expected_edge
+            estimated_transaction_cost = weight_difference * transaction_cost_rate
+            if weight_difference < self.minimum_weight_change or expected_utility_gain <= estimated_transaction_cost:
+                execution_weights[symbol] = current_weight
+                continue
+            dampening = min(
+                1.0,
+                max(0.0, (expected_edge - transaction_cost_rate) / expected_edge),
             )
+            execution_weights[symbol] = current_weight + dampening * (target_weight - current_weight)
         self.af_rebalance_to_weights(
             execution_weights,
             "Monthly hybrid ML momentum and minimum-variance rebalance",
