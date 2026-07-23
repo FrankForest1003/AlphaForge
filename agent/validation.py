@@ -454,9 +454,15 @@ def validate_candidate_source(source_code: str, track: str) -> dict[str, Any]:
                 )
             )
 
-    missing_parameters = sorted(
-        name for name in REQUIRED_PARAMETER_NAMES if name not in source_code
-    )
+    consumed_parameters = {
+        str(call.args[0].value)
+        for call in calls
+        if _call_name(call).rsplit(".", 1)[-1] in {"_parameter", "get_parameter"}
+        and call.args
+        and isinstance(call.args[0], ast.Constant)
+        and isinstance(call.args[0].value, str)
+    }
+    missing_parameters = sorted(REQUIRED_PARAMETER_NAMES - consumed_parameters)
     if missing_parameters:
         diagnostics.append(
             _diagnostic(
@@ -582,5 +588,6 @@ def validate_candidate_source(source_code: str, track: str) -> dict[str, Any]:
         "semantic_sha256": semantic_hash,
         "diagnostics": diagnostics,
         "warnings": warnings,
-        "contract_version": "agent-source-v2",
+        "consumed_run_settings": sorted(consumed_parameters),
+        "contract_version": "agent-source-v3",
     }

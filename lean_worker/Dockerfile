@@ -23,7 +23,7 @@ RUN dotnet restore Launcher/QuantConnect.Lean.Launcher.csproj \
 
 FROM mcr.microsoft.com/dotnet/runtime:10.0-noble AS runtime
 ARG DEBIAN_FRONTEND=noninteractive
-ARG RUNTIME_VERSION=1.1.3
+ARG RUNTIME_VERSION=1.2.0
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \

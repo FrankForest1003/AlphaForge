@@ -54,16 +54,17 @@ class DeepSeekAcceptanceAgent:
             "behavior_evidence": behavior_evidence,
             "acceptance_attempt": acceptance_attempt,
             "output": {
-                "decision": "accept or revise",
                 "checks": [
                     {
                         "id": "exactly one of A1 through A5",
-                        "status": "pass or fail",
                         "evidence": ["specific source, log, or behavior fact"],
-                        "reason": "why the check passes or fails",
+                        "reason": "explain what the supplied evidence establishes or is missing",
                     }
                 ],
-                "repair_request": "null for accept; non-empty string for revise",
+                "repair_request": (
+                    "null when no missing evidence is found; otherwise one bounded "
+                    "repair suggestion for the first interrupted stage"
+                ),
             },
         }
         prompt = (

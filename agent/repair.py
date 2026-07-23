@@ -31,6 +31,7 @@ class DeepSeekRepairAgent:
         repair_trigger: str,
         acceptance_report: dict[str, Any] | None = None,
         validation_report: dict[str, Any] | None = None,
+        candidate_design: dict[str, Any] | None = None,
     ) -> list[dict[str, str]]:
         if track not in TRACK_BRIEFS:
             raise ValueError(f"unknown Designer track: {track}")
@@ -51,6 +52,7 @@ class DeepSeekRepairAgent:
             "lean_console_log_excerpt": lean_console_log,
             "repair_trigger": repair_trigger,
             "validation_report": validation_report,
+            "candidate_design": candidate_design,
             "output_schema": {
                 "change_summary": [
                     "one to three specific changes tied to observed evidence"
@@ -99,6 +101,8 @@ class DeepSeekRepairAgent:
             trace_context["acceptance_report"] = context["acceptance_report"]
         if context.get("validation_report") is not None:
             trace_context["validation_report"] = context["validation_report"]
+        if context.get("candidate_design") is not None:
+            trace_context["candidate_design"] = context["candidate_design"]
         completed = self.deepseek.complete_json(
             self.messages(**context),
             trace_context=trace_context,

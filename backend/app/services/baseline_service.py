@@ -16,6 +16,10 @@ from agent import (
     validate_candidate_source,
 )
 from app.schemas import GuidedHumanStrategy, HumanStrategyRequest, RunSettings
+from app.services.acceptance_policy import (
+    build_deterministic_acceptance_report,
+    normalize_acceptance_payload,
+)
 from app.services.worker_client import LeanWorkerClient
 
 
@@ -191,7 +195,61 @@ def build_behavior_evidence(details: dict[str, Any]) -> dict[str, Any]:
             for value in event["payload"]["targets"].values()
         )
     ]
+    decision_target_events = [
+        event
+        for event in target_events
+        if str(event.get("name") or "") == "decision_targets"
+    ]
+    if not decision_target_events:
+        decision_target_events = target_events
+
+    rebalance_keys = {
+        (str(event.get("time") or ""), str(event.get("name") or ""))
+        for event in rebalances
+        if isinstance(event, dict)
+    }
+    transparent_signals = [
+        event
+        for event in signals
+        if isinstance(event, dict)
+        and (
+            str(event.get("time") or ""),
+            str(event.get("name") or ""),
+        )
+        not in rebalance_keys
+    ]
+    selected_predictions = [
+        item
+        for item in predictions
+        if isinstance(item, dict) and bool(item.get("selected"))
+    ]
+    signal_times = {
+        str(event.get("time") or "")
+        for event in transparent_signals
+        if event.get("time")
+    }
+    prediction_times = {
+        str(event.get("time") or "")
+        for event in predictions
+        if isinstance(event, dict) and event.get("time")
+    }
+    target_times = {
+        str(event.get("time") or "")
+        for event in decision_target_events
+        if event.get("time")
+    }
+    training_times = sorted(
+        str(event.get("time") or "")
+        for event in training_runs
+        if isinstance(event, dict) and event.get("time")
+    )
+    training_before_prediction_count = sum(
+        1
+        for prediction_time in prediction_times
+        if any(training_time <= prediction_time for training_time in training_times)
+    )
     return {
+        "evidence_schema_version": "2.0",
         "order_count": len(orders),
         "filled_order_count": len(filled),
         "rejected_order_count": len(rejected),
@@ -203,9 +261,20 @@ def build_behavior_evidence(details: dict[str, Any]) -> dict[str, Any]:
         "max_gross_exposure": max_gross_exposure,
         "rebalance_count": len(rebalances),
         "nonzero_target_event_count": len(target_events),
+        "target_intent_event_count": len(decision_target_events),
         "signal_event_count": len(signals),
+        "transparent_signal_event_count": len(transparent_signals),
         "ml_training_run_count": len(training_runs),
         "ml_prediction_count": len(predictions),
+        "selected_ml_prediction_count": len(selected_predictions),
+        "signal_to_target_link_count": len(signal_times.intersection(target_times)),
+        "prediction_to_target_link_count": len(
+            prediction_times.intersection(target_times)
+        ),
+        "hybrid_decision_link_count": len(
+            signal_times.intersection(prediction_times, target_times)
+        ),
+        "training_before_prediction_count": training_before_prediction_count,
     }
 
 
@@ -405,6 +474,7 @@ def validate_acceptance_report(
     report: dict[str, Any],
     behavior_evidence: dict[str, Any],
 ) -> dict[str, Any]:
+    report = normalize_acceptance_payload(report)
     decision = report.get("decision")
     if decision not in {"accept", "revise"}:
         raise ValueError("acceptance decision must be accept or revise")
@@ -1233,6 +1303,7 @@ class ForgeService:
                         repair_trigger="static_validation",
                         acceptance_report=None,
                         validation_report=preflight,
+                        candidate_design=design,
                     )
                     self._record_agent_call(
                         run_id=run_id,
@@ -1371,8 +1442,16 @@ class ForgeService:
                 usage = self._add_usage(usage, evaluated.get("usage", {}))
                 self._change_item(run_id, "candidates", index, usage=usage)
                 try:
-                    report = validate_acceptance_report(
-                        evaluated.get("report", {}), behavior_evidence
+                    advisory_report = normalize_acceptance_payload(
+                        evaluated.get("report", {})
+                    )
+                    report = build_deterministic_acceptance_report(
+                        track=track,
+                        run_settings=settings.model_dump(mode="json"),
+                        worker_result=result,
+                        behavior_evidence=behavior_evidence,
+                        preflight_report=preflight,
+                        advisory_payload=advisory_report,
                     )
                 except Exception as exc:
                     self._update_worker_attempt(
@@ -1438,6 +1517,7 @@ class ForgeService:
                         "behavior_evidence": behavior_evidence,
                         "preflight": preflight,
                         "report": report,
+                        "agent_advisory": advisory_report,
                         "revision_effectiveness": revision_effectiveness,
                         "source_code": source_code,
                         "usage": evaluated.get("usage", {}),
@@ -1562,6 +1642,7 @@ class ForgeService:
                     repair_trigger=repair_trigger,
                     acceptance_report=acceptance_report,
                     validation_report=diagnostic_report,
+                    candidate_design=design,
                 )
                 self._record_agent_call(
                     run_id=run_id,

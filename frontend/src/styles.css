@@ -1725,6 +1725,32 @@ td strong {
   margin: -70px auto 0;
 }
 
+.review-authority {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  padding: 0.8rem 0.9rem;
+  border: 1px solid rgba(31, 128, 117, 0.22);
+  border-radius: 12px;
+  background: rgba(231, 246, 242, 0.7);
+  color: var(--teal-dark);
+  margin-bottom: 16px;
+}
+
+.review-authority div {
+  display: grid;
+  gap: 0.15rem;
+}
+
+.review-authority strong {
+  font-size: 0.88rem;
+}
+
+.review-authority span {
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+
 .revision-effect {
   margin-bottom: 16px;
   padding: 14px 16px;

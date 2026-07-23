@@ -29,8 +29,18 @@ from alphaforge_base import AlphaForgeBaseAlgorithm
 
 
 class UserStrategy(AlphaForgeBaseAlgorithm):
+    def _parameter(self, name, default):
+        value = self.get_parameter(name)
+        return value if value not in (None, "") else default
+
     def initialize_strategy(self):
-        all_settings = "symbols start_date end_date initial_cash benchmark transaction_cost_bps slippage_bps"
+        symbols = self._parameter("symbols", "MSFT,AAPL,NVDA,GOOGL,AMZN")
+        start_date = self._parameter("start_date", "2020-01-02")
+        end_date = self._parameter("end_date", "2024-12-31")
+        initial_cash = self._parameter("initial_cash", "100000")
+        benchmark = self._parameter("benchmark", "SPY")
+        transaction_cost_bps = self._parameter("transaction_cost_bps", "10")
+        slippage_bps = self._parameter("slippage_bps", "5")
         self.af_configure_security(None)
         self.af_track_symbol(None)
         self.schedule.on(self.date_rules.month_start("MSFT"), self.time_rules.after_market_open("MSFT", 1), self.rebalance)

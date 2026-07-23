@@ -7,8 +7,8 @@ services:
       dockerfile: Dockerfile
       args:
         LEAN_REF: ${LEAN_REF:-0269115d3cfbf691c7a0b7cfcc9ed412cafb91f6}
-        RUNTIME_VERSION: ${RUNTIME_VERSION:-1.1.3}
-    image: alphaforge/local-lean-runtime:${RUNTIME_VERSION:-1.1.3}
+        RUNTIME_VERSION: ${RUNTIME_VERSION:-1.2.0}
+    image: alphaforge/local-lean-runtime:${RUNTIME_VERSION:-1.2.0}
     platform: linux/amd64
     restart: unless-stopped
     ports:
@@ -20,7 +20,7 @@ services:
       TIINGO_API_TOKEN: ${TIINGO_API_TOKEN:-}
       TIINGO_START_DATE: ${TIINGO_START_DATE:-2014-01-01}
       ALPHAFORGE_AUTO_GENERATE_SAMPLE_DATA: ${ALPHAFORGE_AUTO_GENERATE_SAMPLE_DATA:-false}
-      ALPHAFORGE_RUNTIME_VERSION: ${RUNTIME_VERSION:-1.1.3}
+      ALPHAFORGE_RUNTIME_VERSION: ${RUNTIME_VERSION:-1.2.0}
       PYTHONHASHSEED: "0"
       OMP_NUM_THREADS: "1"
       OPENBLAS_NUM_THREADS: "1"

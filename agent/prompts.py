@@ -35,10 +35,11 @@ change_summary must describe code that is visibly present in returned source_cod
 Never replace a working ML or Hybrid strategy with a non-ML fallback. Return one JSON
 object matching the requested schema and no surrounding prose."""
 
-ACCEPTANCE_SYSTEM_PROMPT = """You are the AlphaForge strategy acceptance agent.
-Audit one completed QuantConnect LEAN run against checks A1 through A5. Apply every
-check exactly as written. Return one JSON object and no surrounding prose. Do not write
-or modify strategy code."""
+ACCEPTANCE_SYSTEM_PROMPT = """You are the AlphaForge strategy evidence analyst.
+Explain one completed QuantConnect LEAN run against checks A1 through A5 and propose
+one bounded repair for the first missing stage. Backend code owns every pass/fail status
+and the final accept/revise decision; never claim authority over that verdict. Return
+one JSON object and no surrounding prose. Do not write or modify strategy code."""
 
 ACCEPTANCE_CHECK_IDS = ("A1", "A2", "A3", "A4", "A5")
 
@@ -47,15 +48,15 @@ ACCEPTANCE_RULES = """ALPHAFORGE ACCEPTANCE RULES
 A1 ACTUAL INVESTMENT ACTIVITY
 Use the Backend behavior facts to evaluate this conjunction:
 filled_order_count > 0, invested_snapshot_count > 0, and max_gross_exposure > 0.
-Record pass when the conjunction is true and fail when it is false. Cite all three
-values as evidence.
+State whether the conjunction is established and cite all three values. Do not emit
+an authoritative status.
 
 A2 DATA-TO-ORDER CAUSAL PATH
 Construct an execution proof with these ordered stages: available market rows; feature
 rows; trained signal or model state; prediction or ranking values; target weights; order
 submission; filled orders. For each stage, cite the source expression and the observed
-execution fact that establishes its output. Record pass when the proof reaches filled
-orders. Record fail at the first stage whose required output is absent.
+execution fact that establishes its output. State whether the proof reaches filled
+orders and identify the first stage whose required output is absent.
 
 For ML and Hybrid code, include separate numeric cardinality calculations for training
 and inference. Each calculation states the available row count, each row loss caused by
@@ -70,35 +71,31 @@ from source code. Runtime evidence fields are authoritative. If they are absent,
 "not observed" and request the exact missing counter or recorded event.
 
 A3 DESIGN TRACK INTEGRITY
-Traditional passes when the evidence traces a non-ML market signal into symbol selection
-or target weights. ML passes when the evidence traces fitted model state through a
-prediction into symbol selection or target weights. Hybrid passes when the evidence
-traces both fitted-model predictions and an independent non-ML market signal into the
-same final selection or target-weight decision. Cite the assignments and consumers that
-establish each connection.
+For Traditional, look for evidence tracing a non-ML market signal into symbol selection
+or target weights. For ML, look for fitted model state flowing through a prediction into
+symbol selection or target weights. For Hybrid, look for both fitted-model predictions
+and an independent non-ML market signal in the same final selection or target-weight
+decision. Cite the assignments and consumers that establish each connection.
 
 A4 TIME INTEGRITY
 Construct a timeline for each training and trading path. State the decision timestamp,
 the latest input bar end_time available to that decision, the feature timestamp, the
 label timestamp for training rows, and the training cutoff used by each prediction.
-Record pass when every input and trained parameter is available by its decision time.
-Record fail when a cited timeline contains an input, label, or trained parameter from
-after its decision time. A failure evidence item includes the two concrete timestamps
-or relative offsets that establish this ordering.
+State whether every input and trained parameter is available by its decision time.
+When a timeline contains an input, label, or trained parameter from after its decision
+time, cite the two concrete timestamps or relative offsets that establish the ordering.
 
 A5 SHARED RUN SETTINGS
 Map symbols, dates, initial cash, benchmark, fees, and slippage from each run_settings
-field to the source expression that consumes it. Record pass when every mapping is
-present and all traded stocks belong to run_settings.symbols. A selected subset satisfies
+field to the source expression that consumes it. State which mappings are present and
+whether all traded stocks belong to run_settings.symbols. A selected subset satisfies
 the symbol mapping, and the benchmark remains separate from the candidate stocks.
 
-DECISION
-Return accept only when A1, A2, A3, A4, and A5 all pass. Return revise when any check
-fails. A revise response must contain a non-empty repair_request addressing the failed
-causal or compliance issue. An accept response must set repair_request to null.
-Build the repair_request from failed checks by carrying forward their cited execution
-facts, source expressions, numeric calculations, and first interrupted stage. When the
-first interruption requires an additional runtime value, request that value directly.
+ADVISORY OUTPUT
+Return exactly five check notes, A1 through A5. Each note contains evidence and a short
+explanation, but no pass/fail status. Backend deterministic policy owns all statuses and
+the final decision. Set repair_request to null when you find no missing stage. Otherwise
+build one repair_request from the first interrupted stage and its supplied facts.
 Request structured af_record_signal/af_record_ml_* evidence instead of per-bar debug
 logging. Never ask for unbounded debug output inside on_data.
 
@@ -203,7 +200,7 @@ class UserStrategy(AlphaForgeBaseAlgorithm):
 '''
 
 
-AGENT_CAPABILITY_CONTRACT = """ALPHAFORGE AGENT CAPABILITY CONTRACT v2
+AGENT_CAPABILITY_CONTRACT = """ALPHAFORGE AGENT CAPABILITY CONTRACT v3
 
 RUNTIME
 - The entry class is UserStrategy(AlphaForgeBaseAlgorithm).
@@ -282,6 +279,9 @@ TRACK INTEGRITY
 - Hybrid: a fitted prediction and an independent named non-ML signal must be combined
   in the same ranking or target-weight expression. Record the transparent component
   with self.af_record_signal(name, one_dict_payload).
+- Choose only the bounded primitives in design.strategy_spec. The source must implement
+  those exact signal/model/frequency/lookback/horizon/Top-K/weighting values; do not
+  silently substitute a different strategy during generation or repair.
 
 SELF-CHECK BEFORE OUTPUT
 1. The file parses and defines the required class/method.
@@ -336,6 +336,19 @@ DESIGN_OUTPUT_SCHEMA = {
             "target weights",
             "af_rebalance_to_weights",
         ],
+        "strategy_spec": {
+            "signal_family": (
+                "momentum, mean_reversion, trend, or volatility; null only for ML"
+            ),
+            "model_family": (
+                "gradient_boosting or random_forest; null only for Traditional"
+            ),
+            "rebalance_frequency": "weekly or monthly",
+            "lookback_days": "integer: 63, 126, or 252",
+            "label_horizon_days": "integer 10 or 21; null for Traditional",
+            "top_k": "integer from 2 through 5",
+            "weighting": "equal or inverse_volatility",
+        },
     },
     "source_code": "complete runnable Python source",
 }

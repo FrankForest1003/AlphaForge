@@ -784,6 +784,19 @@ function AIForgeWorkspace({ run, onBuild }) {
                   </div>
                 ) : null}
 
+                {design.strategy_spec ? (
+                  <div className="design-block">
+                    <span>Bounded Strategy Spec</span>
+                    <div className="design-tags">
+                      {Object.entries(design.strategy_spec)
+                        .filter(([, value]) => value !== null && value !== undefined)
+                        .map(([key, value]) => (
+                          <i key={key}>{key.replaceAll("_", " ")}: {String(value)}</i>
+                        ))}
+                    </div>
+                  </div>
+                ) : null}
+
                 {design.selection_rule ? (
                   <div className="design-block">
                     <span>Selection Rule</span>
@@ -968,6 +981,20 @@ function ReviewHistory({ history }) {
               <ChevronDown size={17} />
             </summary>
             <div className="review-body">
+              {report.policy_version ? (
+                <div className="review-authority">
+                  <ShieldCheck size={17} />
+                  <div>
+                    <strong>Backend-verified decision</strong>
+                    <span>
+                      {report.policy_version}
+                      {report.agent_advisory_decision
+                        ? ` · Agent advised ${report.agent_advisory_decision}`
+                        : " · Agent supplied evidence notes only"}
+                    </span>
+                  </div>
+                </div>
+              ) : null}
               <RevisionEffect effect={entry.revision_effectiveness} />
               {entry.summary ? (
                 <div className="review-metrics">

@@ -22,12 +22,28 @@ from app.services.baseline_service import (
     extract_critical_log_evidence,
     validate_acceptance_report,
 )
+from app.services.acceptance_policy import (
+    build_deterministic_acceptance_report,
+    normalize_acceptance_payload,
+)
 
 
 SYMBOLS = {"MSFT", "AAPL", "NVDA", "GOOGL", "AMZN"}
 
 
 def fake_design(track):
+    if track == "Traditional":
+        signal_family = "momentum"
+        model_family = None
+        label_horizon = None
+    elif track == "ML":
+        signal_family = None
+        model_family = "gradient_boosting"
+        label_horizon = 21
+    else:
+        signal_family = "momentum"
+        model_family = "gradient_boosting"
+        label_horizon = 21
     return {
         "strategy_name": f"Test {track}",
         "track": track,
@@ -45,6 +61,15 @@ def fake_design(track):
             "target weights",
             "af_rebalance_to_weights",
         ],
+        "strategy_spec": {
+            "signal_family": signal_family,
+            "model_family": model_family,
+            "rebalance_frequency": "monthly",
+            "lookback_days": 126,
+            "label_horizon_days": label_horizon,
+            "top_k": 2,
+            "weighting": "equal",
+        },
     }
 
 
@@ -76,8 +101,18 @@ from alphaforge_base import AlphaForgeBaseAlgorithm
 
 
 class UserStrategy(AlphaForgeBaseAlgorithm):
+    def _parameter(self, name, default):
+        value = self.get_parameter(name)
+        return value if value not in (None, "") else default
+
     def initialize_strategy(self):
-        settings = "symbols start_date end_date initial_cash benchmark transaction_cost_bps slippage_bps"
+        symbols = self._parameter("symbols", "MSFT,AAPL,NVDA,GOOGL,AMZN")
+        start_date = self._parameter("start_date", "2020-01-02")
+        end_date = self._parameter("end_date", "2024-12-31")
+        initial_cash = self._parameter("initial_cash", "100000")
+        benchmark = self._parameter("benchmark", "SPY")
+        transaction_cost_bps = self._parameter("transaction_cost_bps", "10")
+        slippage_bps = self._parameter("slippage_bps", "5")
         self.af_configure_security(None)
         self.af_track_symbol(None)
 {ml_lines.rstrip()}
@@ -137,6 +172,56 @@ class FakeWorker:
         return f"complete console log for {run_id}"
 
     def details(self, run_id):
+        source_code = ""
+        if run_id.startswith("candidate-"):
+            index = int(run_id.split("-")[-1]) - 1
+            if 0 <= index < len(self.custom_submissions):
+                source_code = self.custom_submissions[index][0]
+        event_time = "2024-01-02T16:00:00"
+        rebalances = [
+            {
+                "time": event_time,
+                "name": "decision_targets",
+                "payload": {
+                    "decision_id": f"{event_time}#1",
+                    "targets": {"MSFT": 0.5},
+                },
+            }
+        ]
+        signals = [
+            {
+                "time": event_time,
+                "name": "decision_targets",
+                "payload": {"targets": {"MSFT": 0.5}},
+            }
+        ]
+        if "af_record_signal" in source_code:
+            signals.append(
+                {
+                    "time": event_time,
+                    "name": "momentum",
+                    "payload": {"symbol": "MSFT", "value": 1.0},
+                }
+            )
+        training_runs = []
+        predictions = []
+        if "af_record_ml_training" in source_code:
+            training_runs.append(
+                {
+                    "time": event_time,
+                    "model_type": "Test",
+                    "training_rows": 2,
+                }
+            )
+        if "af_record_ml_prediction" in source_code:
+            predictions.append(
+                {
+                    "time": event_time,
+                    "symbol": "MSFT",
+                    "predicted_alpha": 0.1,
+                    "selected": True,
+                }
+            )
         return {
             "orders": [
                 {
@@ -151,7 +236,12 @@ class FakeWorker:
                     "positions": [{"symbol": "MSFT", "invested": True}],
                 }
             ],
-            "rebalances": [{"time": "2024-01-02T16:00:00"}],
+            "rebalances": rebalances,
+            "signals": signals,
+            "ml": {
+                "training_runs": training_runs,
+                "predictions": predictions,
+            },
         }
 
 
@@ -186,6 +276,7 @@ class FakeRepairer:
         repair_trigger,
         acceptance_report,
         validation_report=None,
+        candidate_design=None,
     ):
         self.calls.append(
             {
@@ -787,22 +878,14 @@ def test_forge_trace_persists_every_agent_call_and_worker_source(tmp_path):
 
 def test_behavior_evidence_uses_filled_orders_and_invested_snapshots():
     evidence = build_behavior_evidence(FakeWorker().details("candidate-1"))
-    assert evidence == {
-        "order_count": 1,
-        "filled_order_count": 1,
-        "rejected_order_count": 0,
-        "traded_symbols": ["MSFT"],
-        "first_fill_time": "2024-01-02T16:00:00",
-        "last_fill_time": "2024-01-02T16:00:00",
-        "position_snapshot_count": 1,
-        "invested_snapshot_count": 1,
-        "max_gross_exposure": 0.5,
-        "rebalance_count": 1,
-        "nonzero_target_event_count": 0,
-        "signal_event_count": 0,
-        "ml_training_run_count": 0,
-        "ml_prediction_count": 0,
-    }
+    assert evidence["evidence_schema_version"] == "2.0"
+    assert evidence["order_count"] == 1
+    assert evidence["filled_order_count"] == 1
+    assert evidence["invested_snapshot_count"] == 1
+    assert evidence["max_gross_exposure"] == 0.5
+    assert evidence["traded_symbols"] == ["MSFT"]
+    assert evidence["target_intent_event_count"] == 1
+    assert evidence["transparent_signal_event_count"] == 0
 
 
 def test_critical_log_evidence_is_verbatim_and_focused():
@@ -915,7 +998,7 @@ def test_revision_effectiveness_distinguishes_evidence_only_from_no_op():
     assert no_op["kind"] == "ineffective"
 
 
-def test_acceptance_revision_enters_repair_then_reruns_and_revalidates():
+def test_agent_revision_cannot_override_passing_deterministic_policy():
     worker = FakeWorker()
     repairer = FakeRepairer()
     acceptance = FakeAcceptanceAgent(
@@ -934,11 +1017,12 @@ def test_acceptance_revision_enters_repair_then_reruns_and_revalidates():
 
     first = completed["candidates"][0]
     assert first["state"] == "accepted"
-    assert first["repair_attempts"] == 1
-    assert len(first["acceptance_history"]) == 2
-    assert repairer.calls[0]["repair_trigger"] == "acceptance_revision"
-    assert repairer.calls[0]["acceptance_report"]["checks"][1]["id"] == "A2"
-    assert len(worker.custom_submissions) == 5
+    assert first["repair_attempts"] == 0
+    assert len(first["acceptance_history"]) == 1
+    assert first["acceptance"]["decision_source"] == "backend_deterministic_policy"
+    assert first["acceptance"]["agent_advisory_decision"] == "revise"
+    assert repairer.calls == []
+    assert len(worker.custom_submissions) == 4
 
 
 def test_history_keeps_latest_five_pk_rounds(tmp_path):
@@ -986,14 +1070,18 @@ def test_a1_cannot_accept_zero_activity_even_when_agent_says_accept():
 
     completed = wait_for(service, service.create(settings(), human_code())["run_id"])
 
-    assert all(item["state"] == "failed" for item in completed["candidates"])
-    assert all("A1 contradicts" in item["error"] for item in completed["candidates"])
-    assert repairer.calls == []
+    assert all(item["state"] == "rejected" for item in completed["candidates"])
+    assert all("Deterministic policy failed A1" in item["error"] for item in completed["candidates"])
+    assert len(repairer.calls) == 9
 
 
 def test_acceptance_revisions_share_three_repair_attempt_limit():
+    class MissingEvidenceWorker(FakeWorker):
+        def details(self, run_id):
+            return {"orders": [], "position_snapshots": [], "rebalances": []}
+
     reports = [acceptance_report("revise", "A2") for _ in range(12)]
-    worker = FakeWorker()
+    worker = MissingEvidenceWorker()
     repairer = FakeRepairer()
     service = ForgeService(
         worker=worker,
@@ -1011,3 +1099,38 @@ def test_acceptance_revisions_share_three_repair_attempt_limit():
     assert all(item["state"] == "rejected" for item in completed["candidates"])
     assert all(item["repair_attempts"] == 3 for item in completed["candidates"])
     assert all(len(item["acceptance_history"]) == 4 for item in completed["candidates"])
+
+
+def test_nested_provider_output_is_unwrapped():
+    report = acceptance_report("revise", "A2")
+    assert normalize_acceptance_payload({"output": report}) == report
+
+
+def test_hybrid_fallback_orders_cannot_pass_without_ml_evidence():
+    evidence = {
+        "filled_order_count": 100,
+        "invested_snapshot_count": 200,
+        "max_gross_exposure": 0.95,
+        "traded_symbols": ["MSFT"],
+        "transparent_signal_event_count": 10,
+        "signal_to_target_link_count": 10,
+        "target_intent_event_count": 10,
+        "nonzero_target_event_count": 10,
+        "ml_training_run_count": 0,
+        "ml_prediction_count": 0,
+        "hybrid_decision_link_count": 0,
+        "training_before_prediction_count": 0,
+    }
+    report = build_deterministic_acceptance_report(
+        track="Hybrid",
+        run_settings={"symbols": ["MSFT"], "benchmark": "SPY"},
+        worker_result={"status": "completed"},
+        behavior_evidence=evidence,
+        preflight_report={"diagnostics": []},
+        advisory_payload={"output": acceptance_report()},
+    )
+    by_id = {item["id"]: item for item in report["checks"]}
+    assert report["decision"] == "revise"
+    assert by_id["A1"]["status"] == "pass"
+    assert by_id["A2"]["status"] == "fail"
+    assert by_id["A3"]["status"] == "fail"

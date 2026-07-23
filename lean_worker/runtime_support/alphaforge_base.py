@@ -142,6 +142,7 @@ class AlphaForgeBaseAlgorithm(QCAlgorithm):
         self._af_pending_rebalance_tag = ""
         self._af_rebalance_state = None
         self._af_rebalance_events = []
+        self._af_decision_sequence = 0
         self.initialize_strategy()
 
     def initialize_strategy(self):
@@ -560,6 +561,20 @@ class AlphaForgeBaseAlgorithm(QCAlgorithm):
             for symbol, weight in target_weights.items()
             if float(weight) > 0
         }
+        self._af_decision_sequence = getattr(self, "_af_decision_sequence", 0) + 1
+        decision_id = (
+            f"{_time_text(self.time)}#{self._af_decision_sequence}"
+        )
+        self._af_record_rebalance_event(
+            "decision_targets",
+            {
+                "decision_id": decision_id,
+                "tag": tag,
+                "targets": {
+                    symbol.value: weight for symbol, weight in clean.items()
+                },
+            },
+        )
         if not clean:
             self.af_liquidate_all(tag)
             return
@@ -770,7 +785,7 @@ class AlphaForgeBaseAlgorithm(QCAlgorithm):
         run_dir = Path(os.environ.get("ALPHAFORGE_RUN_DIR", "."))
         run_dir.mkdir(parents=True, exist_ok=True)
         payload = {
-            "schema_version": "1.0",
+            "schema_version": "2.0",
             "run_id": os.environ.get("ALPHAFORGE_RUN_ID"),
             "equity_curve": self._af_equity_curve,
             "benchmark_curve": self._af_benchmark_curve,

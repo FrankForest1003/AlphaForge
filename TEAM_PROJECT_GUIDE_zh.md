@@ -1,5 +1,7 @@
 # AlphaForge 当前项目指南
 
+> 2026-07-23 架构更新：AI 候选已经改为“受限 `strategy_spec` + 静态预检 + Worker evidence schema 2.0 + Backend 确定性验收”。Acceptance Agent 只解释证据和提出修复建议，不再决定 accept/revise。详细说明见 `docs/DETERMINISTIC_ACCEPTANCE_V1_zh.md`。
+
 AlphaForge 是一个本地演示系统：四个公共策略先在相同设置下完成真实 LEAN 回测。Human 策略和 Traditional、ML、Hybrid 三个 DeepSeek Designer 共享相同的运行设置；三个 Designer 的首次 API 请求并行发出，Human 与三个生成候选再由同一个 LEAN Worker 串行回测。运行失败由 Repair Agent 修复；运行成功的 Designer 候选由 Acceptance Agent 按 A1–A5 验收。验收否决同样进入 Repair、重新回测和重新验收。每个 Designer 候选最多修改源码三次。
 
 ## 服务

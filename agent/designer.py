@@ -24,7 +24,7 @@ class DeepSeekDesigner:
             **self.deepseek.health(),
             "documentation_bytes": len(self.lean_documentation.encode("utf-8")),
             "prompt_reference_mode": "compact_capability_contract",
-            "prompt_contract_version": "agent-capability-v2",
+            "prompt_contract_version": "agent-capability-v3",
         }
 
     @staticmethod
@@ -67,6 +67,71 @@ class DeepSeekDesigner:
             raise ValueError(
                 f"{track} design requires a training_plan and exact feature list"
             )
+        spec = design.get("strategy_spec")
+        if not isinstance(spec, dict):
+            raise ValueError("design.strategy_spec must be one bounded object")
+        required_spec = {
+            "signal_family",
+            "model_family",
+            "rebalance_frequency",
+            "lookback_days",
+            "label_horizon_days",
+            "top_k",
+            "weighting",
+        }
+        if set(spec) != required_spec:
+            raise ValueError(
+                "design.strategy_spec must contain exactly: "
+                + ", ".join(sorted(required_spec))
+            )
+        if spec["signal_family"] not in {
+            None,
+            "momentum",
+            "mean_reversion",
+            "trend",
+            "volatility",
+        }:
+            raise ValueError("design.strategy_spec.signal_family is unsupported")
+        if spec["model_family"] not in {
+            None,
+            "gradient_boosting",
+            "random_forest",
+        }:
+            raise ValueError("design.strategy_spec.model_family is unsupported")
+        if spec["rebalance_frequency"] not in {"weekly", "monthly"}:
+            raise ValueError("design.strategy_spec.rebalance_frequency is unsupported")
+        if spec["lookback_days"] not in {63, 126, 252}:
+            raise ValueError("design.strategy_spec.lookback_days must be 63, 126, or 252")
+        if spec["label_horizon_days"] not in {None, 10, 21}:
+            raise ValueError(
+                "design.strategy_spec.label_horizon_days must be null, 10, or 21"
+            )
+        if (
+            not isinstance(spec["top_k"], int)
+            or isinstance(spec["top_k"], bool)
+            or not 2 <= spec["top_k"] <= 5
+        ):
+            raise ValueError("design.strategy_spec.top_k must be an integer from 2 to 5")
+        if spec["weighting"] not in {"equal", "inverse_volatility"}:
+            raise ValueError("design.strategy_spec.weighting is unsupported")
+        if track == "Traditional" and (
+            spec["model_family"] is not None
+            or spec["label_horizon_days"] is not None
+            or spec["signal_family"] is None
+        ):
+            raise ValueError("Traditional strategy_spec requires a signal and no model")
+        if track == "ML" and (
+            spec["model_family"] is None
+            or spec["label_horizon_days"] is None
+            or spec["signal_family"] is not None
+        ):
+            raise ValueError("ML strategy_spec requires a model and no non-ML signal")
+        if track == "Hybrid" and (
+            spec["model_family"] is None
+            or spec["label_horizon_days"] is None
+            or spec["signal_family"] is None
+        ):
+            raise ValueError("Hybrid strategy_spec requires both model and signal")
         return design
 
     def messages(

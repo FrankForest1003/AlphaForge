@@ -43,7 +43,7 @@ app = FastAPI(
         "Dockerized local LEAN backtesting API with 30-stock real-data support, "
         "machine learning, and detailed JSON output."
     ),
-    version=os.environ.get("ALPHAFORGE_RUNTIME_VERSION", "1.1.3"),
+    version=os.environ.get("ALPHAFORGE_RUNTIME_VERSION", "1.2.0"),
 )
 executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="lean-job")
 execution_lock = threading.Lock()

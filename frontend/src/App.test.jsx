@@ -120,6 +120,15 @@ describe("AlphaForge Studio", () => {
             thesis: "Rank stocks using time-ordered model forecasts.",
             signals: ["model prediction"],
             selection_rule: "Select the top two finite predictions.",
+            strategy_spec: {
+              signal_family: null,
+              model_family: "gradient_boosting",
+              rebalance_frequency: "monthly",
+              lookback_days: 126,
+              label_horizon_days: 21,
+              top_k: 2,
+              weighting: "equal",
+            },
           },
           preflight: { status: "passed", diagnostics: [] },
           validation_history: [{ attempt: 0, status: "passed" }],
@@ -140,6 +149,7 @@ describe("AlphaForge Studio", () => {
       screen.getByRole("heading", { name: "User Strategy Hidden From AI" }),
     ).toBeInTheDocument();
     expect(screen.getByText("Stable ML Ranker")).toBeInTheDocument();
+    expect(screen.getByText(/model family: gradient_boosting/i)).toBeInTheDocument();
     expect(
       screen.getByText(/Deterministic source checks passed/i),
     ).toBeInTheDocument();
@@ -176,7 +186,13 @@ describe("AlphaForge Studio", () => {
                   resolved_checks: ["A2"],
                   note: "Audit evidence improved without changing trading results.",
                 },
-                report: { decision: "accept", checks: [] },
+                report: {
+                  decision: "accept",
+                  checks: [],
+                  policy_version: "deterministic-acceptance-v1",
+                  decision_source: "backend_deterministic_policy",
+                  agent_advisory_decision: "revise",
+                },
               },
             ],
           },
@@ -194,5 +210,7 @@ describe("AlphaForge Studio", () => {
     fireEvent.click(screen.getByText(/Inspect all AI challengers/i));
     expect(screen.getByText("Evidence-only revision")).toBeInTheDocument();
     expect(screen.getByText(/Audit evidence improved/i)).toBeInTheDocument();
+    expect(screen.getByText("Backend-verified decision")).toBeInTheDocument();
+    expect(screen.getByText(/Agent advised revise/i)).toBeInTheDocument();
   });
 });
