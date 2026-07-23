@@ -21,10 +21,11 @@ function response(payload, ok = true, status = 200) {
   });
 }
 
-function installFetch(run = null) {
+function installFetch(run = null, history = []) {
   global.fetch = vi.fn((url) => {
     if (url.endsWith("/catalog/universe")) return response(catalog);
     if (url.endsWith("/health")) return response({ status: "ok" });
+    if (url.endsWith("/forge-history")) return response(history);
     if (url.includes("/forge-runs/") && run) return response(run);
     return response({ detail: "Not Found" }, false, 404);
   });
@@ -96,5 +97,102 @@ describe("AlphaForge Studio", () => {
     expect(screen.getByRole("columnheader", { name: "Ending Equity" })).toBeInTheDocument();
     expect(screen.getAllByText("Generated Strategy")).not.toHaveLength(0);
     await waitFor(() => expect(global.fetch).toHaveBeenCalledWith("/api/v1/forge-runs/forge-test", expect.anything()));
+  });
+
+  it("shows the AI information boundary and deterministic preflight evidence", async () => {
+    const run = {
+      run_id: "forge-test",
+      state: "running",
+      settings: { symbols: ["MSFT", "AAPL", "NVDA", "GOOGL", "AMZN"] },
+      baselines: [1, 2, 3, 4].map((index) => ({
+        name: `Baseline ${index}`,
+        state: "completed",
+        summary: {},
+      })),
+      human: { state: "completed", source_code: "PRIVATE HUMAN SOURCE" },
+      candidates: [
+        {
+          track: "ML",
+          state: "running",
+          source_code: "class UserStrategy: pass",
+          design: {
+            strategy_name: "Stable ML Ranker",
+            thesis: "Rank stocks using time-ordered model forecasts.",
+            signals: ["model prediction"],
+            selection_rule: "Select the top two finite predictions.",
+          },
+          preflight: { status: "passed", diagnostics: [] },
+          validation_history: [{ attempt: 0, status: "passed" }],
+          repair_history: [],
+          repair_attempts: 0,
+          worker_run_id: "worker-1",
+          usage: { total_tokens: 4200 },
+        },
+      ],
+    };
+    window.history.replaceState({}, "", "/?run_id=forge-test");
+    installFetch(run);
+    render(<App />);
+    await screen.findByRole("heading", { name: "Strategy Results" });
+    fireEvent.click(screen.getByRole("button", { name: /AI Forge/i }));
+
+    expect(
+      screen.getByRole("heading", { name: "User Strategy Hidden From AI" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Stable ML Ranker")).toBeInTheDocument();
+    expect(
+      screen.getByText(/Deterministic source checks passed/i),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("PRIVATE HUMAN SOURCE")).not.toBeInTheDocument();
+  });
+
+  it("renders a five-round Human versus AI arena with revision meaning", async () => {
+    const rounds = [
+      {
+        run_id: "forge-round-1",
+        state: "completed",
+        created_at: "2026-07-23T10:00:00Z",
+        winner: { side: "ai", label: "AI · Hybrid", reason: "Higher Sharpe." },
+        human: {
+          state: "completed",
+          summary: { sharpe_ratio: 0.9, cagr: 0.1, maximum_drawdown: 0.2, end_equity: 110000 },
+        },
+        candidates: [
+          {
+            track: "Hybrid",
+            state: "accepted",
+            summary: { sharpe_ratio: 1.1, cagr: 0.12, maximum_drawdown: 0.18, end_equity: 120000 },
+            acceptance_history: [
+              {
+                attempt: 2,
+                worker_run_id: "worker-round-1",
+                summary: { sharpe_ratio: 1.1, cagr: 0.12, maximum_drawdown: 0.18, end_equity: 120000 },
+                revision_effectiveness: {
+                  kind: "evidence_only",
+                  effective: true,
+                  semantic_source_changed: true,
+                  trading_behavior_changed: false,
+                  result_changed: false,
+                  resolved_checks: ["A2"],
+                  note: "Audit evidence improved without changing trading results.",
+                },
+                report: { decision: "accept", checks: [] },
+              },
+            ],
+          },
+        ],
+      },
+    ];
+    installFetch(null, rounds);
+    render(<App />);
+    await screen.findByRole("heading", { name: "Create a Backtest" });
+    fireEvent.click(screen.getByRole("button", { name: /PK Arena/i }));
+
+    expect(await screen.findByRole("heading", { name: /Human vs AI/i })).toBeInTheDocument();
+    expect(screen.getByText("Round 1")).toBeInTheDocument();
+    expect(screen.getAllByText("AI · Hybrid").length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByText(/Inspect all AI challengers/i));
+    expect(screen.getByText("Evidence-only revision")).toBeInTheDocument();
+    expect(screen.getByText(/Audit evidence improved/i)).toBeInTheDocument();
   });
 });

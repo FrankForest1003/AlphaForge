@@ -23,8 +23,10 @@ class RunSettings(BaseModel):
     @classmethod
     def normalize_symbols(cls, value: list[str]) -> list[str]:
         normalized = [str(item).strip().upper() for item in value if str(item).strip()]
-        if not normalized:
-            raise ValueError("select at least one stock")
+        if len(normalized) < 5:
+            raise ValueError("select at least five stocks")
+        if len(normalized) > 30:
+            raise ValueError("select no more than thirty stocks")
         if len(normalized) != len(set(normalized)):
             raise ValueError("symbols must be unique")
         return normalized

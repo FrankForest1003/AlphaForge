@@ -58,6 +58,7 @@ forge = ForgeService(
     allowed_symbols=tradable_symbols,
     allowed_benchmarks=benchmarks,
     trace_root=settings.trace_root,
+    history_root=settings.history_root,
 )
 
 app = FastAPI(
@@ -126,6 +127,19 @@ def get_forge_run(run_id: str) -> dict[str, Any]:
     if run is None:
         raise HTTPException(status_code=404, detail="unknown run_id")
     return run
+
+
+@app.get("/v1/forge-history")
+def list_forge_history() -> list[dict[str, Any]]:
+    return forge.list_history(limit=5)
+
+
+@app.get("/v1/forge-history/{run_id}")
+def get_forge_history(run_id: str) -> dict[str, Any]:
+    record = forge.get_history(run_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="unknown historical run_id")
+    return record
 
 
 @app.get("/v1/forge-runs/{run_id}/trace")

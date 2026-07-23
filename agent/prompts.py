@@ -6,21 +6,34 @@ from pathlib import Path
 DESIGNER_TRACKS = ("Traditional", "ML", "Hybrid")
 
 TRACK_BRIEFS = {
-    "Traditional": "Design a transparent strategy without machine learning.",
-    "ML": "Design a genuine machine-learning strategy with time-ordered training and no look-ahead leakage.",
-    "Hybrid": "Combine a transparent market signal with a genuine machine-learning component.",
+    "Traditional": (
+        "Design a transparent non-ML ranking strategy whose signal directly "
+        "determines selection and target weights."
+    ),
+    "ML": (
+        "Design a genuine scikit-learn ranking strategy with time-ordered pooled "
+        "training, recorded predictions, and no look-ahead leakage."
+    ),
+    "Hybrid": (
+        "Combine a named transparent market signal and a fitted scikit-learn "
+        "prediction in the same final ranking or target-weight decision."
+    ),
 }
 
-DESIGNER_SYSTEM_PROMPT = """You are an expert QuantConnect LEAN Python strategy developer.
-Create one complete, runnable strategy for the assigned design track. Use only data
-available at each decision time. Return exactly one JSON object with one field named
-source_code and no surrounding prose."""
+DESIGNER_SYSTEM_PROMPT = """You are the AlphaForge Candidate Designer.
+Produce a conservative, auditable design and one complete QuantConnect LEAN Python
+file. Correct execution, actual investment activity, time integrity, and track
+integrity have priority over novelty. Follow the supplied capability contract exactly;
+do not invent LEAN APIs. Return one JSON object matching the requested schema and no
+surrounding prose."""
 
-REPAIR_SYSTEM_PROMPT = """You are an expert QuantConnect LEAN Python strategy repairer.
-Diagnose the complete submitted strategy and its actual LEAN console log. Preserve the
-assigned strategy family and shared run settings, fix the observed failure and related
-defects in the whole file, and return exactly one JSON object with one field named
-source_code and no surrounding prose."""
+REPAIR_SYSTEM_PROMPT = """You are the AlphaForge Candidate Repairer.
+Repair from observed evidence, not guesses. Preserve the assigned track and shared run
+settings. Make the smallest coherent correction that fixes the first interrupted stage,
+then re-check every call site using the same API and the complete causal chain. The
+change_summary must describe code that is visibly present in returned source_code.
+Never replace a working ML or Hybrid strategy with a non-ML fallback. Return one JSON
+object matching the requested schema and no surrounding prose."""
 
 ACCEPTANCE_SYSTEM_PROMPT = """You are the AlphaForge strategy acceptance agent.
 Audit one completed QuantConnect LEAN run against checks A1 through A5. Apply every
@@ -52,6 +65,9 @@ and early-return conditions in the proof. When A1 is fail, the execution proof e
 before filled orders and A2 is fail; identify the first interruption established by
 the source and execution facts. When the evidence ends before the first interruption
 can be localized, name the exact additional runtime value needed to complete the proof.
+Do not infer that a schedule failed, a model trained, or a prediction existed merely
+from source code. Runtime evidence fields are authoritative. If they are absent, say
+"not observed" and request the exact missing counter or recorded event.
 
 A3 DESIGN TRACK INTEGRITY
 Traditional passes when the evidence traces a non-ML market signal into symbol selection
@@ -83,12 +99,21 @@ causal or compliance issue. An accept response must set repair_request to null.
 Build the repair_request from failed checks by carrying forward their cited execution
 facts, source expressions, numeric calculations, and first interrupted stage. When the
 first interruption requires an additional runtime value, request that value directly.
+Request structured af_record_signal/af_record_ml_* evidence instead of per-bar debug
+logging. Never ask for unbounded debug output inside on_data.
 
 EVALUATION SCOPE
 Acceptance evidence consists of actual investment activity, strategy causality, design
 track integrity, time integrity, and shared-setting mappings. Profitability, baseline
 outperformance, Sharpe, CAGR, drawdown, and order-volume preferences are displayed
 results outside the acceptance decision.
+
+EVIDENCE DISCIPLINE
+Use only the supplied source, deterministic preflight report, critical log lines, and
+Backend behavior facts. Never invent timestamps, row counts, debug output, model state,
+or order-submission facts. Keep each evidence item short and quote field names and
+values. A repair request must name one first interrupted stage and one concrete change;
+do not propose several speculative rewrites.
 """
 
 QC_TEMPLATE = '''from datetime import datetime
@@ -144,12 +169,176 @@ class UserStrategy(AlphaForgeBaseAlgorithm):
         # For a long-only basket on Daily data, submit a {Symbol: weight} mapping
         # with self.af_rebalance_to_weights(target_weights, "rebalance reason") so
         # reductions fill before new purchases are sized.
+        # Canonical monthly schedule (no `.do(...)` builder exists in LEAN Python):
+        # self.schedule.on(
+        #     self.date_rules.month_start(self.symbols[0]),
+        #     self.time_rules.after_market_open(self.symbols[0], 30),
+        #     self.rebalance,
+        # )
+        # Record transparent signals with exactly (name, one dict payload):
+        # self.af_record_signal(
+        #     "momentum_126d",
+        #     {"symbol": symbol.value, "value": float(momentum)},
+        # )
+        # Record ML training with exactly one dict positional argument:
+        # self.af_record_ml_training({
+        #     "model_type": type(self.model).__name__,
+        #     "training_rows": int(len(X_train)),
+        #     "label_horizon_days": int(self.horizon),
+        #     "random_seed": 42,
+        #     "feature_names": list(self.feature_names),
+        # })
+        # Record every prediction after final Top-K selection, also as one dict:
+        # self.af_record_ml_prediction({
+        #     "symbol": symbol.value,
+        #     "predicted_alpha": float(prediction),
+        #     "rank": int(rank),
+        #     "selected": bool(symbol in selected_symbols),
+        # })
         # Add the strategy's indicators, models, schedules, and state here.
 
     def on_alpha_data(self, data):
         # Implement event-driven strategy logic here when needed.
         pass
 '''
+
+
+AGENT_CAPABILITY_CONTRACT = """ALPHAFORGE AGENT CAPABILITY CONTRACT v2
+
+RUNTIME
+- The entry class is UserStrategy(AlphaForgeBaseAlgorithm).
+- Implement initialize_strategy, not initialize. The base class owns initialize.
+- Never redefine inherited af_* methods. Call the supplied base APIs exactly as shown.
+- Candidate stocks come only from the symbols parameter. SPY is a benchmark/feature,
+  not a candidate unless it is explicitly in symbols.
+- Use Daily data and completed historical bars. Use schedules anchored to a tracked
+  symbol and guard training/trading while self.is_warming_up.
+- LEAN Python ScheduleManager has no `.do(...)` builder. Use exactly one of:
+    self.schedule.on(date_rule, time_rule, self.rebalance)
+    self.schedule.on("MonthlyRebalance", date_rule, time_rule, self.rebalance)
+  Never call self.schedule.on with only date_rule and time_rule.
+
+SHARED SETTINGS
+- Consume symbols, start_date, end_date, initial_cash, benchmark,
+  transaction_cost_bps, and slippage_bps exactly through parameters.
+- Configure every security with af_configure_security and retain Symbols returned by
+  af_track_symbol.
+- Keep long-only gross target <= 0.95. Never lower the inherited cash buffer.
+- Submit basket targets only with af_rebalance_to_weights. Use af_liquidate_all for a
+  full risk-off exit. Do not call set_holdings or liquidate directly.
+
+HISTORY AND LEAN PYTHON
+- Multi-symbol pandas history:
+    frames = af_split_history_frames(
+        self.history(self.symbols, bars, Resolution.DAILY)
+    )
+    frame = frames.get(symbol.value.upper())
+- Single-symbol pandas history:
+    frame = self.history(TradeBar, symbol, bars, Resolution.DAILY)
+- Check frame existence, required columns, row counts, finite values, and positive
+  prices before indexing.
+- Negative pandas iloc positions are valid. For a trailing window use explicit
+  positions such as end_pos = -(gap + 1) and start_pos = end_pos - lookback; do not
+  reject start_pos merely because it is negative. Row-count checks establish safety.
+- Never use self.history[TradeBar](...) as a DataFrame.
+- A TradeBars collection has no end_time. Individual TradeBar objects do.
+- Never assume data[symbol] exists; use contains_key or history-based scheduled logic.
+
+STABLE ML SUBSET
+- Use sklearn estimators with numpy/pandas arrays. Do not use low-level DMatrix,
+  ObjectStore, network, filesystem, subprocess, dynamic import, eval, or exec.
+- Prefer pooled cross-sectional training from DataFrame history over hand-populated
+  RollingWindows.
+- Build labels with negative shift, drop the final horizon rows, and train only on
+  rows whose feature and label timestamps are available by the training cutoff.
+- If the model is not ready at rebalance, train synchronously from historical data.
+  Do not rely on a schedule that can miss the first usable training event.
+- Rank finite predictions and select Top K even when all predictions are negative;
+  a long-only ranker compares relative forecasts, not prediction sign.
+- Evidence methods have strict AlphaForge signatures. They do not accept multiple
+  positional arguments or keyword arguments:
+    self.af_record_ml_training({
+        "model_type": type(self.model).__name__,
+        "training_rows": int(len(X_train)),
+        "label_horizon_days": int(self.horizon),
+        "random_seed": 42,
+        "feature_names": list(self.feature_names),
+    })
+    self.af_record_ml_prediction({
+        "symbol": symbol.value,
+        "predicted_alpha": float(prediction),
+        "rank": int(rank),
+        "selected": bool(symbol in selected_symbols),
+    })
+- Compute final Top-K membership before recording predictions. The `selected` field
+  must equal actual membership in the target portfolio, not merely score validity.
+- Never replace unavailable forward labels with zero. After negative shift, drop the
+  final horizon rows with dropna before model fitting.
+
+TRACK INTEGRITY
+- Traditional: a named non-ML signal must flow into ranking and weights; no fit/predict.
+  Record it with self.af_record_signal(name, one_dict_payload).
+- ML: fitted predictions must flow into ranking and weights.
+- Hybrid: a fitted prediction and an independent named non-ML signal must be combined
+  in the same ranking or target-weight expression. Record the transparent component
+  with self.af_record_signal(name, one_dict_payload).
+
+SELF-CHECK BEFORE OUTPUT
+1. The file parses and defines the required class/method.
+2. Every shared setting is consumed.
+3. History access uses one of the canonical forms above.
+4. Training rows survive rolling/pct_change/shift/dropna losses.
+5. At least one scheduled rebalance can train, rank, create non-zero targets, and call
+   af_rebalance_to_weights under the supplied date range.
+6. No target sum exceeds 0.95 and no direct order API bypasses the shared rebalancer.
+7. The assigned track remains provable from source and recorded runtime evidence.
+8. Every schedule and af_record_* call exactly matches the signatures above; do not
+   describe a fix unless the returned source_code contains it.
+"""
+
+
+TRACK_RECIPES = {
+    "Traditional": """RECOMMENDED TRADITIONAL SHAPE
+- Use a 63/126-day momentum, trend, volatility, or mean-reversion rank.
+- Require sufficient history per symbol, rank all valid scores, select 2–5 names,
+  and assign capped long-only weights.
+- Rebalance monthly unless the thesis specifically requires weekly data.""",
+    "ML": """RECOMMENDED ML SHAPE
+- Use pooled GradientBoostingRegressor or RandomForestRegressor with a fixed seed.
+- Use simple lagged-return/trend/volatility features and a 10–21 day forward-return
+  label. Keep training and inference feature order identical.
+- On monthly rebalance, train if needed, predict every valid symbol, rank predictions
+  without a positive-sign gate, select 2–5 names, and create non-zero targets.""",
+    "Hybrid": """RECOMMENDED HYBRID SHAPE
+- Use pooled GradientBoostingRegressor or RandomForestRegressor with a fixed seed.
+- Combine prediction rank with a transparent 63/126-day momentum, trend, relative
+  strength, or volatility rank. Name both components in recorded prediction evidence.
+- Select 2–5 names monthly and use capped inverse-volatility or equal weights.""",
+}
+
+
+DESIGN_OUTPUT_SCHEMA = {
+    "design": {
+        "strategy_name": "short descriptive name",
+        "track": "Traditional, ML, or Hybrid exactly",
+        "thesis": "one falsifiable strategy thesis",
+        "signals": ["signals actually consumed by the final decision"],
+        "features": ["empty for Traditional; exact model feature order otherwise"],
+        "training_plan": "null for Traditional; time-ordered plan otherwise",
+        "selection_rule": "ranking, Top K, and fallback behavior",
+        "rebalance_rule": "schedule and model-refresh behavior",
+        "risk_controls": ["at least two concrete controls"],
+        "causal_chain": [
+            "market rows",
+            "features or signal",
+            "model/prediction when applicable",
+            "ranking",
+            "target weights",
+            "af_rebalance_to_weights",
+        ],
+    },
+    "source_code": "complete runnable Python source",
+}
 
 
 def load_lean_text(path: Path) -> str:

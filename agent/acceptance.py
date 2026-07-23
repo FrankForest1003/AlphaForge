@@ -29,6 +29,8 @@ class DeepSeekAcceptanceAgent:
         lean_console_log: str,
         behavior_evidence: dict[str, Any],
         acceptance_attempt: int,
+        candidate_design: dict[str, Any] | None = None,
+        preflight_report: dict[str, Any] | None = None,
     ) -> list[dict[str, str]]:
         if track not in TRACK_BRIEFS:
             raise ValueError(f"unknown Designer track: {track}")
@@ -44,9 +46,11 @@ class DeepSeekAcceptanceAgent:
             },
             "critical_log_evidence": critical_log_evidence,
             "run_settings": run_settings,
+            "candidate_design": candidate_design,
+            "deterministic_preflight": preflight_report,
             "source_code": source_code,
             "worker_result": worker_result,
-            "lean_console_log": lean_console_log,
+            "lean_console_log_excerpt": lean_console_log,
             "behavior_evidence": behavior_evidence,
             "acceptance_attempt": acceptance_attempt,
             "output": {
@@ -81,11 +85,13 @@ class DeepSeekAcceptanceAgent:
                 "critical_log_evidence": context["critical_log_evidence"],
                 "source_code": context["source_code"],
                 "worker_result": context["worker_result"],
-                "lean_console_log": context["lean_console_log"],
+                "lean_console_log_excerpt": context["lean_console_log"],
                 "behavior_evidence": context["behavior_evidence"],
                 "acceptance_attempt": context["acceptance_attempt"],
+                "candidate_design": context.get("candidate_design"),
+                "deterministic_preflight": context.get("preflight_report"),
             },
-            max_tokens=12_000,
+            max_tokens=6_000,
             empty_error="DeepSeek acceptance agent returned an empty response",
             invalid_error="DeepSeek acceptance agent did not return valid JSON",
         )

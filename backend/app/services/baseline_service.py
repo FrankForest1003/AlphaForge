@@ -10,7 +10,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from agent import ACCEPTANCE_CHECK_IDS, DESIGNER_TRACKS
+from agent import (
+    ACCEPTANCE_CHECK_IDS,
+    DESIGNER_TRACKS,
+    validate_candidate_source,
+)
 from app.schemas import GuidedHumanStrategy, HumanStrategyRequest, RunSettings
 from app.services.worker_client import LeanWorkerClient
 
@@ -40,6 +44,7 @@ BASELINES = (
 
 TERMINAL_STATES = {"completed", "completed_with_data_gaps", "failed", "timeout"}
 MAX_REPAIR_ATTEMPTS = 3
+MAX_MATCH_ROUNDS = 5
 
 
 CRITICAL_LOG_MARKERS = (
@@ -54,6 +59,18 @@ CRITICAL_LOG_MARKERS = (
     "DATA USAGE:: Failed data requests ",
 )
 
+AGENT_LOG_MARKERS = (
+    "ERROR::",
+    "Runtime Error",
+    "PythonException",
+    "Traceback",
+    " in main.py:",
+    "Scheduled event:",
+    "No method matches given arguments",
+    "STATISTICS::",
+    "DATA USAGE::",
+)
+
 
 def extract_critical_log_evidence(console_log: str) -> str:
     return "\n".join(
@@ -61,6 +78,38 @@ def extract_critical_log_evidence(console_log: str) -> str:
         for line in console_log.splitlines()
         if any(marker in line for marker in CRITICAL_LOG_MARKERS)
     )
+
+
+def compact_console_log(console_log: str, max_chars: int = 16_000) -> str:
+    """Bound Agent context while keeping full logs in the persisted Worker attempt."""
+
+    if max_chars < 1_000:
+        raise ValueError("max_chars must be at least 1000")
+    if len(console_log) <= max_chars:
+        return console_log
+
+    lines = console_log.splitlines()
+    selected_indexes: set[int] = set()
+    for index, line in enumerate(lines):
+        if any(marker in line for marker in AGENT_LOG_MARKERS):
+            selected_indexes.update(
+                range(max(0, index - 2), min(len(lines), index + 3))
+            )
+    selected_indexes.update(range(min(20, len(lines))))
+    selected_indexes.update(range(max(0, len(lines) - 80), len(lines)))
+    excerpt = "\n".join(lines[index] for index in sorted(selected_indexes))
+
+    header = (
+        f"[AlphaForge compact LEAN log: original_chars={len(console_log)}, "
+        f"selected_lines={len(selected_indexes)}]\n"
+    )
+    budget = max_chars - len(header)
+    if len(excerpt) > budget:
+        separator = "\n[... additional selected log text omitted ...]\n"
+        head_chars = int((budget - len(separator)) * 0.55)
+        tail_chars = budget - len(separator) - head_chars
+        excerpt = excerpt[:head_chars] + separator + excerpt[-tail_chars:]
+    return header + excerpt
 
 
 def build_behavior_evidence(details: dict[str, Any]) -> dict[str, Any]:
@@ -73,6 +122,18 @@ def build_behavior_evidence(details: dict[str, Any]) -> dict[str, Any]:
     rebalances = details.get("rebalances")
     if not isinstance(rebalances, list):
         rebalances = []
+    signals = details.get("signals")
+    if not isinstance(signals, list):
+        signals = []
+    ml = details.get("ml")
+    if not isinstance(ml, dict):
+        ml = {}
+    training_runs = ml.get("training_runs")
+    if not isinstance(training_runs, list):
+        training_runs = []
+    predictions = ml.get("predictions")
+    if not isinstance(predictions, list):
+        predictions = []
 
     filled = [
         order
@@ -119,6 +180,17 @@ def build_behavior_evidence(details: dict[str, Any]) -> dict[str, Any]:
         ),
         default=0.0,
     )
+    target_events = [
+        event
+        for event in rebalances
+        if isinstance(event, dict)
+        and isinstance(event.get("payload"), dict)
+        and isinstance(event["payload"].get("targets"), dict)
+        and any(
+            abs(float(value or 0)) > 0
+            for value in event["payload"]["targets"].values()
+        )
+    ]
     return {
         "order_count": len(orders),
         "filled_order_count": len(filled),
@@ -130,6 +202,202 @@ def build_behavior_evidence(details: dict[str, Any]) -> dict[str, Any]:
         "invested_snapshot_count": len(invested_snapshots),
         "max_gross_exposure": max_gross_exposure,
         "rebalance_count": len(rebalances),
+        "nonzero_target_event_count": len(target_events),
+        "signal_event_count": len(signals),
+        "ml_training_run_count": len(training_runs),
+        "ml_prediction_count": len(predictions),
+    }
+
+
+def classify_candidate_failure(
+    *,
+    result: dict[str, Any],
+    console_log: str,
+    behavior_evidence: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Map observed failures to stable repair categories before asking an Agent."""
+
+    text = "\n".join(
+        [
+            str(result.get("status") or ""),
+            " ".join(str(item) for item in result.get("errors", [])),
+            console_log,
+        ]
+    ).lower()
+    if (
+        "no method matches given arguments for on" in text
+        or "required by the on method" in text
+    ):
+        return {
+            "code": "LEAN_SCHEDULE_SIGNATURE",
+            "summary": (
+                "ScheduleManager.on received an unsupported argument shape; pass "
+                "the callback directly in the three- or four-argument overload."
+            ),
+        }
+    if "af_record_ml_" in text and (
+        "takes 2 positional arguments" in text
+        or "unexpected keyword argument" in text
+    ):
+        return {
+            "code": "ALPHAFORGE_EVIDENCE_SIGNATURE",
+            "summary": (
+                "An af_record_ml_* method was not called with its single dict payload."
+            ),
+        }
+    patterns = (
+        (
+            "LEAN_SYMBOL_KEY",
+            ("no key found for either mapped or original key", "keyerror"),
+            "History or Slice access used a Symbol key that was not present.",
+        ),
+        (
+            "XGBOOST_DMATRIX_API",
+            ("dmatrix", "cannot unpack non-iterable dmatrix"),
+            "The strategy used an unstable low-level XGBoost DMatrix path.",
+        ),
+        (
+            "TRADEBARS_COLLECTION_API",
+            ("tradebars", "has no attribute 'end_time'"),
+            "The strategy treated a TradeBars collection as an individual TradeBar.",
+        ),
+        (
+            "BUYING_POWER",
+            ("insufficient buying power",),
+            "Target exposure or order sequencing exceeded available buying power.",
+        ),
+        (
+            "PYTHON_RUNTIME",
+            ("runtime error", "pythonexception"),
+            "LEAN raised a Python runtime exception.",
+        ),
+    )
+    for code, markers, summary in patterns:
+        if all(marker in text for marker in markers):
+            return {"code": code, "summary": summary}
+
+    evidence = behavior_evidence or {}
+    if (
+        result.get("status") == "completed"
+        and int(evidence.get("filled_order_count") or 0) == 0
+    ):
+        if int(evidence.get("ml_training_run_count") or 0) == 0:
+            code = "ZERO_ACTIVITY_NO_MODEL"
+            summary = "The run completed with no fills and no recorded model training."
+        elif int(evidence.get("ml_prediction_count") or 0) == 0:
+            code = "ZERO_ACTIVITY_NO_PREDICTIONS"
+            summary = "The model trained, but no recorded predictions reached selection."
+        elif int(evidence.get("nonzero_target_event_count") or 0) == 0:
+            code = "ZERO_ACTIVITY_NO_TARGETS"
+            summary = "Predictions existed, but no non-zero target event was recorded."
+        else:
+            code = "ZERO_ACTIVITY_NO_ORDERS"
+            summary = "Non-zero targets existed, but no order filled."
+        return {"code": code, "summary": summary}
+    return {
+        "code": "UNCLASSIFIED",
+        "summary": "Use the first concrete error or interrupted evidence stage.",
+    }
+
+
+def build_revision_effectiveness(
+    *,
+    previous: dict[str, Any] | None,
+    summary: dict[str, Any],
+    behavior_evidence: dict[str, Any],
+    preflight: dict[str, Any],
+    report: dict[str, Any],
+) -> dict[str, Any]:
+    if previous is None:
+        return {
+            "kind": "initial_evaluation",
+            "effective": True,
+            "semantic_source_changed": None,
+            "result_changed": None,
+            "trading_behavior_changed": None,
+            "resolved_checks": [],
+            "remaining_failed_checks": [
+                item["id"] for item in report["checks"] if item["status"] == "fail"
+            ],
+            "note": "First accepted-or-reviewed execution for this candidate.",
+        }
+
+    previous_report = previous.get("report") or {}
+    previous_failed = {
+        item.get("id")
+        for item in previous_report.get("checks", [])
+        if item.get("status") == "fail"
+    }
+    current_failed = {
+        item.get("id")
+        for item in report.get("checks", [])
+        if item.get("status") == "fail"
+    }
+    resolved = sorted(previous_failed - current_failed)
+
+    previous_preflight = previous.get("preflight") or {}
+    semantic_changed = (
+        preflight.get("semantic_sha256")
+        != previous_preflight.get("semantic_sha256")
+    )
+
+    summary_keys = (
+        "cagr",
+        "sharpe_ratio",
+        "maximum_drawdown",
+        "end_equity",
+    )
+    result_changed = any(
+        summary.get(key) != (previous.get("summary") or {}).get(key)
+        for key in summary_keys
+    )
+    behavior_keys = (
+        "filled_order_count",
+        "invested_snapshot_count",
+        "max_gross_exposure",
+        "rebalance_count",
+        "nonzero_target_event_count",
+        "signal_event_count",
+        "ml_training_run_count",
+        "ml_prediction_count",
+    )
+    previous_behavior = previous.get("behavior_evidence") or {}
+    behavior_changed = any(
+        behavior_evidence.get(key) != previous_behavior.get(key)
+        for key in behavior_keys
+    )
+
+    needs_execution_change = "A1" in previous_failed
+    effective = bool(
+        semantic_changed
+        and resolved
+        and (not needs_execution_change or behavior_changed or result_changed)
+    )
+    if not semantic_changed:
+        kind = "ineffective"
+        note = "Only comments or formatting changed; executable strategy logic did not."
+    elif result_changed or behavior_changed:
+        kind = "strategy_behavior_change"
+        note = "Executable code and observed trading behavior or results changed."
+    elif resolved:
+        kind = "evidence_only"
+        note = (
+            "The revision improved audit evidence without changing trading results. "
+            "Acceptance is not a profitability award."
+        )
+    else:
+        kind = "ineffective"
+        note = "Executable code changed, but no previously failed check was resolved."
+
+    return {
+        "kind": kind,
+        "effective": effective,
+        "semantic_source_changed": semantic_changed,
+        "result_changed": result_changed,
+        "trading_behavior_changed": behavior_changed,
+        "resolved_checks": resolved,
+        "remaining_failed_checks": sorted(current_failed),
+        "note": note,
     }
 
 
@@ -290,6 +558,7 @@ class ForgeService:
         allowed_symbols: set[str],
         allowed_benchmarks: set[str],
         trace_root: Path | None = None,
+        history_root: Path | None = None,
     ) -> None:
         self.worker = worker
         self.designer = designer
@@ -302,6 +571,11 @@ class ForgeService:
         self.trace_root = trace_root.resolve() if trace_root is not None else None
         if self.trace_root is not None:
             self.trace_root.mkdir(parents=True, exist_ok=True)
+        self.history_root = (
+            history_root.resolve() if history_root is not None else None
+        )
+        if self.history_root is not None:
+            self.history_root.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="forge")
 
@@ -311,6 +585,166 @@ class ForgeService:
         if not run_id.startswith("forge-") or not run_id[6:].isalnum():
             raise ValueError("invalid Forge run_id")
         return self.trace_root / f"{run_id}.json"
+
+    def _history_path(self, run_id: str) -> Path:
+        if self.history_root is None:
+            raise RuntimeError("Forge history persistence is not configured")
+        if not run_id.startswith("forge-") or not run_id[6:].isalnum():
+            raise ValueError("invalid Forge run_id")
+        return self.history_root / f"{run_id}.json"
+
+    @staticmethod
+    def _entry_score(summary: dict[str, Any]) -> tuple[float, float, float]:
+        def metric(name: str, default: float) -> float:
+            value = summary.get(name)
+            return default if value is None else float(value)
+
+        return (
+            metric("sharpe_ratio", float("-inf")),
+            metric("cagr", float("-inf")),
+            -metric("maximum_drawdown", float("inf")),
+        )
+
+    def _history_record(self, run: dict[str, Any]) -> dict[str, Any]:
+        human = run["human"]
+        candidates = run["candidates"]
+        accepted = [
+            item
+            for item in candidates
+            if item.get("state") == "accepted" and item.get("summary")
+        ]
+        best_ai = (
+            max(accepted, key=lambda item: self._entry_score(item["summary"]))
+            if accepted
+            else None
+        )
+        human_ready = human.get("state") == "completed" and bool(human.get("summary"))
+        if not human_ready and best_ai is None:
+            winner = {
+                "side": "none",
+                "label": "No eligible winner",
+                "reason": "Neither side produced an eligible completed strategy.",
+            }
+        elif best_ai is None:
+            winner = {
+                "side": "human",
+                "label": "Human",
+                "reason": "No AI candidate passed acceptance.",
+            }
+        elif not human_ready:
+            winner = {
+                "side": "ai",
+                "label": f"AI · {best_ai['track']}",
+                "reason": "Human strategy did not complete.",
+            }
+        else:
+            human_score = self._entry_score(human["summary"])
+            ai_score = self._entry_score(best_ai["summary"])
+            if human_score >= ai_score:
+                winner = {
+                    "side": "human",
+                    "label": "Human",
+                    "reason": "Higher Sharpe, then CAGR, then lower drawdown tie-break.",
+                }
+            else:
+                winner = {
+                    "side": "ai",
+                    "label": f"AI · {best_ai['track']}",
+                    "reason": "Higher Sharpe, then CAGR, then lower drawdown tie-break.",
+                }
+
+        return {
+            "schema_version": "1.0",
+            "run_id": run["run_id"],
+            "state": run["state"],
+            "stage": run["stage"],
+            "created_at": run["created_at"],
+            "updated_at": run["updated_at"],
+            "settings": copy.deepcopy(run["settings"]),
+            "human": {
+                "state": human.get("state"),
+                "summary": copy.deepcopy(human.get("summary") or {}),
+                "behavior_evidence": copy.deepcopy(
+                    human.get("behavior_evidence") or {}
+                ),
+                "error": human.get("error"),
+            },
+            "candidates": [
+                {
+                    "track": item.get("track"),
+                    "state": item.get("state"),
+                    "summary": copy.deepcopy(item.get("summary") or {}),
+                    "error": item.get("error"),
+                    "repair_attempts": item.get("repair_attempts", 0),
+                    "design": copy.deepcopy(item.get("design")),
+                    "repair_history": copy.deepcopy(
+                        item.get("repair_history") or []
+                    ),
+                    "acceptance_history": copy.deepcopy(
+                        item.get("acceptance_history") or []
+                    ),
+                }
+                for item in candidates
+            ],
+            "winner": winner,
+            "best_ai_track": best_ai.get("track") if best_ai else None,
+        }
+
+    def _persist_history(self, run_id: str) -> None:
+        if self.history_root is None:
+            return
+        with self._lock:
+            run = copy.deepcopy(self._runs[run_id])
+        record = self._history_record(run)
+        path = self._history_path(run_id)
+        temporary = path.with_suffix(f".{threading.get_ident()}.json.tmp")
+        temporary.write_text(
+            json.dumps(record, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        temporary.replace(path)
+
+        def created_at(history_path: Path) -> str:
+            try:
+                return str(
+                    json.loads(history_path.read_text(encoding="utf-8")).get(
+                        "created_at",
+                        "",
+                    )
+                )
+            except (OSError, json.JSONDecodeError):
+                return ""
+
+        history_files = sorted(
+            self.history_root.glob("forge-*.json"),
+            key=created_at,
+            reverse=True,
+        )
+        for stale_path in history_files[MAX_MATCH_ROUNDS:]:
+            stale_path.unlink(missing_ok=True)
+
+    def list_history(self, limit: int = MAX_MATCH_ROUNDS) -> list[dict[str, Any]]:
+        if self.history_root is None:
+            return []
+        records: list[dict[str, Any]] = []
+        for path in self.history_root.glob("forge-*.json"):
+            try:
+                records.append(json.loads(path.read_text(encoding="utf-8")))
+            except (OSError, json.JSONDecodeError):
+                continue
+        records.sort(key=lambda item: item.get("created_at", ""), reverse=True)
+        return records[: max(0, min(limit, MAX_MATCH_ROUNDS))]
+
+    def get_history(self, run_id: str) -> dict[str, Any] | None:
+        if self.history_root is None:
+            return None
+        try:
+            path = self._history_path(run_id)
+        except ValueError:
+            return None
+        if not path.is_file():
+            return None
+        return json.loads(path.read_text(encoding="utf-8"))
 
     def _persist_trace_locked(self, run_id: str) -> None:
         if self.trace_root is None:
@@ -330,7 +764,7 @@ class ForgeService:
         settings: RunSettings,
     ) -> None:
         trace = {
-            "schema_version": "1.0",
+            "schema_version": "1.1",
             "run_id": run_id,
             "created_at": utc_now(),
             "updated_at": utc_now(),
@@ -338,7 +772,22 @@ class ForgeService:
             "error": None,
             "run_settings": settings.model_dump(mode="json"),
             "baseline_results": [],
+            "context_manifest": {
+                "ai_forge_includes": [
+                    "run_settings",
+                    "public_baseline_results",
+                    "agent_capability_contract_v2",
+                ],
+                "ai_forge_excludes": [
+                    "human_source",
+                    "human_guided_parameters",
+                    "human_results",
+                    "human_orders",
+                    "education_output",
+                ],
+            },
             "agent_calls": [],
+            "validation_attempts": [],
             "worker_attempts": [],
         }
         with self._lock:
@@ -421,6 +870,25 @@ class ForgeService:
         }
         with self._lock:
             self._traces[run_id]["worker_attempts"].append(entry)
+            self._traces[run_id]["updated_at"] = utc_now()
+            self._persist_trace_locked(run_id)
+
+    def _record_validation_attempt(
+        self,
+        *,
+        run_id: str,
+        track: str,
+        attempt: int,
+        report: dict[str, Any],
+    ) -> None:
+        entry = {
+            "track": track,
+            "attempt": attempt,
+            "validated_at": utc_now(),
+            "report": copy.deepcopy(report),
+        }
+        with self._lock:
+            self._traces[run_id]["validation_attempts"].append(entry)
             self._traces[run_id]["updated_at"] = utc_now()
             self._persist_trace_locked(run_id)
 
@@ -510,10 +978,14 @@ class ForgeService:
                     "state": "waiting",
                     "worker_run_id": None,
                     "source_code": None,
+                    "design": None,
                     "summary": {},
                     "error": None,
                     "usage": {},
                     "repair_attempts": 0,
+                    "preflight": None,
+                    "validation_history": [],
+                    "repair_history": [],
                     "acceptance": None,
                     "acceptance_history": [],
                 }
@@ -532,7 +1004,14 @@ class ForgeService:
     def get(self, run_id: str) -> dict[str, Any] | None:
         with self._lock:
             run = self._runs.get(run_id)
-            return copy.deepcopy(run) if run is not None else None
+            result = copy.deepcopy(run) if run is not None else None
+        if (
+            result is not None
+            and result.get("state") in {"completed", "failed"}
+            and self.history_root is not None
+        ):
+            self._persist_history(run_id)
+        return result
 
     def _change(self, run_id: str, **values: Any) -> None:
         with self._lock:
@@ -667,20 +1146,136 @@ class ForgeService:
         generated: dict[str, Any],
     ) -> None:
         source_code = generated["source_code"]
+        design = generated.get("design")
         usage = self._add_usage({}, generated.get("usage", {}))
+        validation_history: list[dict[str, Any]] = []
+        repair_history: list[dict[str, Any]] = []
         self._change_item(
             run_id,
             "candidates",
             index,
             state="submitting",
             source_code=source_code,
+            design=design,
             usage=usage,
             repair_attempts=0,
+            preflight=None,
+            validation_history=[],
+            repair_history=[],
             error=None,
         )
 
         acceptance_history: list[dict[str, Any]] = []
         for repair_attempt in range(MAX_REPAIR_ATTEMPTS + 1):
+            preflight = validate_candidate_source(source_code, track)
+            validation_history.append(
+                {
+                    "attempt": repair_attempt,
+                    **copy.deepcopy(preflight),
+                }
+            )
+            self._record_validation_attempt(
+                run_id=run_id,
+                track=track,
+                attempt=repair_attempt,
+                report=preflight,
+            )
+            self._change_item(
+                run_id,
+                "candidates",
+                index,
+                preflight=preflight,
+                validation_history=copy.deepcopy(validation_history),
+            )
+            if preflight["status"] != "passed":
+                messages = [
+                    f"{item['code']}: {item['message']}"
+                    for item in preflight["diagnostics"]
+                ]
+                repair_reason = "; ".join(messages)
+                if repair_attempt == MAX_REPAIR_ATTEMPTS:
+                    self._change_item(
+                        run_id,
+                        "candidates",
+                        index,
+                        state="failed",
+                        error=repair_reason,
+                    )
+                    return
+                next_attempt = repair_attempt + 1
+                self._change(
+                    run_id,
+                    stage=(
+                        f"Repairing {track} candidate static validation "
+                        f"· attempt {next_attempt}"
+                    ),
+                )
+                self._change_item(
+                    run_id,
+                    "candidates",
+                    index,
+                    state="repairing",
+                    repair_attempts=next_attempt,
+                    error=repair_reason,
+                )
+                try:
+                    repaired = self.repairer.repair(
+                        track=track,
+                        run_settings=settings.model_dump(mode="json"),
+                        baseline_results=baseline_results,
+                        source_code=source_code,
+                        worker_result={
+                            "status": "static_validation_failed",
+                            "errors": messages,
+                        },
+                        lean_console_log=repair_reason,
+                        repair_attempt=next_attempt,
+                        repair_trigger="static_validation",
+                        acceptance_report=None,
+                        validation_report=preflight,
+                    )
+                    self._record_agent_call(
+                        run_id=run_id,
+                        track=track,
+                        stage="repair",
+                        attempt=next_attempt,
+                        trace=repaired.get("trace"),
+                    )
+                except Exception as exc:
+                    self._record_agent_call(
+                        run_id=run_id,
+                        track=track,
+                        stage="repair",
+                        attempt=next_attempt,
+                        trace=getattr(exc, "trace", None),
+                        error=exc,
+                    )
+                    raise
+                source_code = repaired["source_code"]
+                usage = self._add_usage(usage, repaired.get("usage", {}))
+                repair_history.append(
+                    {
+                        "attempt": next_attempt,
+                        "trigger": "static_validation",
+                        "classification": "STATIC_VALIDATION",
+                        "change_summary": repaired.get("change_summary", []),
+                        "first_interrupted_stage": repaired.get(
+                            "first_interrupted_stage"
+                        ),
+                    }
+                )
+                self._change_item(
+                    run_id,
+                    "candidates",
+                    index,
+                    state="submitting",
+                    source_code=source_code,
+                    usage=usage,
+                    repair_history=copy.deepcopy(repair_history),
+                    error=None,
+                )
+                continue
+
             submitted = self.worker.submit_custom(source_code, parameters)
             worker_run_id = submitted["run_id"]
             self._record_worker_attempt(
@@ -712,6 +1307,10 @@ class ForgeService:
                     behavior_evidence = build_behavior_evidence(
                         self.worker.details(worker_run_id)
                     )
+                    acceptance_console_log = compact_console_log(
+                        console_log,
+                        max_chars=12_000,
+                    )
                 except Exception as exc:
                     self._update_worker_attempt(
                         run_id=run_id,
@@ -740,9 +1339,11 @@ class ForgeService:
                         critical_log_evidence=extract_critical_log_evidence(console_log),
                         source_code=source_code,
                         worker_result=result,
-                        lean_console_log=console_log,
+                        lean_console_log=acceptance_console_log,
                         behavior_evidence=behavior_evidence,
                         acceptance_attempt=acceptance_attempt,
+                        candidate_design=design,
+                        preflight_report=preflight,
                     )
                     self._record_agent_call(
                         run_id=run_id,
@@ -781,12 +1382,64 @@ class ForgeService:
                         error={"type": type(exc).__name__, "message": str(exc)},
                     )
                     raise
+                previous_acceptance = (
+                    acceptance_history[-1] if acceptance_history else None
+                )
+                revision_effectiveness = build_revision_effectiveness(
+                    previous=previous_acceptance,
+                    summary=result.get("summary", {}),
+                    behavior_evidence=behavior_evidence,
+                    preflight=preflight,
+                    report=report,
+                )
+                if (
+                    report["decision"] == "accept"
+                    and previous_acceptance is not None
+                    and not revision_effectiveness["effective"]
+                ):
+                    report = copy.deepcopy(report)
+                    deterministic_check = next(
+                        item for item in report["checks"] if item["id"] == "A2"
+                    )
+                    deterministic_check["status"] = "fail"
+                    deterministic_check["evidence"] = [
+                        revision_effectiveness["note"],
+                        "semantic_source_changed="
+                        + str(
+                            revision_effectiveness["semantic_source_changed"]
+                        ).lower(),
+                        "trading_behavior_changed="
+                        + str(
+                            revision_effectiveness["trading_behavior_changed"]
+                        ).lower(),
+                    ]
+                    deterministic_check["reason"] = (
+                        "A claimed repair must materially change executable code and "
+                        "resolve an observed failed stage."
+                    )
+                    report["decision"] = "revise"
+                    report["repair_request"] = (
+                        "The last revision was deterministically ineffective. Change "
+                        "the executable logic or structured evidence that caused the "
+                        "previous failed check; comments and formatting do not count."
+                    )
+                    revision_effectiveness = build_revision_effectiveness(
+                        previous=previous_acceptance,
+                        summary=result.get("summary", {}),
+                        behavior_evidence=behavior_evidence,
+                        preflight=preflight,
+                        report=report,
+                    )
                 acceptance_history.append(
                     {
                         "attempt": len(acceptance_history) + 1,
                         "worker_run_id": worker_run_id,
+                        "summary": copy.deepcopy(result.get("summary", {})),
                         "behavior_evidence": behavior_evidence,
+                        "preflight": preflight,
                         "report": report,
+                        "revision_effectiveness": revision_effectiveness,
+                        "source_code": source_code,
                         "usage": evaluated.get("usage", {}),
                     }
                 )
@@ -831,6 +1484,20 @@ class ForgeService:
                 repair_trigger = "acceptance_revision"
                 acceptance_report = report
                 repair_reason = report["repair_request"]
+                diagnostic_report = {
+                    "preflight": preflight,
+                    "failure_classification": classify_candidate_failure(
+                        result=result,
+                        console_log=console_log,
+                        behavior_evidence=behavior_evidence,
+                    ),
+                    "behavior_evidence": behavior_evidence,
+                    "failed_checks": [
+                        check["id"]
+                        for check in report["checks"]
+                        if check["status"] == "fail"
+                    ],
+                }
             else:
                 try:
                     console_log = self.worker.log(worker_run_id)
@@ -859,6 +1526,13 @@ class ForgeService:
                     return
                 repair_trigger = "runtime_failure"
                 acceptance_report = None
+                diagnostic_report = {
+                    "preflight": preflight,
+                    "failure_classification": classify_candidate_failure(
+                        result=result,
+                        console_log=console_log,
+                    ),
+                }
 
             next_attempt = repair_attempt + 1
             self._change(
@@ -880,10 +1554,14 @@ class ForgeService:
                     baseline_results=baseline_results,
                     source_code=source_code,
                     worker_result=result,
-                    lean_console_log=console_log,
+                    lean_console_log=compact_console_log(
+                        console_log,
+                        max_chars=20_000,
+                    ),
                     repair_attempt=next_attempt,
                     repair_trigger=repair_trigger,
                     acceptance_report=acceptance_report,
+                    validation_report=diagnostic_report,
                 )
                 self._record_agent_call(
                     run_id=run_id,
@@ -904,6 +1582,19 @@ class ForgeService:
                 raise
             source_code = repaired["source_code"]
             usage = self._add_usage(usage, repaired.get("usage", {}))
+            repair_history.append(
+                {
+                    "attempt": next_attempt,
+                    "trigger": repair_trigger,
+                    "classification": diagnostic_report[
+                        "failure_classification"
+                    ]["code"],
+                    "change_summary": repaired.get("change_summary", []),
+                    "first_interrupted_stage": repaired.get(
+                        "first_interrupted_stage"
+                    ),
+                }
+            )
             self._change_item(
                 run_id,
                 "candidates",
@@ -911,6 +1602,7 @@ class ForgeService:
                 state="submitting",
                 source_code=source_code,
                 usage=usage,
+                repair_history=copy.deepcopy(repair_history),
                 error=None,
             )
 
@@ -1002,6 +1694,7 @@ class ForgeService:
                             index,
                             state="generated",
                             source_code=generated["source_code"],
+                            design=generated.get("design"),
                             usage=self._add_usage({}, generated.get("usage", {})),
                             error=None,
                         )
@@ -1054,3 +1747,5 @@ class ForgeService:
         except Exception as exc:
             self._change(run_id, state="failed", stage="Stopped", error=str(exc))
             self._trace_change(run_id, state="failed", error=str(exc))
+        finally:
+            self._persist_history(run_id)

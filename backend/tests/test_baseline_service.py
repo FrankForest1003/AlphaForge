@@ -9,19 +9,86 @@ from types import SimpleNamespace
 import pytest
 
 from agent import DeepSeekAcceptanceAgent, DeepSeekDesigner, DeepSeekRepairAgent
-from agent.client import DeepSeekCallError
+from agent.client import DeepSeekCallError, recover_known_payload
 from app.schemas import GuidedHumanStrategy, HumanStrategyRequest, RunSettings
 from app.services.baseline_service import (
     BASELINES,
     ForgeService,
     build_guided_human_source,
     build_behavior_evidence,
+    build_revision_effectiveness,
+    classify_candidate_failure,
+    compact_console_log,
     extract_critical_log_evidence,
     validate_acceptance_report,
 )
 
 
 SYMBOLS = {"MSFT", "AAPL", "NVDA", "GOOGL", "AMZN"}
+
+
+def fake_design(track):
+    return {
+        "strategy_name": f"Test {track}",
+        "track": track,
+        "thesis": "A deterministic test thesis.",
+        "signals": ["momentum"] if track != "ML" else ["model prediction"],
+        "features": [] if track == "Traditional" else ["ret_21"],
+        "training_plan": None if track == "Traditional" else "Fit on prior rows.",
+        "selection_rule": "Rank valid values and select the top two.",
+        "rebalance_rule": "Rebalance monthly.",
+        "risk_controls": ["95% gross cap", "long-only weights"],
+        "causal_chain": [
+            "market rows",
+            "signal",
+            "ranking",
+            "target weights",
+            "af_rebalance_to_weights",
+        ],
+    }
+
+
+def fake_candidate_source(track):
+    ml_lines = ""
+    if track in {"ML", "Hybrid"}:
+        ml_lines = """
+        self.model.fit([[0.0], [1.0]], [0.0, 1.0])
+        prediction = self.model.predict([[0.5]])[0]
+        self.af_record_ml_training({
+            "model_type": "Test",
+            "training_rows": 2,
+            "label_horizon_days": 1,
+            "random_seed": 42,
+            "feature_names": ["ret_21"],
+        })
+        self.af_record_ml_prediction(
+            {"symbol": "MSFT", "predicted_alpha": prediction, "rank": 1, "selected": True}
+        )
+"""
+    transparent = ""
+    if track in {"Traditional", "Hybrid"}:
+        transparent = (
+            "momentum = 1.0\n"
+            '        self.af_record_signal("momentum", {"symbol": "MSFT", "value": momentum})\n'
+        )
+    return f'''from AlgorithmImports import *
+from alphaforge_base import AlphaForgeBaseAlgorithm
+
+
+class UserStrategy(AlphaForgeBaseAlgorithm):
+    def initialize_strategy(self):
+        settings = "symbols start_date end_date initial_cash benchmark transaction_cost_bps slippage_bps"
+        self.af_configure_security(None)
+        self.af_track_symbol(None)
+{ml_lines.rstrip()}
+
+    def rebalance(self):
+        {transparent.rstrip()}
+        self.af_rebalance_to_weights({{}}, "test")
+
+    def on_alpha_data(self, data):
+        pass
+'''
 
 
 def fake_agent_trace(label):
@@ -95,7 +162,8 @@ class FakeDesigner:
     def generate(self, *, track, run_settings, baseline_results):
         self.calls.append((track, run_settings, baseline_results))
         return {
-            "source_code": f"class UserStrategy:  # {track}\n    pass\n",
+            "design": fake_design(track),
+            "source_code": fake_candidate_source(track),
             "usage": {"total_tokens": 1},
             "trace": fake_agent_trace(f"designer-{track}"),
         }
@@ -117,6 +185,7 @@ class FakeRepairer:
         repair_attempt,
         repair_trigger,
         acceptance_report,
+        validation_report=None,
     ):
         self.calls.append(
             {
@@ -126,10 +195,15 @@ class FakeRepairer:
                 "lean_console_log": lean_console_log,
                 "repair_trigger": repair_trigger,
                 "acceptance_report": acceptance_report,
+                "validation_report": validation_report,
             }
         )
         return {
-            "source_code": source_code + f"# repaired {repair_attempt}\n",
+            "source_code": (
+                source_code
+                + f"\nREPAIR_REVISION_{repair_attempt} = {repair_attempt}\n"
+                + f"# repaired {repair_attempt}\n"
+            ),
             "usage": {
                 "prompt_tokens": 10,
                 "completion_tokens": 2,
@@ -240,7 +314,7 @@ def wait_for(service, run_id):
 
 
 def test_run_settings_have_only_shared_market_and_execution_fields():
-    value = settings(symbols=["MSFT"])
+    value = settings()
     assert set(value.model_dump()) == {
         "symbols",
         "start_date",
@@ -252,6 +326,8 @@ def test_run_settings_have_only_shared_market_and_execution_fields():
     }
     assert "top_k" not in value.worker_parameters()
     assert "random_seed" not in value.worker_parameters()
+    with pytest.raises(ValueError, match="at least five"):
+        settings(symbols=["MSFT"])
 
 
 def test_guided_human_builds_complete_source_from_four_choices():
@@ -282,7 +358,8 @@ def test_three_designer_generation_requests_start_in_parallel():
             self.calls.append((track, run_settings, baseline_results))
             self.barrier.wait(timeout=2)
             return {
-                "source_code": f"class UserStrategy:  # {track}\n    pass\n",
+                "design": fake_design(track),
+                "source_code": fake_candidate_source(track),
                 "usage": {"total_tokens": 1},
             }
 
@@ -348,7 +425,10 @@ def test_forge_rejects_stock_outside_local_catalog():
         allowed_benchmarks={"SPY"},
     )
     with pytest.raises(ValueError, match="not available"):
-        service.create(settings(symbols=["TSLA"]), human_code())
+        service.create(
+            settings(symbols=["MSFT", "AAPL", "NVDA", "GOOGL", "TSLA"]),
+            human_code(),
+        )
 
 
 def test_failed_candidate_is_repaired_with_complete_log_and_rerun():
@@ -406,10 +486,15 @@ def test_candidate_stops_after_three_failed_repairs():
     assert all(item["repair_attempts"] == 3 for item in completed["candidates"])
 
 
-def test_deepseek_prompt_keeps_static_text_first_and_requests_only_source_code():
+def test_deepseek_prompt_uses_compact_contract_and_structured_design():
     class Completions:
         request = None
-        content = json.dumps({"source_code": "class UserStrategy:\n    pass\n"})
+        content = json.dumps(
+            {
+                "design": fake_design("ML"),
+                "source_code": fake_candidate_source("ML"),
+            }
+        )
 
         def create(self, **request):
             self.request = request
@@ -444,20 +529,28 @@ def test_deepseek_prompt_keeps_static_text_first_and_requests_only_source_code()
 
     request = completions.request
     prompt = request["messages"][1]["content"]
-    assert prompt.index("ALPHAFORGE QUANTCONNECT PYTHON TEMPLATE") < prompt.index(
-        "OFFICIAL QUANTCONNECT WRITING ALGORITHMS DOCUMENTATION"
+    assert prompt.index("ALPHAFORGE AGENT CAPABILITY CONTRACT") < prompt.index(
+        "ALPHAFORGE QUANTCONNECT PYTHON TEMPLATE"
     )
-    assert prompt.index("OFFICIAL QUANTCONNECT WRITING ALGORITHMS DOCUMENTATION") < prompt.index(
+    assert prompt.index("ALPHAFORGE QUANTCONNECT PYTHON TEMPLATE") < prompt.index(
         "DESIGNER REQUEST"
     )
-    assert "FULL ORIGINAL DOCUMENT TEXT" in prompt
+    assert "FULL ORIGINAL DOCUMENT TEXT" not in prompt
+    assert "OFFICIAL QUANTCONNECT WRITING ALGORITHMS DOCUMENTATION" not in prompt
+    assert len(prompt) < 20_000
+    assert '"design"' in prompt
     assert '"source_code"' in prompt
     assert "af_rebalance_to_weights" in prompt
+    assert "exactly one dict positional argument" in prompt
+    assert "LEAN Python ScheduleManager has no `.do(...)` builder" in prompt
+    assert '"label_horizon_days"' in prompt
+    assert '"selected": bool(symbol in selected_symbols)' in prompt
     assert "max_position_weight" not in prompt
     assert "contract_hash" not in prompt
     assert "unassisted" not in prompt.lower()
     assert request["extra_body"] == {"thinking": {"type": "enabled"}}
     assert result["usage"]["total_tokens"] == 120
+    assert result["design"]["track"] == "ML"
     assert "messages" not in result["trace"]["request_parameters"]
     assert result["trace"]["dynamic_context"]["designer_track"] == "ML"
     assert result["trace"]["dynamic_context"]["run_settings"]["symbols"] == [
@@ -480,6 +573,13 @@ def test_deepseek_prompt_keeps_static_text_first_and_requests_only_source_code()
         lean_documentation="FULL ORIGINAL DOCUMENT TEXT",
         client=client,
     )
+    completions.content = json.dumps(
+        {
+            "change_summary": ["Corrected the observed runtime API call."],
+            "first_interrupted_stage": "runtime API invocation",
+            "source_code": "REPAIRED COMPLETE SOURCE",
+        }
+    )
     repairer.repair(
         track="ML",
         run_settings=settings().model_dump(mode="json"),
@@ -492,15 +592,17 @@ def test_deepseek_prompt_keeps_static_text_first_and_requests_only_source_code()
         acceptance_report=acceptance_report("revise", "A2"),
     )
     repair_prompt = completions.request["messages"][1]["content"]
-    assert repair_prompt.index("ALPHAFORGE QUANTCONNECT PYTHON TEMPLATE") < repair_prompt.index(
-        "OFFICIAL QUANTCONNECT WRITING ALGORITHMS DOCUMENTATION"
+    assert repair_prompt.index("ALPHAFORGE AGENT CAPABILITY CONTRACT") < repair_prompt.index(
+        "ALPHAFORGE QUANTCONNECT PYTHON TEMPLATE"
     )
-    assert repair_prompt.index("OFFICIAL QUANTCONNECT WRITING ALGORITHMS DOCUMENTATION") < repair_prompt.index(
+    assert repair_prompt.index("ALPHAFORGE QUANTCONNECT PYTHON TEMPLATE") < repair_prompt.index(
         "REPAIR REQUEST"
     )
-    assert "FULL ORIGINAL DOCUMENT TEXT" in repair_prompt
+    assert "FULL ORIGINAL DOCUMENT TEXT" not in repair_prompt
+    assert len(repair_prompt) < 30_000
     assert "BROKEN COMPLETE SOURCE" in repair_prompt
     assert "FULL LEAN CONSOLE LOG" in repair_prompt
+    assert '"lean_console_log_excerpt"' in repair_prompt
     assert "af_rebalance_to_weights" in repair_prompt
     assert "max_position_weight" not in repair_prompt
     assert '"repair_attempt": 1' in repair_prompt
@@ -535,6 +637,7 @@ def test_deepseek_prompt_keeps_static_text_first_and_requests_only_source_code()
     )
     assert "COMPLETE CANDIDATE SOURCE" in acceptance_prompt
     assert "COMPLETE LEAN LOG" in acceptance_prompt
+    assert '"lean_console_log_excerpt"' in acceptance_prompt
     assert "STATISTICS:: Total Orders 1" in acceptance_prompt
     assert acceptance_prompt.index('"behavior_gate"') < acceptance_prompt.index(
         '"source_code"'
@@ -577,9 +680,57 @@ def test_deepseek_invalid_json_keeps_raw_response_for_replay():
     trace = raised.value.trace
     assert trace["response_content"] == "not json"
     assert trace["raw_response"]["id"] == "response-id"
-    assert trace["usage"]["total_tokens"] == 9
+    assert trace["usage"]["total_tokens"] == 18
+    assert len(trace["attempts"]) == 2
+    assert trace["attempts"][1]["thinking_enabled"] is False
     assert trace["error"]["type"] == "invalid_json"
     assert "test-key" not in json.dumps(trace)
+
+
+def test_designer_recovers_complete_source_when_only_json_closure_is_missing():
+    design = fake_design("ML")
+    source = fake_candidate_source("ML")
+    malformed = (
+        '{"design":'
+        + json.dumps(design)
+        + ',"source_code":'
+        + json.dumps(source)[:-1]
+    )
+
+    class Completions:
+        calls = 0
+
+        def create(self, **request):
+            self.calls += 1
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content=malformed))],
+                usage=SimpleNamespace(
+                    prompt_tokens=100,
+                    completion_tokens=50,
+                    total_tokens=150,
+                ),
+            )
+
+    completions = Completions()
+    designer = DeepSeekDesigner(
+        api_key="test-key",
+        base_url="https://api.deepseek.com",
+        model="deepseek-v4-pro",
+        thinking_enabled=False,
+        lean_documentation="FULL DOCUMENT",
+        client=SimpleNamespace(chat=SimpleNamespace(completions=completions)),
+    )
+    generated = designer.generate(
+        track="ML",
+        run_settings=settings().model_dump(mode="json"),
+        baseline_results=[],
+    )
+
+    assert generated["source_code"] == source.strip()
+    assert generated["design"]["track"] == "ML"
+    assert completions.calls == 1
+    assert generated["trace"]["attempts"][0]["parse_mode"] == "recovered_known_payload"
+    assert recover_known_payload(malformed)["source_code"] == source
 
 
 def test_forge_trace_persists_every_agent_call_and_worker_source(tmp_path):
@@ -598,7 +749,10 @@ def test_forge_trace_persists_every_agent_call_and_worker_source(tmp_path):
     trace = service.get_trace(completed["run_id"])
 
     assert trace["state"] == "completed"
+    assert trace["schema_version"] == "1.1"
+    assert "human_source" in trace["context_manifest"]["ai_forge_excludes"]
     assert len(trace["agent_calls"]) == 12
+    assert len(trace["validation_attempts"]) == 12
     assert len(trace["worker_attempts"]) == 12
     traditional = [
         item for item in trace["worker_attempts"] if item["track"] == "Traditional"
@@ -617,6 +771,7 @@ def test_forge_trace_persists_every_agent_call_and_worker_source(tmp_path):
     persisted_text = persisted_path.read_text(encoding="utf-8")
     assert "API_KEY" not in persisted_text
     assert "test-key" not in persisted_text
+    assert "class UserStrategy:\\n    pass" not in persisted_text
 
     reloaded = ForgeService(
         worker=FakeWorker(),
@@ -643,6 +798,10 @@ def test_behavior_evidence_uses_filled_orders_and_invested_snapshots():
         "invested_snapshot_count": 1,
         "max_gross_exposure": 0.5,
         "rebalance_count": 1,
+        "nonzero_target_event_count": 0,
+        "signal_event_count": 0,
+        "ml_training_run_count": 0,
+        "ml_prediction_count": 0,
     }
 
 
@@ -661,6 +820,99 @@ def test_critical_log_evidence_is_verbatim_and_focused():
         "STATISTICS:: End Equity 100000\n"
         "DATA USAGE:: Failed data requests 0"
     )
+
+
+def test_agent_log_context_is_bounded_but_full_worker_log_is_not_mutated():
+    console_log = (
+        "initialization line\n"
+        + ("Debug: repeated per-bar diagnostic\n" * 20_000)
+        + "ERROR:: PythonException: concrete failure\n"
+        + "  in main.py: line 123\n"
+        + "STATISTICS:: Total Orders 0\n"
+    )
+    compact = compact_console_log(console_log, max_chars=4_000)
+
+    assert len(compact) <= 4_000
+    assert "original_chars=" in compact
+    assert "concrete failure" in compact
+    assert "main.py: line 123" in compact
+    assert "STATISTICS:: Total Orders 0" in compact
+    assert len(console_log) > len(compact)
+
+
+@pytest.mark.parametrize(
+    ("message", "expected_code"),
+    [
+        (
+            "No method matches given arguments for on: "
+            "(FuncDateRule, FuncTimeRule)",
+            "LEAN_SCHEDULE_SIGNATURE",
+        ),
+        (
+            "AlphaForgeBaseAlgorithm.af_record_ml_training() takes 2 "
+            "positional arguments but 6 were given",
+            "ALPHAFORGE_EVIDENCE_SIGNATURE",
+        ),
+        (
+            "AlphaForgeBaseAlgorithm.af_record_ml_prediction() got an "
+            "unexpected keyword argument 'symbol'",
+            "ALPHAFORGE_EVIDENCE_SIGNATURE",
+        ),
+    ],
+)
+def test_known_runtime_contract_failures_have_stable_classifications(
+    message,
+    expected_code,
+):
+    classified = classify_candidate_failure(
+        result={"status": "failed", "errors": [message]},
+        console_log=message,
+    )
+    assert classified["code"] == expected_code
+
+
+def test_revision_effectiveness_distinguishes_evidence_only_from_no_op():
+    previous = {
+        "summary": {
+            "cagr": 0.1,
+            "sharpe_ratio": 1.0,
+            "maximum_drawdown": 0.2,
+            "end_equity": 110_000,
+        },
+        "behavior_evidence": {
+            "filled_order_count": 20,
+            "invested_snapshot_count": 100,
+            "max_gross_exposure": 0.9,
+            "rebalance_count": 12,
+            "nonzero_target_event_count": 12,
+            "signal_event_count": 12,
+            "ml_training_run_count": 4,
+            "ml_prediction_count": 60,
+        },
+        "preflight": {"semantic_sha256": "before"},
+        "report": acceptance_report("revise", "A2"),
+    }
+    report = acceptance_report()
+    evidence_only = build_revision_effectiveness(
+        previous=previous,
+        summary=previous["summary"],
+        behavior_evidence=previous["behavior_evidence"],
+        preflight={"semantic_sha256": "after"},
+        report=report,
+    )
+    no_op = build_revision_effectiveness(
+        previous=previous,
+        summary=previous["summary"],
+        behavior_evidence=previous["behavior_evidence"],
+        preflight={"semantic_sha256": "before"},
+        report=report,
+    )
+
+    assert evidence_only["effective"] is True
+    assert evidence_only["kind"] == "evidence_only"
+    assert evidence_only["resolved_checks"] == ["A2"]
+    assert no_op["effective"] is False
+    assert no_op["kind"] == "ineffective"
 
 
 def test_acceptance_revision_enters_repair_then_reruns_and_revalidates():
@@ -687,6 +939,34 @@ def test_acceptance_revision_enters_repair_then_reruns_and_revalidates():
     assert repairer.calls[0]["repair_trigger"] == "acceptance_revision"
     assert repairer.calls[0]["acceptance_report"]["checks"][1]["id"] == "A2"
     assert len(worker.custom_submissions) == 5
+
+
+def test_history_keeps_latest_five_pk_rounds(tmp_path):
+    history_root = tmp_path / "history"
+    service = ForgeService(
+        worker=FakeWorker(),
+        designer=FakeDesigner(),
+        repairer=FakeRepairer(),
+        acceptance_agent=FakeAcceptanceAgent(),
+        allowed_symbols=SYMBOLS,
+        allowed_benchmarks={"SPY"},
+        trace_root=tmp_path / "traces",
+        history_root=history_root,
+    )
+    created_ids = []
+    for _ in range(6):
+        created = service.create(settings(), human_code())
+        completed = wait_for(service, created["run_id"])
+        created_ids.append(completed["run_id"])
+
+    history = service.list_history()
+    assert len(history) == 5
+    assert created_ids[0] not in {item["run_id"] for item in history}
+    assert created_ids[-1] in {item["run_id"] for item in history}
+    latest = service.get_history(created_ids[-1])
+    assert latest["winner"]["side"] in {"human", "ai"}
+    assert "source_code" not in latest["human"]
+    assert len(list(history_root.glob("forge-*.json"))) == 5
 
 
 def test_a1_cannot_accept_zero_activity_even_when_agent_says_accept():

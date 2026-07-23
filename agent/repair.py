@@ -4,7 +4,13 @@ import json
 from typing import Any
 
 from agent.client import DeepSeekCallError, DeepSeekJSONClient
-from agent.prompts import QC_TEMPLATE, REPAIR_SYSTEM_PROMPT, TRACK_BRIEFS
+from agent.prompts import (
+    AGENT_CAPABILITY_CONTRACT,
+    QC_TEMPLATE,
+    REPAIR_SYSTEM_PROMPT,
+    TRACK_BRIEFS,
+    TRACK_RECIPES,
+)
 
 
 class DeepSeekRepairAgent:
@@ -24,10 +30,15 @@ class DeepSeekRepairAgent:
         repair_attempt: int,
         repair_trigger: str,
         acceptance_report: dict[str, Any] | None = None,
+        validation_report: dict[str, Any] | None = None,
     ) -> list[dict[str, str]]:
         if track not in TRACK_BRIEFS:
             raise ValueError(f"unknown Designer track: {track}")
-        if repair_trigger not in {"runtime_failure", "acceptance_revision"}:
+        if repair_trigger not in {
+            "static_validation",
+            "runtime_failure",
+            "acceptance_revision",
+        }:
             raise ValueError(f"unknown repair trigger: {repair_trigger}")
         request = {
             "designer_track": track,
@@ -37,26 +48,30 @@ class DeepSeekRepairAgent:
             "baseline_results": baseline_results,
             "submitted_source_code": source_code,
             "worker_result": worker_result,
-            "lean_console_log": lean_console_log,
+            "lean_console_log_excerpt": lean_console_log,
             "repair_trigger": repair_trigger,
-            "output": {"source_code": "complete repaired runnable Python source"},
+            "validation_report": validation_report,
+            "output_schema": {
+                "change_summary": [
+                    "one to three specific changes tied to observed evidence"
+                ],
+                "first_interrupted_stage": "the single stage repaired",
+                "source_code": "complete repaired runnable Python source",
+            },
         }
         if acceptance_report is not None:
             request["acceptance_report"] = acceptance_report
         prompt = (
+            f"{AGENT_CAPABILITY_CONTRACT}\n\n"
+            f"{TRACK_RECIPES[track]}\n\n"
             "ALPHAFORGE QUANTCONNECT PYTHON TEMPLATE\n\n"
             f"{QC_TEMPLATE}\n\n"
-            "OFFICIAL QUANTCONNECT WRITING ALGORITHMS DOCUMENTATION\n\n"
-            f"{self.lean_documentation}\n\n"
             "REPAIR REQUEST\n\n"
             f"{json.dumps(request, ensure_ascii=False, indent=2)}\n\n"
-            "Return the complete repaired file, not a patch. Keep UserStrategy and "
-            "AlphaForgeBaseAlgorithm. Preserve the assigned strategy idea and all seven "
-            "shared run settings. Inspect the entire source for defects related to the "
-            "observed failure. Use DataFrame history calls consistently, keep total "
-            "absolute target weights at or below self.target_gross, and do not reduce the "
-            "inherited cash buffer. Use af_rebalance_to_weights for long-only Daily "
-            "basket rebalances so reductions fill before purchases are sized."
+            "Return the complete repaired file, not a patch. Tie every change to the "
+            "validation diagnostic, LEAN error, or failed acceptance check supplied. "
+            "Do not redesign unrelated working parts and do not claim a fix that is "
+            "absent from source_code."
         )
         if acceptance_report is not None:
             prompt += (
@@ -77,15 +92,17 @@ class DeepSeekRepairAgent:
             "baseline_results": context["baseline_results"],
             "submitted_source_code": context["source_code"],
             "worker_result": context["worker_result"],
-            "lean_console_log": context["lean_console_log"],
+            "lean_console_log_excerpt": context["lean_console_log"],
             "repair_trigger": context["repair_trigger"],
         }
         if context.get("acceptance_report") is not None:
             trace_context["acceptance_report"] = context["acceptance_report"]
+        if context.get("validation_report") is not None:
+            trace_context["validation_report"] = context["validation_report"]
         completed = self.deepseek.complete_json(
             self.messages(**context),
             trace_context=trace_context,
-            max_tokens=16_000,
+            max_tokens=12_000,
             empty_error="DeepSeek returned an empty response",
             invalid_error="DeepSeek did not return valid JSON",
         )
@@ -101,8 +118,32 @@ class DeepSeekRepairAgent:
                 "DeepSeek returned empty source_code",
                 trace=completed["trace"],
             )
+        change_summary = payload.get("change_summary")
+        if (
+            not isinstance(change_summary, list)
+            or not 1 <= len(change_summary) <= 3
+            or not all(isinstance(item, str) and item.strip() for item in change_summary)
+        ):
+            raise DeepSeekCallError(
+                "DeepSeek repair response must contain one to three concrete "
+                "change_summary strings",
+                trace=completed["trace"],
+            )
+        first_stage = payload.get("first_interrupted_stage")
+        if not isinstance(first_stage, str) or not first_stage.strip():
+            raise DeepSeekCallError(
+                "DeepSeek repair response must contain first_interrupted_stage",
+                trace=completed["trace"],
+            )
+        if source_code == str(context["source_code"]).strip():
+            raise DeepSeekCallError(
+                "DeepSeek repair claimed a change but returned unchanged source_code",
+                trace=completed["trace"],
+            )
         return {
             "source_code": source_code,
+            "change_summary": change_summary,
+            "first_interrupted_stage": first_stage,
             "usage": completed["usage"],
             "trace": completed["trace"],
         }

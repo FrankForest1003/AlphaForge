@@ -10,6 +10,7 @@ import {
   Code2,
   FlaskConical,
   Gauge,
+  History,
   Layers3,
   Play,
   RefreshCw,
@@ -18,6 +19,7 @@ import {
   ShieldCheck,
   Sparkles,
   TrendingUp,
+  Trophy,
   UserRound,
   XCircle,
 } from "lucide-react";
@@ -33,6 +35,8 @@ import {
 } from "recharts";
 
 const API_ROOT = "/api/v1";
+const MIN_STOCKS = 5;
+const MAX_STOCKS = 30;
 const TERMINAL_RUN_STATES = new Set(["completed", "failed"]);
 const FINISHED_ITEM_STATES = new Set([
   "accepted",
@@ -211,6 +215,24 @@ function strategyRows(run) {
   return rows;
 }
 
+function bestAcceptedAi(round) {
+  const accepted = (round?.candidates || []).filter(
+    (item) => item.state === "accepted" && item.summary,
+  );
+  return accepted.sort((left, right) => {
+    const leftSummary = left.summary || {};
+    const rightSummary = right.summary || {};
+    return (
+      Number(rightSummary.sharpe_ratio ?? -Infinity)
+      - Number(leftSummary.sharpe_ratio ?? -Infinity)
+      || Number(rightSummary.cagr ?? -Infinity)
+      - Number(leftSummary.cagr ?? -Infinity)
+      || Number(leftSummary.maximum_drawdown ?? Infinity)
+      - Number(rightSummary.maximum_drawdown ?? Infinity)
+    );
+  })[0] || null;
+}
+
 function setRunQuery(runId) {
   const url = new URL(window.location.href);
   if (runId) url.searchParams.set("run_id", runId);
@@ -263,6 +285,14 @@ function Sidebar({ view, onView, runId, onOpenRun, serviceStatus }) {
         <button className={view === "results" ? "active" : ""} onClick={() => onView("results")}>
           <BarChart3 size={18} />
           Results
+        </button>
+        <button className={view === "forge" ? "active" : ""} onClick={() => onView("forge")}>
+          <FlaskConical size={18} />
+          AI Forge
+        </button>
+        <button className={view === "arena" ? "active" : ""} onClick={() => onView("arena")}>
+          <Trophy size={18} />
+          PK Arena
         </button>
         <button className={view === "code" ? "active" : ""} onClick={() => onView("code")}>
           <Code2 size={18} />
@@ -356,12 +386,17 @@ function BuildWorkspace({ catalog, loadingCatalog, onCreated }) {
 
   const toggleSymbol = (ticker) => {
     setSymbols((current) =>
-      current.includes(ticker) ? current.filter((item) => item !== ticker) : [...current, ticker],
+      current.includes(ticker)
+        ? current.filter((item) => item !== ticker)
+        : current.length < MAX_STOCKS
+          ? [...current, ticker]
+          : current,
     );
   };
 
   const valid =
-    symbols.length > 0 &&
+    symbols.length >= MIN_STOCKS &&
+    symbols.length <= MAX_STOCKS &&
     startDate < endDate &&
     (humanMode === "guided" || sourceCode.trim().length > 0);
 
@@ -416,9 +451,9 @@ function BuildWorkspace({ catalog, loadingCatalog, onCreated }) {
       <section className="step-card">
         <div className="step-heading">
           <span className="step-number">01</span>
-          <div>
-            <h2>Market Setup</h2>
-            <p>Select the investment universe and shared backtest assumptions.</p>
+            <div>
+              <h2>Market Setup</h2>
+              <p>Freeze one experiment contract shared by Human, AI, and all baselines.</p>
           </div>
           <div className="selection-count">{symbols.length} Selected</div>
         </div>
@@ -428,7 +463,7 @@ function BuildWorkspace({ catalog, loadingCatalog, onCreated }) {
             <div className="section-toolbar">
               <div>
                 <h3>Stock Candidate Pool</h3>
-                <p>Strategies may choose any subset of the selected stocks.</p>
+                <p>Select 5–30 stocks. Strategies may choose a subset during each rebalance.</p>
               </div>
               <div className="text-actions">
                 <button type="button" onClick={() => setSymbols(tradable.map((item) => item.display_ticker))}>
@@ -553,16 +588,29 @@ function BuildWorkspace({ catalog, loadingCatalog, onCreated }) {
         )}
       </section>
 
+      <section className="contract-notice">
+        <div className="summary-icon"><ShieldCheck size={20} /></div>
+        <div>
+          <span>Experiment Contract</span>
+          <strong>Shared settings become immutable when the Arena starts.</strong>
+          <p>
+            Human and AI strategies receive the same stocks, dates, cash, benchmark,
+            costs, and slippage. The Human strategy remains hidden from AI generation.
+          </p>
+        </div>
+      </section>
+
       <div className="launch-bar">
         <div>
           <strong>Ready To Start</strong>
-          <span>{symbols.length ? `${symbols.length} stocks selected` : "Select at least one stock"} · {humanMode === "guided" ? "Guided Setup" : "Complete Python Code"}</span>
+          <span>{symbols.length ? `${symbols.length} stocks selected` : "Select 5–30 stocks"} · {humanMode === "guided" ? "Guided Setup" : "Complete Python Code"}</span>
+          {symbols.length < MIN_STOCKS ? <span className="validation-message">Select at least {MIN_STOCKS} stocks to create a comparable experiment.</span> : null}
           {startDate >= endDate ? <span className="validation-message">The Start Date must be earlier than the End Date.</span> : null}
           {error ? <span className="validation-message">{error}</span> : null}
         </div>
         <button className="primary-button" disabled={!valid || submitting} onClick={submit}>
           {submitting ? <RefreshCw className="spin" size={18} /> : <Play size={18} fill="currentColor" />}
-          {submitting ? "Starting Backtest" : "Start Backtest"}
+          {submitting ? "Freezing Contract" : "Freeze Contract & Start Arena"}
         </button>
       </div>
     </>
@@ -577,6 +625,214 @@ function EmptyRun({ onBuild }) {
       <p>Create a new backtest or open an existing Run ID from the navigation panel.</p>
       <button className="primary-button" onClick={onBuild}><Sparkles size={17} /> Create A Backtest</button>
     </div>
+  );
+}
+
+function stageState(done, active) {
+  if (done) return "completed";
+  return active ? "running" : "waiting";
+}
+
+function AIForgeWorkspace({ run, onBuild }) {
+  if (!run) {
+    return (
+      <>
+        <PageHeader
+          eyebrow="Independent AI Track"
+          title="AI Forge"
+          description="Inspect independent candidate design, validation, backtesting, and acceptance."
+        />
+        <EmptyRun onBuild={onBuild} />
+      </>
+    );
+  }
+
+  const candidates = run.candidates || [];
+  const baselinesReady =
+    (run.baselines || []).length === 4 &&
+    run.baselines.every((item) => item.state === "completed");
+  const designsReady =
+    candidates.length === 3 && candidates.every((item) => Boolean(item.source_code));
+  const preflightReady =
+    candidates.length === 3 &&
+    candidates.every((item) => item.preflight?.status === "passed");
+  const workerStarted = candidates.some((item) => Boolean(item.worker_run_id));
+  const reviewsFinished =
+    candidates.length === 3 &&
+    candidates.every((item) => ["accepted", "rejected", "failed"].includes(item.state));
+
+  const stages = [
+    {
+      number: "01",
+      title: "Public Evidence",
+      copy: "Four baselines under the frozen contract",
+      state: stageState(baselinesReady, !baselinesReady),
+    },
+    {
+      number: "02",
+      title: "Independent Design",
+      copy: "Traditional, ML, and Hybrid plans",
+      state: stageState(designsReady, baselinesReady),
+    },
+    {
+      number: "03",
+      title: "Static Validation",
+      copy: "Syntax, capability, settings, and track checks",
+      state: stageState(preflightReady, designsReady),
+    },
+    {
+      number: "04",
+      title: "LEAN Backtest",
+      copy: "Real orders and behavior evidence",
+      state: stageState(workerStarted && reviewsFinished, workerStarted),
+    },
+    {
+      number: "05",
+      title: "Acceptance",
+      copy: "A1–A5 evidence review",
+      state: stageState(reviewsFinished, workerStarted),
+    },
+  ];
+
+  return (
+    <>
+      <PageHeader
+        eyebrow="Independent AI Track"
+        title="AI Forge"
+        description={`Run ${run.run_id} · structured evidence only, no hidden chain-of-thought`}
+      />
+
+      <section className="information-boundary">
+        <div className="boundary-icon"><ShieldCheck size={22} /></div>
+        <div>
+          <span>Information Boundary Active</span>
+          <h2>User Strategy Hidden From AI</h2>
+          <p>
+            Designers receive only the frozen run settings, four public baseline
+            results, and the AlphaForge capability contract. Human code, parameters,
+            results, trades, and education feedback are excluded.
+          </p>
+        </div>
+      </section>
+
+      <section className="forge-stage-grid" aria-label="AI Forge stages">
+        {stages.map((stage) => (
+          <div className={`forge-stage stage-${stage.state}`} key={stage.number}>
+            <div className="forge-stage-top">
+              <span>{stage.number}</span>
+              <StatusChip state={stage.state} />
+            </div>
+            <strong>{stage.title}</strong>
+            <p>{stage.copy}</p>
+          </div>
+        ))}
+      </section>
+
+      <section className="forge-tracks">
+        <div className="card-heading">
+          <div>
+            <span className="section-kicker">Candidate Lineages</span>
+            <h2>Three Independent Tracks</h2>
+          </div>
+        </div>
+        <div className="forge-track-grid">
+          {candidates.map((candidate) => {
+            const design = candidate.design || {};
+            const preflight = candidate.preflight;
+            const diagnostics = preflight?.diagnostics || [];
+            const usage = candidate.usage || {};
+            return (
+              <article className="forge-track-card" key={candidate.track}>
+                <div className="forge-track-header">
+                  <div className="strategy-avatar"><Sparkles size={18} /></div>
+                  <div>
+                    <span>{formatTrack(candidate.track)} Candidate</span>
+                    <h3>{design.strategy_name || "Design pending"}</h3>
+                  </div>
+                  <StatusChip state={candidate.state} />
+                </div>
+
+                <p className="forge-thesis">
+                  {design.thesis || "The structured candidate design will appear after generation."}
+                </p>
+
+                <div className="forge-evidence-row">
+                  <div>
+                    <span>Preflight</span>
+                    <strong>{preflight ? statusLabel(preflight.status) : "Waiting"}</strong>
+                  </div>
+                  <div>
+                    <span>LEAN Run</span>
+                    <strong>{candidate.worker_run_id ? "Submitted" : "Waiting"}</strong>
+                  </div>
+                  <div>
+                    <span>Repairs</span>
+                    <strong>{candidate.repair_attempts || 0}</strong>
+                  </div>
+                  <div>
+                    <span>Tokens</span>
+                    <strong>{formatNumber(usage.total_tokens || 0)}</strong>
+                  </div>
+                </div>
+
+                {design.signals?.length ? (
+                  <div className="design-block">
+                    <span>Decision Signals</span>
+                    <div className="design-tags">
+                      {design.signals.map((item) => <i key={item}>{item}</i>)}
+                    </div>
+                  </div>
+                ) : null}
+
+                {design.selection_rule ? (
+                  <div className="design-block">
+                    <span>Selection Rule</span>
+                    <p>{design.selection_rule}</p>
+                  </div>
+                ) : null}
+
+                {diagnostics.length ? (
+                  <div className="preflight-errors">
+                    <strong>Static validation findings</strong>
+                    <ul>
+                      {diagnostics.map((item, index) => (
+                        <li key={`${item.code}-${index}`}>
+                          <code>{item.code}</code> {item.message}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : preflight?.status === "passed" ? (
+                  <div className="preflight-pass">
+                    <CheckCircle2 size={16} />
+                    Deterministic source checks passed before LEAN submission.
+                  </div>
+                ) : null}
+
+                {candidate.repair_history?.length ? (
+                  <details className="repair-lineage">
+                    <summary>
+                      Repair lineage · {candidate.repair_history.length}
+                      <ChevronDown size={16} />
+                    </summary>
+                    <div>
+                      {candidate.repair_history.map((item) => (
+                        <p key={`${item.attempt}-${item.trigger}`}>
+                          <strong>R{item.attempt} · {item.classification}</strong>
+                          <span>{item.first_interrupted_stage || item.trigger}</span>
+                        </p>
+                      ))}
+                    </div>
+                  </details>
+                ) : null}
+
+                {candidate.error ? <div className="inline-error">{candidate.error}</div> : null}
+              </article>
+            );
+          })}
+        </div>
+      </section>
+    </>
   );
 }
 
@@ -667,6 +923,37 @@ function BehaviorGrid({ evidence }) {
   );
 }
 
+function RevisionEffect({ effect }) {
+  if (!effect) return null;
+  const labels = {
+    initial_evaluation: "Initial execution",
+    evidence_only: "Evidence-only revision",
+    strategy_behavior_change: "Strategy behavior changed",
+    ineffective: "Ineffective revision",
+  };
+  return (
+    <div className={`revision-effect effect-${effect.kind || "initial_evaluation"}`}>
+      <div>
+        <History size={17} />
+        <strong>{labels[effect.kind] || "Revision analysis"}</strong>
+      </div>
+      <p>{effect.note}</p>
+      <div className="revision-facts">
+        {effect.semantic_source_changed !== null ? (
+          <span>Executable code: {effect.semantic_source_changed ? "changed" : "unchanged"}</span>
+        ) : null}
+        {effect.trading_behavior_changed !== null ? (
+          <span>Trading behavior: {effect.trading_behavior_changed ? "changed" : "unchanged"}</span>
+        ) : null}
+        {effect.result_changed !== null ? (
+          <span>Metrics: {effect.result_changed ? "changed" : "unchanged"}</span>
+        ) : null}
+        {effect.resolved_checks?.length ? <span>Resolved: {effect.resolved_checks.join(", ")}</span> : null}
+      </div>
+    </div>
+  );
+}
+
 function ReviewHistory({ history }) {
   if (!history?.length) return <p className="muted-copy">Review details will appear after the strategy completes a backtest.</p>;
   return (
@@ -681,6 +968,15 @@ function ReviewHistory({ history }) {
               <ChevronDown size={17} />
             </summary>
             <div className="review-body">
+              <RevisionEffect effect={entry.revision_effectiveness} />
+              {entry.summary ? (
+                <div className="review-metrics">
+                  <span>CAGR <strong>{formatMetric(entry.summary.cagr, "percent")}</strong></span>
+                  <span>Sharpe <strong>{formatMetric(entry.summary.sharpe_ratio, "number")}</strong></span>
+                  <span>Drawdown <strong>{formatMetric(entry.summary.maximum_drawdown, "percent")}</strong></span>
+                  <span>Equity <strong>{formatMetric(entry.summary.end_equity, "currency")}</strong></span>
+                </div>
+              ) : null}
               <BehaviorGrid evidence={entry.behavior_evidence} />
               <div className="check-list">
                 {(report.checks || []).map((check) => (
@@ -691,6 +987,12 @@ function ReviewHistory({ history }) {
                 ))}
               </div>
               {report.repair_request ? <div className="repair-request"><strong>Revision Request</strong><p>{report.repair_request}</p></div> : null}
+              {entry.source_code ? (
+                <details className="revision-source">
+                  <summary><Code2 size={15} /> View code used in this review</summary>
+                  <pre><code>{entry.source_code}</code></pre>
+                </details>
+              ) : null}
             </div>
           </details>
         );
@@ -712,7 +1014,7 @@ function GeneratedReviews({ candidates }) {
               <div><strong>{formatTrack(candidate.track)} Strategy</strong><span>{candidate.repair_attempts || 0} Revisions</span></div>
               <StatusChip state={candidate.state} />
             </div>
-            {candidate.error && candidate.state === "failed" ? <div className="inline-error">{candidate.error}</div> : null}
+            {candidate.error && ["failed", "rejected"].includes(candidate.state) ? <div className="inline-error">{candidate.error}</div> : null}
             <ReviewHistory history={candidate.acceptance_history} />
           </div>
         ))}
@@ -752,6 +1054,94 @@ function ResultsWorkspace({ run, loading, error, onRefresh, onBuild }) {
       <MetricChart rows={rows} />
       <ResultsTable rows={rows} />
       <GeneratedReviews candidates={run.candidates} />
+    </>
+  );
+}
+
+function ArenaSide({ side, label, state, summary, winner }) {
+  return (
+    <div className={`arena-side arena-${side} ${winner ? "round-winner" : ""}`}>
+      <div className="arena-side-title">
+        {side === "human" ? <UserRound size={20} /> : <Sparkles size={20} />}
+        <div><span>{side === "human" ? "Human Player" : "AI Challenger"}</span><strong>{label}</strong></div>
+        {winner ? <Trophy size={19} /> : null}
+      </div>
+      <StatusChip state={state} />
+      <div className="arena-side-metrics">
+        <span>Sharpe<strong>{formatMetric(summary?.sharpe_ratio, "number")}</strong></span>
+        <span>CAGR<strong>{formatMetric(summary?.cagr, "percent")}</strong></span>
+        <span>Drawdown<strong>{formatMetric(summary?.maximum_drawdown, "percent")}</strong></span>
+        <span>Equity<strong>{formatMetric(summary?.end_equity, "currency")}</strong></span>
+      </div>
+    </div>
+  );
+}
+
+function ArenaWorkspace({ history, loading, error, onRefresh }) {
+  const rounds = [...(history || [])].reverse();
+  const humanWins = rounds.filter((item) => item.winner?.side === "human").length;
+  const aiWins = rounds.filter((item) => item.winner?.side === "ai").length;
+  const draws = rounds.length - humanWins - aiWins;
+
+  return (
+    <>
+      <PageHeader
+        eyebrow="Best of Five"
+        title="Human vs AI · PK Arena"
+        description="Each completed Forge Run is one round. Accepted means auditable and runnable; the round winner is decided by Sharpe, then CAGR, then lower drawdown."
+        actions={<button className="secondary-button" onClick={onRefresh} disabled={loading}><RefreshCw className={loading ? "spin" : ""} size={16} /> Refresh rounds</button>}
+      />
+      <section className="arena-scoreboard">
+        <div className="score-team score-human"><UserRound size={24} /><span>Human</span><strong>{humanWins}</strong></div>
+        <div className="score-center">
+          <span>BEST OF FIVE</span>
+          <div className="round-pips">
+            {Array.from({ length: 5 }, (_, index) => {
+              const result = rounds[index]?.winner?.side;
+              return <i key={index} className={result ? `pip-${result}` : ""}>{index + 1}</i>;
+            })}
+          </div>
+          <small>{draws ? `${draws} unresolved round${draws > 1 ? "s" : ""}` : `${rounds.length}/5 rounds played`}</small>
+        </div>
+        <div className="score-team score-ai"><Sparkles size={24} /><span>AI</span><strong>{aiWins}</strong></div>
+      </section>
+      {error ? <div className="inline-error">{error}</div> : null}
+      {loading && !rounds.length ? <div className="page-loading"><RefreshCw className="spin" size={24} /> Loading PK history</div> : null}
+      {!loading && !rounds.length ? (
+        <section className="empty-state"><div><Trophy size={26} /></div><h2>No rounds played yet</h2><p>Complete a new Forge Run to record Round 1. The arena keeps the latest five rounds.</p></section>
+      ) : null}
+      <div className="arena-round-list">
+        {rounds.map((round, index) => {
+          const ai = bestAcceptedAi(round);
+          const winnerSide = round.winner?.side;
+          return (
+            <article className="arena-round" key={round.run_id}>
+              <div className="arena-round-header">
+                <div><span>Round {index + 1}</span><strong>{round.run_id}</strong><small>{new Date(round.created_at).toLocaleString()}</small></div>
+                <div className={`round-result result-${winnerSide || "none"}`}><Trophy size={16} />{round.winner?.label || "No winner"}</div>
+              </div>
+              <div className="arena-versus">
+                <ArenaSide side="human" label="Human Strategy" state={round.human?.state} summary={round.human?.summary} winner={winnerSide === "human"} />
+                <div className="versus-mark">VS</div>
+                <ArenaSide side="ai" label={ai ? `${formatTrack(ai.track)} Strategy` : "No accepted candidate"} state={ai?.state || "failed"} summary={ai?.summary} winner={winnerSide === "ai"} />
+              </div>
+              <p className="round-rule">{round.winner?.reason}</p>
+              <details className="round-details">
+                <summary>Inspect all AI challengers and revision rounds <ChevronDown size={17} /></summary>
+                <div className="round-candidates">
+                  {(round.candidates || []).map((candidate) => (
+                    <div key={candidate.track}>
+                      <div className="round-candidate-title"><strong>{formatTrack(candidate.track)}</strong><StatusChip state={candidate.state} /></div>
+                      {candidate.error ? <p className="round-candidate-error">{candidate.error}</p> : null}
+                      <ReviewHistory history={candidate.acceptance_history} />
+                    </div>
+                  ))}
+                </div>
+              </details>
+            </article>
+          );
+        })}
+      </div>
     </>
   );
 }
@@ -799,6 +1189,9 @@ export default function App() {
   const [run, setRun] = useState(null);
   const [runLoading, setRunLoading] = useState(Boolean(initialRunId));
   const [runError, setRunError] = useState("");
+  const [historyRounds, setHistoryRounds] = useState([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState("");
 
   useEffect(() => {
     let active = true;
@@ -834,6 +1227,18 @@ export default function App() {
     }
   }, []);
 
+  const loadHistory = useCallback(async () => {
+    setHistoryLoading(true);
+    setHistoryError("");
+    try {
+      setHistoryRounds(await apiRequest("/forge-history"));
+    } catch (error) {
+      setHistoryError(error.message);
+    } finally {
+      setHistoryLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     if (initialRunId) loadRun(initialRunId);
   }, [initialRunId, loadRun]);
@@ -843,6 +1248,10 @@ export default function App() {
     const timer = window.setInterval(() => loadRun(runId, { quiet: true }), 3000);
     return () => window.clearInterval(timer);
   }, [runId, run, loadRun]);
+
+  useEffect(() => {
+    if (view === "arena") loadHistory();
+  }, [view, loadHistory]);
 
   const openRun = (id) => {
     setView("results");
@@ -862,6 +1271,8 @@ export default function App() {
       <main className="main-content">
         {view === "build" ? <BuildWorkspace catalog={catalog} loadingCatalog={catalogLoading} onCreated={handleCreated} /> : null}
         {view === "results" ? <ResultsWorkspace run={run} loading={runLoading} error={runError} onRefresh={() => loadRun(runId)} onBuild={() => setView("build")} /> : null}
+        {view === "forge" ? <AIForgeWorkspace run={run} onBuild={() => setView("build")} /> : null}
+        {view === "arena" ? <ArenaWorkspace history={historyRounds} loading={historyLoading} error={historyError} onRefresh={loadHistory} /> : null}
         {view === "code" ? <CodeWorkspace run={run} onBuild={() => setView("build")} /> : null}
       </main>
     </div>

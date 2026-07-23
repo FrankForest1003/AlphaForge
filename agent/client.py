@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 from datetime import datetime, timezone
 from typing import Any
@@ -30,6 +31,66 @@ def _json_safe(value: Any) -> Any:
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
     return str(value)
+
+
+def _decode_json_value(content: str, key: str) -> Any:
+    match = re.search(rf'"{re.escape(key)}"\s*:\s*', content)
+    if not match:
+        raise ValueError(f"missing JSON key: {key}")
+    return json.JSONDecoder().raw_decode(content, match.end())[0]
+
+
+def _decode_source_string(content: str) -> str:
+    match = re.search(r'"source_code"\s*:\s*"', content)
+    if not match:
+        raise ValueError("missing JSON source_code string")
+    encoded = content[match.end():]
+
+    escaped = False
+    closing_index: int | None = None
+    for index, character in enumerate(encoded):
+        if escaped:
+            escaped = False
+            continue
+        if character == "\\":
+            escaped = True
+            continue
+        if character == '"':
+            closing_index = index
+            break
+    if closing_index is not None:
+        encoded = encoded[:closing_index]
+    try:
+        return json.loads(f'"{encoded}"')
+    except json.JSONDecodeError as exc:
+        raise ValueError("source_code JSON string could not be recovered") from exc
+
+
+def recover_known_payload(content: str) -> dict[str, Any] | None:
+    """Recover a complete known payload when a model omits only outer JSON closure."""
+
+    stripped = content.strip()
+    if stripped.startswith("```"):
+        stripped = re.sub(r"^```(?:json)?\s*", "", stripped, flags=re.IGNORECASE)
+        stripped = re.sub(r"\s*```$", "", stripped)
+
+    try:
+        source_code = _decode_source_string(stripped)
+        if '"design"' in stripped:
+            design = _decode_json_value(stripped, "design")
+            return {"design": design, "source_code": source_code}
+        if '"change_summary"' in stripped and '"first_interrupted_stage"' in stripped:
+            return {
+                "change_summary": _decode_json_value(stripped, "change_summary"),
+                "first_interrupted_stage": _decode_json_value(
+                    stripped,
+                    "first_interrupted_stage",
+                ),
+                "source_code": source_code,
+            }
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    return None
 
 
 class DeepSeekCallError(ValueError):
@@ -106,47 +167,131 @@ class DeepSeekJSONClient:
             "parsed_payload": None,
             "usage": {},
             "error": None,
+            "attempts": [],
         }
 
-        try:
-            response = self.client.chat.completions.create(**request)
-            trace["raw_response"] = _json_safe(response)
-            content = response.choices[0].message.content
-            trace["response_content"] = content
-        except Exception as exc:
-            trace["finished_at"] = _utc_now()
-            trace["duration_ms"] = round(
-                (time.perf_counter() - started_clock) * 1000,
-                3,
-            )
-            trace["error"] = {
-                "type": type(exc).__name__,
-                "message": str(exc),
+        total_usage = {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+        }
+        payload: dict[str, Any] | None = None
+        last_parse_error: Exception | None = None
+        previous_parse_failure = False
+        for attempt_index in range(2):
+            attempt_request = dict(request)
+            if attempt_index:
+                # Empty structured output is commonly caused by a reasoning response
+                # exhausting its output budget. Retry once without hidden reasoning.
+                attempt_request.pop("reasoning_effort", None)
+                attempt_request["extra_body"] = {"thinking": {"type": "disabled"}}
+                if previous_parse_failure:
+                    attempt_request["messages"] = [
+                        *messages,
+                        {
+                            "role": "user",
+                            "content": (
+                                "The previous response was not valid JSON. Return the "
+                                "same requested object again as strict JSON. Encode the "
+                                "complete Python source as the source_code JSON string; "
+                                "do not omit its closing quote or the outer braces."
+                            ),
+                        },
+                    ]
+            try:
+                response = self.client.chat.completions.create(**attempt_request)
+                safe_response = _json_safe(response)
+                content = response.choices[0].message.content
+            except Exception as exc:
+                trace["finished_at"] = _utc_now()
+                trace["duration_ms"] = round(
+                    (time.perf_counter() - started_clock) * 1000,
+                    3,
+                )
+                trace["error"] = {
+                    "type": type(exc).__name__,
+                    "message": str(exc),
+                }
+                raise DeepSeekCallError(str(exc), trace=trace) from exc
+
+            usage = getattr(response, "usage", None)
+            attempt_usage = {
+                "prompt_tokens": int(getattr(usage, "prompt_tokens", 0) or 0),
+                "completion_tokens": int(
+                    getattr(usage, "completion_tokens", 0) or 0
+                ),
+                "total_tokens": int(getattr(usage, "total_tokens", 0) or 0),
             }
-            raise DeepSeekCallError(str(exc), trace=trace) from exc
+            for key in total_usage:
+                total_usage[key] += attempt_usage[key]
 
-        usage = getattr(response, "usage", None)
-        trace["usage"] = {
-            "prompt_tokens": int(getattr(usage, "prompt_tokens", 0) or 0),
-            "completion_tokens": int(getattr(usage, "completion_tokens", 0) or 0),
-            "total_tokens": int(getattr(usage, "total_tokens", 0) or 0),
-        }
+            attempt_trace = {
+                "attempt": attempt_index + 1,
+                "thinking_enabled": bool(
+                    attempt_request.get("extra_body", {})
+                    .get("thinking", {})
+                    .get("type")
+                    == "enabled"
+                ),
+                "raw_response": safe_response,
+                "response_content": content,
+                "usage": attempt_usage,
+                "parse_mode": None,
+                "error": None,
+            }
+            trace["attempts"].append(attempt_trace)
+            trace["raw_response"] = safe_response
+            trace["response_content"] = content
+            trace["usage"] = total_usage
+
+            if not content:
+                attempt_trace["error"] = {
+                    "type": "empty_response",
+                    "message": empty_error,
+                }
+                trace["error"] = attempt_trace["error"]
+                continue
+            try:
+                parsed = json.loads(content)
+            except json.JSONDecodeError as exc:
+                last_parse_error = exc
+                recovered = recover_known_payload(content)
+                if recovered is not None:
+                    payload = recovered
+                    attempt_trace["parse_mode"] = "recovered_known_payload"
+                    trace["error"] = None
+                    break
+                previous_parse_failure = True
+                attempt_trace["error"] = {
+                    "type": "invalid_json",
+                    "message": invalid_error,
+                }
+                trace["error"] = attempt_trace["error"]
+                continue
+            if not isinstance(parsed, dict):
+                attempt_trace["error"] = {
+                    "type": "invalid_json",
+                    "message": invalid_error,
+                }
+                trace["error"] = attempt_trace["error"]
+                continue
+            payload = parsed
+            attempt_trace["parse_mode"] = "strict_json"
+            trace["error"] = None
+            break
+
         trace["finished_at"] = _utc_now()
         trace["duration_ms"] = round(
             (time.perf_counter() - started_clock) * 1000,
             3,
         )
-        if not content:
-            trace["error"] = {"type": "empty_response", "message": empty_error}
-            raise DeepSeekCallError(empty_error, trace=trace)
-        try:
-            payload = json.loads(content)
-        except json.JSONDecodeError as exc:
-            trace["error"] = {"type": "invalid_json", "message": invalid_error}
-            raise DeepSeekCallError(invalid_error, trace=trace) from exc
-        if not isinstance(payload, dict):
-            trace["error"] = {"type": "invalid_json", "message": invalid_error}
-            raise DeepSeekCallError(invalid_error, trace=trace)
+        if payload is None:
+            if trace.get("error", {}).get("type") == "empty_response":
+                raise DeepSeekCallError(empty_error, trace=trace)
+            error = DeepSeekCallError(invalid_error, trace=trace)
+            if last_parse_error is not None:
+                raise error from last_parse_error
+            raise error
 
         trace["parsed_payload"] = payload
         return {
