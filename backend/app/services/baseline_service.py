@@ -18,10 +18,7 @@ from agent import (
     validate_candidate_source,
 )
 from app.schemas import GuidedHumanStrategy, HumanStrategyRequest, RunSettings
-from app.services.acceptance_policy import (
-    build_deterministic_acceptance_report,
-    normalize_acceptance_payload,
-)
+from app.services.acceptance_policy import normalize_acceptance_payload
 from app.services.worker_client import LeanWorkerClient
 
 
@@ -431,9 +428,9 @@ def build_runtime_failure_evidence(
     return {
         "details_available": True,
         "details_error": None,
-        "failed_orders": failed_orders[-12:],
+        "failed_orders": failed_orders,
         "failed_order_count": len(failed_orders),
-        "evidence_truncated": len(failed_orders) > 12,
+        "evidence_truncated": False,
         "error_log_excerpt": extract_error_log_excerpt(console_log)[-120:],
     }
 
@@ -837,6 +834,7 @@ def build_revision_effectiveness(
 def validate_acceptance_report(
     report: dict[str, Any],
     behavior_evidence: dict[str, Any],
+    run_settings: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     report = normalize_acceptance_payload(report)
     decision = report.get("decision")
@@ -877,6 +875,27 @@ def validate_acceptance_report(
     if by_id["A1"]["status"] != expected_a1:
         raise ValueError("acceptance check A1 contradicts behavior evidence")
 
+    settings = run_settings or {}
+    if settings:
+        allowed_symbols = {
+            str(symbol).strip().upper()
+            for symbol in settings.get("symbols", [])
+            if str(symbol).strip()
+        }
+        traded_symbols = {
+            str(symbol).strip().upper()
+            for symbol in behavior_evidence.get("traded_symbols", [])
+            if str(symbol).strip()
+        }
+        benchmark = str(settings.get("benchmark") or "").strip().upper()
+        unauthorized = traded_symbols - allowed_symbols
+        benchmark_traded = bool(
+            benchmark and benchmark in traded_symbols and benchmark not in allowed_symbols
+        )
+        expected_a5 = "fail" if unauthorized or benchmark_traded else "pass"
+        if by_id["A5"]["status"] != expected_a5:
+            raise ValueError("acceptance check A5 contradicts traded-symbol evidence")
+
     statuses = [by_id[check_id]["status"] for check_id in ACCEPTANCE_CHECK_IDS]
     repair_request = report.get("repair_request")
     if decision == "accept":
@@ -912,15 +931,16 @@ class UserStrategy(AlphaForgeBaseAlgorithm):
         value = self.get_parameter(name)
         return value if value not in (None, "") else default
 
-    def initialize_strategy(self):
+    def initialize(self):
         start = datetime.fromisoformat(self._parameter("start_date", "2020-01-02"))
         end = datetime.fromisoformat(self._parameter("end_date", "2024-12-31"))
         self.set_start_date(start.year, start.month, start.day)
         self.set_end_date(end.year, end.month, end.day)
         self.set_cash(float(self._parameter("initial_cash", "100000")))
-        self.target_gross = 0.95
+        self.target_gross = 0.90
         self.lookback_days = {strategy.lookback_days}
         self.holdings = {strategy.holdings}
+        self.pending_targets = None
 
         tickers = [
             ticker.strip().upper()
@@ -950,8 +970,11 @@ class UserStrategy(AlphaForgeBaseAlgorithm):
             self.time_rules.after_market_open(self.symbols[0], 30),
             self.rebalance,
         )
+        self.set_warm_up(self.lookback_days + 1, Resolution.DAILY)
 
     def rebalance(self):
+        if self.is_warming_up:
+            return
         frames = af_split_history_frames(
             self.history(self.symbols, self.lookback_days + 1, Resolution.DAILY)
         )
@@ -968,14 +991,35 @@ class UserStrategy(AlphaForgeBaseAlgorithm):
         ranked = sorted(scores, key=scores.get, reverse={reverse})
         selected = ranked[: min(self.holdings, len(ranked))]
         if not selected:
-            self.af_rebalance_to_weights({{}}, "No valid {signal_label.lower()} signals")
+            self.pending_targets = None
+            self.liquidate(tag="No valid {signal_label.lower()} signals")
             return
         weight = self.target_gross / len(selected)
-        targets = {{symbol: weight for symbol in selected}}
-        self.af_rebalance_to_weights(targets, "Guided Human · {signal_label}")
+        targets = [PortfolioTarget(symbol, weight) for symbol in selected]
+        if self.portfolio.invested:
+            self.pending_targets = targets
+            self.liquidate(tag="Guided Human · {signal_label} · reduce")
+            return
+        self.set_holdings(
+            targets,
+            liquidate_existing_holdings=False,
+            tag="Guided Human · {signal_label}",
+        )
 
-    def on_alpha_data(self, data):
-        pass
+    def on_data(self, data):
+        if (
+            self.is_warming_up
+            or self.pending_targets is None
+            or self.transactions.get_open_orders()
+        ):
+            return
+        targets = self.pending_targets
+        self.pending_targets = None
+        self.set_holdings(
+            targets,
+            liquidate_existing_holdings=False,
+            tag="Guided Human · {signal_label} · establish",
+        )
 '''
 
 
@@ -2668,6 +2712,11 @@ class ForgeService:
                         acceptance_attempt=acceptance_attempt,
                         candidate_design=design,
                         preflight_report=preflight,
+                        previous_acceptance=(
+                            acceptance_history[-1]
+                            if acceptance_history
+                            else None
+                        ),
                     )
                     self._record_agent_call(
                         run_id=run_id,
@@ -2695,16 +2744,13 @@ class ForgeService:
                 usage = self._add_usage(usage, evaluated.get("usage", {}))
                 self._change_item(run_id, "candidates", index, usage=usage)
                 try:
-                    advisory_report = normalize_acceptance_payload(
+                    agent_report = normalize_acceptance_payload(
                         evaluated.get("report", {})
                     )
-                    report = build_deterministic_acceptance_report(
-                        track=track,
-                        run_settings=settings.model_dump(mode="json"),
-                        worker_result=result,
+                    report = validate_acceptance_report(
+                        agent_report,
                         behavior_evidence=behavior_evidence,
-                        preflight_report=preflight,
-                        advisory_payload=advisory_report,
+                        run_settings=settings.model_dump(mode="json"),
                     )
                 except Exception as exc:
                     self._update_worker_attempt(
@@ -2724,44 +2770,6 @@ class ForgeService:
                     preflight=preflight,
                     report=report,
                 )
-                if (
-                    report["decision"] == "accept"
-                    and previous_acceptance is not None
-                    and not revision_effectiveness["effective"]
-                ):
-                    report = copy.deepcopy(report)
-                    deterministic_check = next(
-                        item for item in report["checks"] if item["id"] == "A2"
-                    )
-                    deterministic_check["status"] = "fail"
-                    deterministic_check["evidence"] = [
-                        revision_effectiveness["note"],
-                        "semantic_source_changed="
-                        + str(
-                            revision_effectiveness["semantic_source_changed"]
-                        ).lower(),
-                        "trading_behavior_changed="
-                        + str(
-                            revision_effectiveness["trading_behavior_changed"]
-                        ).lower(),
-                    ]
-                    deterministic_check["reason"] = (
-                        "A claimed repair must materially change executable code and "
-                        "resolve an observed failed stage."
-                    )
-                    report["decision"] = "revise"
-                    report["repair_request"] = (
-                        "The last revision was deterministically ineffective. Change "
-                        "the executable logic or structured evidence that caused the "
-                        "previous failed check; comments and formatting do not count."
-                    )
-                    revision_effectiveness = build_revision_effectiveness(
-                        previous=previous_acceptance,
-                        summary=result.get("summary", {}),
-                        behavior_evidence=behavior_evidence,
-                        preflight=preflight,
-                        report=report,
-                    )
                 acceptance_history.append(
                     {
                         "attempt": len(acceptance_history) + 1,
@@ -2770,7 +2778,7 @@ class ForgeService:
                         "behavior_evidence": behavior_evidence,
                         "preflight": preflight,
                         "report": report,
-                        "agent_advisory": advisory_report,
+                        "agent_report": agent_report,
                         "revision_effectiveness": revision_effectiveness,
                         "source_code": source_code,
                         "usage": evaluated.get("usage", {}),
@@ -2927,10 +2935,7 @@ class ForgeService:
                     baseline_results=baseline_results,
                     source_code=source_code,
                     worker_result=result,
-                    lean_console_log=compact_console_log(
-                        console_log,
-                        max_chars=20_000,
-                    ),
+                    lean_console_log=console_log,
                     repair_attempt=next_attempt,
                     repair_trigger=repair_trigger,
                     acceptance_report=acceptance_report,

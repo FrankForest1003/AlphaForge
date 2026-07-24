@@ -137,7 +137,10 @@ class DeepSeekJSONClient:
         max_tokens: int,
         empty_error: str,
         invalid_error: str,
+        max_attempts: int = 2,
     ) -> dict[str, Any]:
+        if max_attempts not in {1, 2}:
+            raise ValueError("max_attempts must be 1 or 2")
         request: dict[str, Any] = {
             "model": self.model,
             "messages": messages,
@@ -178,7 +181,7 @@ class DeepSeekJSONClient:
         payload: dict[str, Any] | None = None
         last_parse_error: Exception | None = None
         previous_parse_failure = False
-        for attempt_index in range(2):
+        for attempt_index in range(max_attempts):
             attempt_request = dict(request)
             if attempt_index:
                 # Empty structured output is commonly caused by a reasoning response

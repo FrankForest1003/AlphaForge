@@ -1,6 +1,6 @@
 # AlphaForge 当前项目指南
 
-> 2026-07-23 架构更新：AI 候选已经改为“受限 `strategy_spec` + 静态预检 + Worker evidence schema 2.0 + Backend 确定性验收”。Acceptance Agent 只解释证据和提出修复建议，不再决定 accept/revise。详细说明见 `docs/DETERMINISTIC_ACCEPTANCE_V1_zh.md`。
+> 2026-07-24 合并更新：策略统一采用标准 QuantConnect 生命周期；共享基类保持轻量，分阶段调仓仅为可选工具。Acceptance Agent 独立判定 A1–A5 和 `accept/revise`，Backend 只校验 JSON 一致性以及 A1/A5 的确定性事实。
 
 AlphaForge 是一个本地演示系统：四个公共策略先在相同设置下完成真实 LEAN 回测。Human 策略和 Traditional、ML、Hybrid 三个 DeepSeek Designer 共享相同的运行设置；三个 Designer 的首次 API 请求并行发出，Human 与三个生成候选再由同一个 LEAN Worker 串行回测。运行失败由 Repair Agent 修复；运行成功的 Designer 候选由 Acceptance Agent 按 A1–A5 验收。验收否决同样进入 Repair、重新回测和重新验收。每个 Designer 候选最多修改源码三次。
 
@@ -26,7 +26,7 @@ docker compose up --build
 2. 用户用完整 Python 源码提供 Human 策略，或选择信号、回看期、调仓频率和持仓数，由 Backend 生成完整 Human 源码。
 3. Worker 依次运行 Momentum、Mean Reversion、Gradient Boosting、Hybrid 四个公共基线。
 4. Backend 把四个基线的四项摘要指标同时交给三个 Designer，并在等待响应期间提交 Human 策略。Human 源码、设置和结果不会进入任何 AI 上下文。
-5. 三个 Designer 各自返回结构化 `design` 和完整 `source_code`；Backend 先进行确定性的 AST/源码预检，通过后 Worker 才串行运行候选策略。
+5. 三个 Designer 各自返回结构化 `design` 和完整 `source_code`；Backend 只做 Python 语法与明确文件、进程、网络能力的窄预检，通过后 Worker 串行运行候选策略。
 6. 静态预检或候选回测失败时，Backend 按稳定错误分类调用 Repair Agent；Repair 只修复第一个中断阶段并输出修改摘要。
 7. Designer 候选运行成功时，Backend 从 Worker 明细构造订单、持仓、敞口和调仓事实，并由 Acceptance Agent 检查 A1 实际投资行为、A2 数据到订单因果链、A3 轨道完整性、A4 时间完整性和 A5 共享设置。
 8. 验收否决时，完整验收报告进入 Repair；修复后的完整源码重新回测并重新验收。运行错误修复与验收否决修复共享最多三次修改。
@@ -43,7 +43,7 @@ Backend 的普通运行状态保存在进程内存中。每次 Designer、Repair
 - AI 候选在进入 Worker 前必须通过确定性预检。预检会拦截不安全 import、错误 History 调用、低层 `DMatrix`、绕过共享调仓器、缺少共享设置以及 Traditional/ML/Hybrid 轨道不完整等问题。
 - 预检契约已升级到 v2：额外检查 LEAN schedule 重载、`af_record_ml_*` 单字典签名和字段、透明信号记录、必然不可达的负 `iloc` 分支及未来标签填零。
 - Repair 会收到静态诊断或运行错误的稳定分类、行为证据和首个中断阶段；空响应或无效 JSON 会用更保守的参数自动重试一次。
-- Worker Trace 继续保留完整日志；Agent 只接收有上限的关键摘录，Acceptance 12,000 字符、Repair 20,000 字符，防止逐日 debug 再次制造超长上下文。
+- Worker Attempt Trace 保留完整 Worker 结果和完整日志。Acceptance 使用有上限的关键摘录；运行失败进入 Repair 时同时提供完整日志、Worker 结果和可用的失败明细。
 - DeepSeek 漏掉 JSON 最外层结束符时，Backend 会恢复已经完整返回的结构化设计和源码；恢复结果仍需通过全部静态预检。Agent 覆盖基类 `af_*` 方法会被拒绝。
 - 每轮验收现在区分 evidence-only、strategy behavior change 和 ineffective。验收通过只代表可运行与可审计，PK 胜负依据 Sharpe、CAGR、最大回撤单独决定。
 - `PK Arena` 把最近五次 Forge Run 作为 Best-of-Five 对局持久化展示，可展开每轮三个 AI 候选和全部 Review；Human 历史只保存在独立 UI 历史文件中，不会进入 Agent Trace 或提示词。
@@ -51,7 +51,7 @@ Backend 的普通运行状态保存在进程内存中。每次 Designer、Repair
 - 真实 ML Designer 烟雾测试把 prompt tokens 从历史约 217,557 降到 2,413；生成结果包含完整结构化设计，并一次通过静态预检。该结果只验证生成协议，最终可运行性仍以 LEAN 和 Acceptance 为准。
 - Backend 按轮次持久化 DeepSeek 请求中的动态上下文、SDK 原始响应、原始响应文本、解析结果、token usage、错误和耗时，并把每版候选源码与对应 Worker 结果、完整日志、行为事实及验收报告关联起来。
 - Hybrid 基线此前会保留已经退出候选池的旧仓位，再叠加新目标仓位，造成总目标超过购买力；失败后还可能撤销已经处于 `Invalid` 的订单。共享调仓器和 Hybrid 策略现已修复这两条路径。
-- 共享调仓器会把目标总仓位限制在 95%，按最小报价单位向下对齐买入限价，并且不再撤销终态订单。Hybrid 会明确卖出落选持仓、在交易成本过滤后重新限制总仓位，并把同日多个止损合并为一次调仓。
+- 四个公共基线可显式选择分阶段 Daily 调仓器；生成策略也可按需要调用 `af_rebalance_daily_weights`。共享基类不固定现金缓冲、总敞口或下单方式，策略可使用标准 `set_holdings`、`liquidate` 和 LEAN 订单 API。
 - Hybrid 的信号/最小方差权重从 42.5%/57.5% 调整为 70%/30%，仍保留协方差分散，但在当前实验区间提高了风险调整后表现。
 
 验收记录：
@@ -81,7 +81,7 @@ Backend 的普通运行状态保存在进程内存中。每次 Designer、Repair
 
 调仓频率、持仓数量、仓位、模型、风险信号和随机种子属于策略实现，由每个基线或 Designer 自己决定。
 
-所有策略从 `AlphaForgeBaseAlgorithm` 继承固定的 2% LEAN 购买力缓冲。Designer 模板还提供内部 `target_gross = 0.95`，要求候选的目标绝对仓位总和不超过 95%。Designer 不设统一单标的仓位上限；单股集中度由每个策略自己设计。`target_gross` 是内部执行默认，不是前端字段。
+`AlphaForgeBaseAlgorithm` 只提供费用/滑点配置、benchmark、History 拆分、结构化证据记录和可选 Daily 分阶段调仓辅助。现金预留、总敞口、单股上限和下单方式均由每个策略自行设计，不是 RunSettings 的隐藏固定值。
 
 ## DeepSeek 上下文
 
@@ -99,11 +99,11 @@ Backend 使用 `.env` 中的 `API_KEY`、`BASE_URL`、`MODEL` 和 `THINKING_ENAB
 
 三个首次设计请求互相独立并同时发出。静态预检不通过、回测失败或 Acceptance 否决时，Repair 收到当前设计、完整源码、预检报告、稳定失败分类及相关运行证据；它必须说明修改内容和首个中断阶段。发送内容不包含 API Key、本地路径、Git 信息、Worker 实现或任何 Human 策略信息。
 
-Acceptance Agent 只在 Worker 返回 `completed` 后调用。它不接收 LEAN 文档、QC 模板或基线结果；上下文由固定 A1–A5 规则、轨道要求、RunSettings、完整候选源码、完整 Worker 结果、完整控制台日志、精确行为事实和验收轮次组成。A1 要求至少一笔成交、至少一个非零持仓快照和正的最大总敞口。A1–A5 全部通过才接受候选，收益和风险指标不属于验收条件。
+Acceptance Agent 只在 Worker 返回 `completed` 后调用。它不接收 Human 信息；上下文由固定 A1–A5 规则、轨道要求、RunSettings、候选源码、Worker 结果、关键日志、精确行为事实、候选设计和上一轮验收组成。它独立输出每项 pass/fail 与最终 `accept/revise`。Backend 可拒绝内部矛盾报告，并用运行事实强制校验 A1、用成交白名单事实强制校验 A5，但不替代 Agent 对 A2–A4 的语义判断。
 
 每个 Forge Run 的 Agent Trace 独立于普通运行响应。Trace 保存模型、thinking、token 上限、每次尝试、动态上下文、原始响应、解析 JSON、预检历史、修复沿革和 token usage。Trace 的 context manifest 明确列出可见的公共基线、RunSettings 和 ExperimentContract，同时列出被排除的 Human 源码、设置、结果和教育内容。Trace 不保存 `API_KEY`。它还逐轮关联送入 Worker 的源码、Worker Run ID、运行结果、日志、行为事实和验收报告。
 
-Designer 模板给出两种 History DataFrame 范式：单标的使用普通 `history(TradeBar, ...)`，多标的使用 `af_split_history_frames(history(...))`。`history[TradeBar](...)` 返回对象序列，不能作为 pandas DataFrame 下标访问。日线 long-only 组合使用 `af_rebalance_to_weights`，由共享基类等待减仓成交后再按新价格计算买单。
+Designer 模板给出两种 History DataFrame 范式：单标的使用普通 `history(TradeBar, ...)`，多标的使用 `af_split_history_frames(history(...))`。策略实现标准 `initialize/on_data/on_order_event/on_end_of_algorithm`。标准 LEAN 下单 API 均可使用；只有当 Daily 组合买入依赖减仓释放资金时，才选择 `af_rebalance_daily_weights`。
 
 ## API
 
@@ -139,7 +139,7 @@ Worker 是本机可信执行服务。自定义源码进入 Worker 后经过：
 4. 交给真实 LEAN Python 引擎加载和执行；
 5. 从 LEAN 控制台提取运行状态和四项摘要指标，并保留完整日志；订单、持仓、敞口和调仓明细通过只读 details 接口供 Backend 构造验收事实。
 
-Worker 本身仍是可信执行边界，不做源码准入；但 Backend 现在会在 AI 候选提交 Worker 前执行确定性 AST/源码预检。当前 AI 稳定路径允许 NumPy、pandas 和 scikit-learn，禁止低层 XGBoost `DMatrix`、直接 `SetHoldings`/`Liquidate`、动态执行和文件访问。Human 代码模式保持独立的现有检查与执行路径。
+Worker 是可运行性和 API 正确性的可信执行边界。Backend 的候选预检只拒绝 Python 语法错误及明确的文件、进程、网络和动态执行能力；不会根据关键词判定轨道，不要求特定调仓 helper，也不会禁止标准 `SetHoldings`/`Liquidate`。Human 代码模式保持独立检查与执行路径。
 
 Worker `result.json` 只包含 `run_id`、`status`、标准化 `summary` 和 `errors`；
 `summary` 除 CAGR、Sharpe、MDD、End Equity 外，还会在 LEAN 提供时解析

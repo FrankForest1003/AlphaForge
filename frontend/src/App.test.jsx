@@ -65,7 +65,9 @@ describe("AlphaForge Studio", () => {
     const editor = screen.getByLabelText("Complete Strategy Source");
     expect(editor).toHaveValue(HUMAN_CODE_STARTER);
     expect(editor.value).toContain("class UserStrategy");
-    expect(editor.value).toContain("af_rebalance_to_weights");
+    expect(editor.value).toContain("def initialize(self)");
+    expect(editor.value).toContain("self.set_holdings(");
+    expect(editor.value).not.toContain("af_rebalance_to_weights");
   });
 
   it("shows guided strategy controls with readable labels", async () => {
@@ -263,9 +265,6 @@ describe("AlphaForge Studio", () => {
                 report: {
                   decision: "accept",
                   checks: [],
-                  policy_version: "deterministic-acceptance-v2",
-                  decision_source: "backend_deterministic_policy",
-                  agent_advisory_decision: "revise",
                 },
               },
             ],
@@ -284,7 +283,7 @@ describe("AlphaForge Studio", () => {
     fireEvent.click(screen.getByText(/Inspect all AI challengers/i));
     expect(screen.getByText("Evidence-only revision")).toBeInTheDocument();
     expect(screen.getByText(/Audit evidence improved/i)).toBeInTheDocument();
-    expect(screen.getByText("Backend-verified decision")).toBeInTheDocument();
-    expect(screen.getByText(/Agent advised revise/i)).toBeInTheDocument();
+    expect(screen.getByText("Independent Acceptance Agent")).toBeInTheDocument();
+    expect(screen.getByText(/Agent decision: accept/i)).toBeInTheDocument();
   });
 });

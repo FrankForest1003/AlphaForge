@@ -75,11 +75,11 @@ class DeepSeekRepairAgent:
             "When validation_report contains runtime_failure_evidence, treat its failed "
             "order, OrderEvent, portfolio_before_failure, and log excerpt as authoritative "
             "observations. Do not infer an unrecorded cause; say not observed when the "
-            "evidence is absent. If staged rebalances start but do not complete, align the "
-            "signal or label horizon and target-update cadence with the multi-bar execution "
-            "lifecycle before changing risk exposure. Treat the Backend's deterministic "
-            "first interrupted stage and failure_classification as authoritative; an "
-            "agent_advisory_repair_request is only a hypothesis. If later stages already "
+            "evidence is absent. Only when the submitted source actually calls "
+            "af_rebalance_daily_weights, use staged events and align the signal or label "
+            "horizon with that optional multi-bar lifecycle. Treat failure_classification "
+            "as diagnostic context, while the independent Acceptance report is the "
+            "semantic revise decision. If later stages already "
             "show predictions, targets, or fills, preserve that working schedule and "
             "portfolio logic. When training is the first missing stage, calculate the "
             "history request and every rolling/pct_change/shift/dropna row loss, then fix "
@@ -123,6 +123,7 @@ class DeepSeekRepairAgent:
             "total_tokens": 0,
         }
         previous_error: str | None = None
+        model_calls_used = 0
         for semantic_attempt in range(2):
             messages = list(base_messages)
             if previous_error is not None:
@@ -148,7 +149,9 @@ class DeepSeekRepairAgent:
                 max_tokens=12_000,
                 empty_error="DeepSeek returned an empty response",
                 invalid_error="DeepSeek did not return valid JSON",
+                max_attempts=2 - model_calls_used,
             )
+            model_calls_used += len(completed["trace"].get("attempts", []))
             for key in total_usage:
                 total_usage[key] += int(completed["usage"].get(key, 0) or 0)
             payload = completed["payload"]
@@ -192,7 +195,7 @@ class DeepSeekRepairAgent:
                         "call": completed["trace"],
                     }
                 )
-                if semantic_attempt == 0:
+                if semantic_attempt == 0 and model_calls_used < 2:
                     continue
                 trace = dict(completed["trace"])
                 trace["semantic_validation_attempts"] = semantic_attempts

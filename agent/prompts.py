@@ -39,21 +39,20 @@ change_summary must describe code that is visibly present in returned source_cod
 Never replace a working ML or Hybrid strategy with a non-ML fallback. Return one JSON
 object matching the requested schema and no surrounding prose."""
 
-ACCEPTANCE_SYSTEM_PROMPT = """You are the AlphaForge strategy evidence analyst.
-Explain one completed QuantConnect LEAN run against checks A1 through A5 and propose
-one bounded repair for the first missing stage. Backend code owns every pass/fail status
-and the final accept/revise decision; never claim authority over that verdict. Return
-one JSON object and no surrounding prose. Do not write or modify strategy code."""
+ACCEPTANCE_SYSTEM_PROMPT = """You are the independent AlphaForge Acceptance Agent.
+Audit one completed QuantConnect LEAN run against A1 through A5. Decide pass/fail for
+every check and return the final accept/revise decision. The Backend may reject an
+internally inconsistent response or enforce deterministic A1/A5 facts, but it does not
+replace your semantic judgment for A2 through A4. Return exactly one JSON object and no
+surrounding prose. Do not write or modify strategy code."""
 
 ACCEPTANCE_CHECK_IDS = ("A1", "A2", "A3", "A4", "A5")
 
 ACCEPTANCE_RULES = """ALPHAFORGE ACCEPTANCE RULES
 
 A1 ACTUAL INVESTMENT ACTIVITY
-Use the Backend behavior facts to evaluate this conjunction:
-filled_order_count > 0, invested_snapshot_count > 0, and max_gross_exposure > 0.
-State whether the conjunction is established and cite all three values. Do not emit
-an authoritative status.
+Pass only when filled_order_count > 0, invested_snapshot_count > 0, and
+max_gross_exposure > 0. Cite all three authoritative Backend values.
 
 A2 DATA-TO-ORDER CAUSAL PATH
 Construct an execution proof with these ordered stages: available market rows; feature
@@ -62,13 +61,10 @@ submission; filled orders. For each stage, cite the source expression and the ob
 execution fact that establishes its output. State whether the proof reaches filled
 orders and identify the first stage whose required output is absent.
 
-The shared rebalancer is a multi-bar execution lifecycle. Cite
-staged_rebalance_started_count, staged_rebalance_completed_count,
-staged_rebalance_replacement_count, staged_rebalance_failed_count, and
-canceled_order_count. A candidate has not completed its causal path when targets start
-but no staged rebalance completes, even if individual orders filled. In that case,
-request alignment between signal or label horizon, target-update cadence, and execution
-duration instead of treating activity as completion.
+When the source actually calls self.af_rebalance_daily_weights, include its staged
+events in this proof and require a completed staged rebalance. Otherwise do not require
+staged execution: standard set_holdings, liquidate, market_order, limit_order, and other
+LEAN order paths are valid and must be judged from their own order evidence.
 
 For ML and Hybrid code, include separate numeric cardinality calculations for training
 and inference. Each calculation states the available row count, each row loss caused by
@@ -83,11 +79,10 @@ from source code. Runtime evidence fields are authoritative. If they are absent,
 "not observed" and request the exact missing counter or recorded event.
 
 A3 DESIGN TRACK INTEGRITY
-For Traditional, look for evidence tracing a non-ML market signal into symbol selection
-or target weights. For ML, look for fitted model state flowing through a prediction into
-symbol selection or target weights. For Hybrid, look for both fitted-model predictions
-and an independent non-ML market signal in the same final selection or target-weight
-decision. Cite the assignments and consumers that establish each connection.
+Traditional passes when a non-ML market signal determines selection or orders. ML
+passes when fitted model predictions determine selection or orders. Hybrid passes when
+both fitted-model predictions and an independent non-ML signal affect the same final
+decision. Judge the actual causal use, not keyword presence.
 
 A4 TIME INTEGRITY
 Construct a timeline for each training and trading path. State the decision timestamp,
@@ -103,13 +98,12 @@ field to the source expression that consumes it. State which mappings are presen
 whether all traded stocks belong to run_settings.symbols. A selected subset satisfies
 the symbol mapping, and the benchmark remains separate from the candidate stocks.
 
-ADVISORY OUTPUT
-Return exactly five check notes, A1 through A5. Each note contains evidence and a short
-explanation, but no pass/fail status. Backend deterministic policy owns all statuses and
-the final decision. Set repair_request to null when you find no missing stage. Otherwise
-build one repair_request from the first interrupted stage and its supplied facts.
-Request structured af_record_signal/af_record_ml_* evidence instead of per-bar debug
-logging. Never ask for unbounded debug output inside on_data.
+DECISION
+Return exactly five checks A1 through A5. Each has status pass/fail, concrete evidence,
+and a reason. Return accept only when all five pass and repair_request is null. Return
+revise when any check fails and provide one bounded repair_request for the earliest
+failed causal or compliance stage. Request structured af_record_signal/af_record_ml_*
+evidence instead of unbounded per-bar debug logging.
 
 EVALUATION SCOPE
 Acceptance evidence consists of actual investment activity, strategy causality, design
@@ -136,14 +130,12 @@ class UserStrategy(AlphaForgeBaseAlgorithm):
         value = self.get_parameter(name)
         return value if value not in (None, "") else default
 
-    def initialize_strategy(self):
+    def initialize(self):
         start = datetime.fromisoformat(self._parameter("start_date", "2020-01-02"))
         end = datetime.fromisoformat(self._parameter("end_date", "2024-12-31"))
         self.set_start_date(start.year, start.month, start.day)
         self.set_end_date(end.year, end.month, end.day)
         self.set_cash(float(self._parameter("initial_cash", "100000")))
-        self.target_gross = 0.95
-
         tickers = [
             ticker.strip().upper()
             for ticker in self._parameter("symbols", "MSFT,AAPL,NVDA,GOOGL,AMZN").split(",")
@@ -174,10 +166,11 @@ class UserStrategy(AlphaForgeBaseAlgorithm):
         #     self.history(self.symbols, 252, Resolution.DAILY)
         # )
         # Never index self.history[TradeBar](...) as a pandas DataFrame.
-        # Keep total absolute target weights at or below self.target_gross.
-        # For a long-only basket on Daily data, submit a {Symbol: weight} mapping
-        # with self.af_rebalance_to_weights(target_weights, "rebalance reason") so
-        # reductions fill before new purchases are sized.
+        # Choose and document the strategy's own cash reserve and gross exposure.
+        # Standard LEAN set_holdings/liquidate/order methods are valid. For a Daily
+        # basket rotation whose new buys depend on proceeds from reductions, the
+        # optional self.af_rebalance_daily_weights(target_weights, tag) helper can
+        # stage reductions before buy sizing.
         # Canonical monthly schedule (no `.do(...)` builder exists in LEAN Python):
         # self.schedule.on(
         #     self.date_rules.month_start(self.symbols[0]),
@@ -206,17 +199,18 @@ class UserStrategy(AlphaForgeBaseAlgorithm):
         # })
         # Add the strategy's indicators, models, schedules, and state here.
 
-    def on_alpha_data(self, data):
+    def on_data(self, data):
         # Implement event-driven strategy logic here when needed.
         pass
 '''
 
 
-AGENT_CAPABILITY_CONTRACT = """ALPHAFORGE AGENT CAPABILITY CONTRACT v3
+AGENT_CAPABILITY_CONTRACT = """ALPHAFORGE AGENT CAPABILITY CONTRACT v4
 
 RUNTIME
 - The entry class is UserStrategy(AlphaForgeBaseAlgorithm).
-- Implement initialize_strategy, not initialize. The base class owns initialize.
+- Use the standard QuantConnect lifecycle: initialize, on_data, on_order_event, and
+  on_end_of_algorithm when needed. The base class does not own these callbacks.
 - Never redefine inherited af_* methods. Call the supplied base APIs exactly as shown.
 - Candidate stocks come only from the symbols parameter. SPY is a benchmark/feature,
   not a candidate unless it is explicitly in symbols.
@@ -232,12 +226,12 @@ SHARED SETTINGS
   transaction_cost_bps, and slippage_bps exactly through parameters.
 - Configure every security with af_configure_security and retain Symbols returned by
   af_track_symbol.
-- Keep long-only gross target <= 0.95. Never lower the inherited cash buffer.
-- Submit basket targets only with af_rebalance_to_weights. Use af_liquidate_all for a
-  full risk-off exit. Do not call set_holdings or liquidate directly.
-- Allow a staged rebalance to complete before replacing it with a new target. Align
-  prediction or signal horizon with target cadence: for example, a 5-day label belongs
-  with roughly weekly decisions and a 21-day label with roughly monthly decisions.
+- Choose the portfolio size, cash reserve, gross exposure, and order process from the
+  design and observed execution constraints. No fixed 95% exposure is imposed.
+- Standard set_holdings, liquidate, and LEAN order APIs are allowed.
+- For a Daily basket rotation whose buys depend on released cash, optionally call
+  af_rebalance_daily_weights. When used, allow it to complete before replacing targets
+  and align the target cadence with its multi-bar lifecycle.
 
 HISTORY AND LEAN PYTHON
 - Multi-symbol pandas history:
@@ -303,9 +297,9 @@ SELF-CHECK BEFORE OUTPUT
 2. Every shared setting is consumed.
 3. History access uses one of the canonical forms above.
 4. Training rows survive rolling/pct_change/shift/dropna losses.
-5. At least one scheduled rebalance can train, rank, create non-zero targets, and call
-   af_rebalance_to_weights under the supplied date range.
-6. No target sum exceeds 0.95 and no direct order API bypasses the shared rebalancer.
+5. At least one scheduled or on_data decision can train/rank, create non-zero targets,
+   and submit valid LEAN orders under the supplied date range.
+6. The chosen gross exposure, cash reserve, and order path are explicit and feasible.
 7. The assigned track remains provable from source and recorded runtime evidence.
 8. Every schedule and af_record_* call exactly matches the signatures above; do not
    describe a fix unless the returned source_code contains it.
@@ -377,7 +371,7 @@ DESIGN_OUTPUT_SCHEMA = {
             "model/prediction when applicable",
             "ranking",
             "target weights",
-            "af_rebalance_to_weights",
+            "order submission",
         ],
         "strategy_spec": {
             "signal_family": (

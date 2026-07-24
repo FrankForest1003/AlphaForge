@@ -24,7 +24,7 @@ class DeepSeekDesigner:
             **self.deepseek.health(),
             "documentation_bytes": len(self.lean_documentation.encode("utf-8")),
             "prompt_reference_mode": "compact_capability_contract",
-            "prompt_contract_version": "agent-capability-v3",
+            "prompt_contract_version": "agent-capability-v4",
         }
 
     @staticmethod
@@ -207,7 +207,7 @@ class DeepSeekDesigner:
                 "includes": [
                     "public_baselines",
                     "run_settings",
-                    "agent_capability_contract_v3",
+                    "agent_capability_contract_v4",
                 ],
                 "excludes": [
                     "human_source",
@@ -224,6 +224,7 @@ class DeepSeekDesigner:
             "total_tokens": 0,
         }
         previous_error: str | None = None
+        model_calls_used = 0
         for semantic_attempt in range(2):
             messages = list(base_messages)
             if previous_error is not None:
@@ -250,7 +251,9 @@ class DeepSeekDesigner:
                 max_tokens=12_000,
                 empty_error="DeepSeek returned an empty response",
                 invalid_error="DeepSeek did not return valid JSON",
+                max_attempts=2 - model_calls_used,
             )
+            model_calls_used += len(completed["trace"].get("attempts", []))
             for key in total_usage:
                 total_usage[key] += int(completed["usage"].get(key, 0) or 0)
             payload = completed["payload"]
@@ -273,7 +276,7 @@ class DeepSeekDesigner:
                         "call": completed["trace"],
                     }
                 )
-                if semantic_attempt == 0:
+                if semantic_attempt == 0 and model_calls_used < 2:
                     continue
                 trace = dict(completed["trace"])
                 trace["semantic_validation_attempts"] = semantic_attempts

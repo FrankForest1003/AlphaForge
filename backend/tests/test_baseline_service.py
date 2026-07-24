@@ -26,10 +26,7 @@ from app.services.baseline_service import (
     extract_critical_log_evidence,
     validate_acceptance_report,
 )
-from app.services.acceptance_policy import (
-    build_deterministic_acceptance_report,
-    normalize_acceptance_payload,
-)
+from app.services.acceptance_policy import normalize_acceptance_payload
 
 
 SYMBOLS = {"MSFT", "AAPL", "NVDA", "GOOGL", "AMZN"}
@@ -116,7 +113,7 @@ class UserStrategy(AlphaForgeBaseAlgorithm):
         value = self.get_parameter(name)
         return value if value not in (None, "") else default
 
-    def initialize_strategy(self):
+    def initialize(self):
         symbols = self._parameter("symbols", "MSFT,AAPL,NVDA,GOOGL,AMZN")
         start_date = self._parameter("start_date", "2020-01-02")
         end_date = self._parameter("end_date", "2024-12-31")
@@ -130,9 +127,9 @@ class UserStrategy(AlphaForgeBaseAlgorithm):
 
     def rebalance(self):
         {transparent.rstrip()}
-        self.af_rebalance_to_weights({{}}, "test")
+        self.set_holdings([])
 
-    def on_alpha_data(self, data):
+    def on_data(self, data):
         pass
 '''
 
@@ -396,7 +393,15 @@ def settings(**changes):
 def human_code():
     return HumanStrategyRequest(
         mode="code",
-        source_code="class UserStrategy:\n    pass\n",
+        source_code=(
+            "from AlgorithmImports import *\n\n"
+            "class UserStrategy(QCAlgorithm):\n"
+            "    def initialize(self):\n"
+            "        self.symbol = self.add_equity('MSFT', Resolution.DAILY).symbol\n"
+            "    def on_data(self, data):\n"
+            "        if not self.portfolio.invested:\n"
+            "            self.set_holdings(self.symbol, 0.8)\n"
+        ),
     )
 
 
@@ -455,7 +460,10 @@ def test_guided_human_builds_complete_source_from_four_choices():
     assert "self.date_rules.week_start" in source
     assert "reverse=False" in source
     assert 'self._parameter("symbols"' in source
-    assert "af_rebalance_to_weights" in source
+    assert "self.set_holdings(" in source
+    assert "def initialize(self):" in source
+    assert "def on_data(self, data):" in source
+    assert "initialize_strategy" not in source
 
 
 def test_three_designer_generation_requests_start_in_parallel():
@@ -517,7 +525,7 @@ def test_forge_runs_four_baselines_human_and_three_designer_candidates():
     assert {item[0] for item in designer.calls} == {"Traditional", "ML", "Hybrid"}
     assert len(worker.custom_submissions) == 4
     assert completed["human"]["state"] == "completed"
-    assert completed["human"]["source_code"] == "class UserStrategy:\n    pass"
+    assert completed["human"]["source_code"] == human_code().source_code.strip()
     assert all(len(call[2]) == 4 for call in designer.calls)
     assert all(item["state"] == "accepted" for item in completed["candidates"])
     assert len(acceptance.calls) == 3
@@ -678,7 +686,8 @@ def test_deepseek_prompt_uses_compact_contract_and_structured_design():
     assert len(prompt) < 20_000
     assert '"design"' in prompt
     assert '"source_code"' in prompt
-    assert "af_rebalance_to_weights" in prompt
+    assert "af_rebalance_daily_weights" in prompt
+    assert "Standard set_holdings, liquidate" in prompt
     assert "exactly one dict positional argument" in prompt
     assert "LEAN Python ScheduleManager has no `.do(...)` builder" in prompt
     assert '"label_horizon_days"' in prompt
@@ -744,7 +753,8 @@ def test_deepseek_prompt_uses_compact_contract_and_structured_design():
     assert "BROKEN COMPLETE SOURCE" in repair_prompt
     assert "FULL LEAN CONSOLE LOG" in repair_prompt
     assert '"lean_console_log_excerpt"' in repair_prompt
-    assert "af_rebalance_to_weights" in repair_prompt
+    assert "af_rebalance_daily_weights" in repair_prompt
+    assert "Standard set_holdings, liquidate" in repair_prompt
     assert "max_position_weight" not in repair_prompt
     assert '"repair_attempt": 1' in repair_prompt
     assert '"repair_trigger": "acceptance_revision"' in repair_prompt
@@ -889,6 +899,54 @@ def test_designer_retries_once_after_semantic_schema_failure():
         "schema_failed",
         "passed",
     ]
+
+
+def test_json_and_semantic_failures_share_two_model_call_budget():
+    invalid_design = fake_design("ML")
+    invalid_design["signals"] = []
+    responses = [
+        "not json",
+        json.dumps(
+            {
+                "design": invalid_design,
+                "source_code": fake_candidate_source("ML"),
+            }
+        ),
+    ]
+
+    class Completions:
+        def __init__(self):
+            self.calls = 0
+
+        def create(self, **request):
+            content = responses[self.calls]
+            self.calls += 1
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content=content))],
+                usage=SimpleNamespace(
+                    prompt_tokens=10,
+                    completion_tokens=5,
+                    total_tokens=15,
+                ),
+            )
+
+    completions = Completions()
+    designer = DeepSeekDesigner(
+        api_key="test-key",
+        base_url="https://api.deepseek.com",
+        model="deepseek-v4-pro",
+        thinking_enabled=True,
+        lean_documentation="FULL DOCUMENT",
+        client=SimpleNamespace(chat=SimpleNamespace(completions=completions)),
+    )
+    with pytest.raises(DeepSeekCallError):
+        designer.generate(
+            track="ML",
+            run_settings=settings().model_dump(mode="json"),
+            baseline_results=[],
+        )
+
+    assert completions.calls == 2
 
 
 def test_designer_normalizes_lossless_scalar_string_lists_without_retry():
@@ -1199,6 +1257,37 @@ def test_runtime_failure_evidence_relates_order_event_and_portfolio():
     assert evidence["failed_orders"][0]["portfolio_before_failure"]["cash"] == 1_000
 
 
+def test_runtime_failure_evidence_keeps_every_failed_order():
+    details = {
+        "orders": [
+            {
+                "order_id": order_id,
+                "symbol": "MSFT",
+                "quantity": 1,
+                "status": "INVALID",
+                "time": f"2024-01-03T16:{order_id:02d}:00",
+            }
+            for order_id in range(20)
+        ],
+        "order_events": [
+            {
+                "order_id": order_id,
+                "symbol": "MSFT",
+                "status": "INVALID",
+                "time": f"2024-01-03T16:{order_id:02d}:00",
+                "message": "Rejected",
+            }
+            for order_id in range(20)
+        ],
+        "position_snapshots": [],
+    }
+    evidence = build_runtime_failure_evidence(details, "ERROR:: rejected")
+
+    assert evidence["failed_order_count"] == 20
+    assert len(evidence["failed_orders"]) == 20
+    assert evidence["evidence_truncated"] is False
+
+
 def test_critical_log_evidence_is_verbatim_and_focused():
     console_log = (
         "noise before\n"
@@ -1309,7 +1398,7 @@ def test_revision_effectiveness_distinguishes_evidence_only_from_no_op():
     assert no_op["kind"] == "ineffective"
 
 
-def test_agent_revision_cannot_override_passing_deterministic_policy():
+def test_independent_agent_revision_triggers_repair_and_rerun():
     worker = FakeWorker()
     repairer = FakeRepairer()
     acceptance = FakeAcceptanceAgent(
@@ -1328,12 +1417,11 @@ def test_agent_revision_cannot_override_passing_deterministic_policy():
 
     first = completed["candidates"][0]
     assert first["state"] == "accepted"
-    assert first["repair_attempts"] == 0
-    assert len(first["acceptance_history"]) == 1
-    assert first["acceptance"]["decision_source"] == "backend_deterministic_policy"
-    assert first["acceptance"]["agent_advisory_decision"] == "revise"
-    assert repairer.calls == []
-    assert len(worker.custom_submissions) == 4
+    assert first["repair_attempts"] == 1
+    assert len(first["acceptance_history"]) == 2
+    assert first["acceptance"]["decision"] == "accept"
+    assert len(repairer.calls) == 1
+    assert len(worker.custom_submissions) == 5
 
 
 def test_history_keeps_latest_five_pk_rounds(tmp_path):
@@ -1382,18 +1470,14 @@ def test_a1_cannot_accept_zero_activity_even_when_agent_says_accept():
 
     completed = wait_for(service, service.create(settings(), human_code())["run_id"])
 
-    assert all(item["state"] == "rejected" for item in completed["candidates"])
-    assert all("Deterministic policy failed A1" in item["error"] for item in completed["candidates"])
-    assert len(repairer.calls) == 9
+    assert all(item["state"] == "failed" for item in completed["candidates"])
+    assert all("A1 contradicts behavior evidence" in item["error"] for item in completed["candidates"])
+    assert len(repairer.calls) == 0
 
 
 def test_acceptance_revisions_share_three_repair_attempt_limit():
-    class MissingEvidenceWorker(FakeWorker):
-        def details(self, run_id):
-            return {"orders": [], "position_snapshots": [], "rebalances": []}
-
     reports = [acceptance_report("revise", "A2") for _ in range(12)]
-    worker = MissingEvidenceWorker()
+    worker = FakeWorker()
     repairer = FakeRepairer()
     service = ForgeService(
         worker=worker,
@@ -1418,7 +1502,7 @@ def test_nested_provider_output_is_unwrapped():
     assert normalize_acceptance_payload({"output": report}) == report
 
 
-def test_hybrid_fallback_orders_cannot_pass_without_ml_evidence():
+def test_backend_preserves_independent_hybrid_semantic_judgment():
     evidence = {
         "filled_order_count": 100,
         "invested_snapshot_count": 200,
@@ -1433,16 +1517,14 @@ def test_hybrid_fallback_orders_cannot_pass_without_ml_evidence():
         "hybrid_decision_link_count": 0,
         "training_before_prediction_count": 0,
     }
-    report = build_deterministic_acceptance_report(
-        track="Hybrid",
-        run_settings={"symbols": ["MSFT"], "benchmark": "SPY"},
-        worker_result={"status": "completed"},
-        behavior_evidence=evidence,
-        preflight_report={"diagnostics": []},
-        advisory_payload={"output": acceptance_report()},
+    agent_report = acceptance_report("revise", "A3")
+    report = validate_acceptance_report(
+        agent_report,
+        evidence,
+        {"symbols": ["MSFT"], "benchmark": "SPY"},
     )
     by_id = {item["id"]: item for item in report["checks"]}
     assert report["decision"] == "revise"
     assert by_id["A1"]["status"] == "pass"
-    assert by_id["A2"]["status"] == "fail"
+    assert by_id["A2"]["status"] == "pass"
     assert by_id["A3"]["status"] == "fail"

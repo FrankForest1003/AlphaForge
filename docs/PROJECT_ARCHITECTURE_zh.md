@@ -8,14 +8,14 @@ AlphaForge 是一个面向金融 AI 教学与策略实验的本地 Web 平台。
 Experiment Contract 下创建 Human Strategy；系统同时运行四个公共基线，并由
 DeepSeek 驱动三个相互独立的 AI Designer 生成 Traditional、Machine Learning 和
 Hybrid 策略。所有策略最终都必须进入同一个 QuantConnect LEAN 环境完成真实回测，
-再以确定性规则判断代码是否真正执行、是否属于声明的策略轨道，以及结果是否可以
-比较。
+再由独立 Acceptance Agent 审核代码是否真正执行、是否属于声明的策略轨道；
+Backend 只负责报告一致性和 A1/A5 硬事实守卫。
 
 项目的重点不是让大模型直接宣称“找到最优策略”，而是建立一条可以审计的流程：
 
 1. 冻结公共实验条件；
 2. 生成结构化策略设计与完整代码；
-3. 确定性检查代码；
+3. 进行窄语法与危险能力预检；
 4. 在 LEAN 中执行；
 5. 从真实运行结果建立证据；
 6. 修复失败代码但限制修改次数；
@@ -47,7 +47,7 @@ flowchart LR
 | 服务 | 默认本地端口 | 主要职责 |
 |---|---:|---|
 | Frontend | `8501` | 创建实验、显示 AI Forge、结果、教学、鲁棒性和 PK 历史 |
-| Backend | `8000` | 校验请求、编排 Agent 与 Worker、确定性验收和结果分析 |
+| Backend | `8000` | 校验请求、编排 Agent 与 Worker、验收守卫和结果分析 |
 | LEAN Worker | `18081` | 管理策略任务、调用本地 LEAN、输出日志、摘要和详细证据 |
 
 Frontend 通过 Vite Proxy 访问 Backend。Backend 通过 Docker 内部网络调用 Worker。
@@ -99,11 +99,11 @@ LEAN Worker 绑定在 `127.0.0.1`，并使用本地 Token 保护任务接口。
 | `frontend/` | React 单页应用与全部用户工作区 |
 | `backend/app/main.py` | FastAPI 入口和 REST API |
 | `backend/app/services/baseline_service.py` | Forge 主编排、分析、历史与鲁棒性 |
-| `backend/app/services/acceptance_policy.py` | Backend 权威 A1–A5 验收规则 |
+| `backend/app/services/acceptance_policy.py` | Acceptance JSON 外壳规范化 |
 | `agent/designer.py` | 三条 AI 策略的设计与完整代码生成 |
 | `agent/repair.py` | 基于静态诊断、LEAN 错误和验收事实修复代码 |
-| `agent/acceptance.py` | 对运行证据进行解释并给出 advisory |
-| `agent/validation.py` | AST 安全、API、轨道和共享参数预检 |
+| `agent/acceptance.py` | 独立审核 A1–A5 并决定 accept/revise |
+| `agent/validation.py` | 语法与明确危险能力的窄预检 |
 | `agent/prompts.py` | 版本化能力契约、策略配方和输出协议 |
 | `lean_worker/app/` | Worker HTTP 服务、任务管理和数据状态 |
 | `lean_worker/worker/` | LEAN 启动、结果解析和运行文件管理 |
@@ -171,57 +171,52 @@ Traditional、ML、Hybrid 三个 Designer API 请求并行发出。Designer 输�
 当前采用 minimal-delta challenger：优先保留同轨道强基线已经证明有效的机制，
 只改变两个维度，避免一次重写模型、信号、期限、Top K、权重和调仓频率。
 
-### 6.4 确定性静态预检
+### 6.4 窄静态预检
 
-AI 代码不会直接交给 LEAN。AST Validator 首先检查：
+AI 代码提交 LEAN 前只检查：
 
 - Python 是否可解析；
-- 是否存在 `UserStrategy`；
-- 是否继承 `AlphaForgeBaseAlgorithm`；
-- 是否使用允许的 Import；
-- 是否调用 `open`、`exec`、网络、子进程等禁止能力；
-- 是否覆盖基类保留的 `af_*` 方法；
-- 七项共享设置是否被读取；
-- 是否绕过 `af_rebalance_to_weights`；
-- History DataFrame 用法是否属于支持形式；
-- ML 标签是否存在明显前视填充；
-- Traditional、ML、Hybrid 是否满足各自轨道能力。
+- Python 是否可解析；
+- 是否调用 `open`、`exec` 或明确的文件、网络、子进程能力。
 
-预检输出源码 SHA-256、AST 语义 SHA-256 和结构化诊断。只有通过后才提交 Worker。
+预检仍输出源码 SHA-256、AST 语义 SHA-256 和结构化诊断，但不以关键词替代
+LEAN 可运行性或 Acceptance 的轨道/因果判断。
 
 ### 6.5 LEAN 回测
 
 Worker 为每个任务创建隔离目录，将候选源码与
 `alphaforge_base.py` 放入 LEAN 项目，再启动本地 LEAN Launcher。
 
-共享基类负责：
+共享基类只负责：
 
-- 统一费用、滑点、杠杆和 Benchmark；
+- 费用、滑点、杠杆和 Benchmark 辅助；
 - 追踪允许股票；
-- 分阶段执行目标权重，先卖后买；
-- 保留现金缓冲；
 - 记录订单、成交、持仓、敞口、信号、训练、预测和调仓事件；
 - 输出 `alphaforge_details.json`。
+
+策略使用标准 QuantConnect 生命周期和标准订单 API。Daily 组合确实需要等待减仓
+资金时，可以选择 `af_rebalance_daily_weights`；共享基类不强制现金缓冲、总敞口
+或分阶段执行。Worker 只在任务副本中包装回调以收集证据。
 
 Worker 返回普通摘要、完整控制台日志和结构化明细。Backend 不依据 Agent 的文字
 判断“是否交易”，而依据 Worker 事实判断。
 
 ### 6.6 Acceptance 与 Repair 闭环
 
-运行完成后，Acceptance Agent 解释证据；最终结论由 Backend 决定：
+运行完成后，独立 Acceptance Agent 检查证据并决定：
 
 | 检查 | 目的 |
 |---|---|
 | A1 | 是否有成交、实际持仓和正敞口 |
-| A2 | 市场数据→信号/特征→模型/预测→排名→目标→完成调仓→成交是否连通 |
+| A2 | 市场数据→信号/特征→模型/预测→排名→目标/订单→成交是否连通 |
 | A3 | 实际行为是否符合 Traditional、ML 或 Hybrid 声明 |
 | A4 | 是否存在时间完整性和训练先于预测的证据 |
 | A5 | 是否使用共享设置且未交易白名单外股票或 Benchmark |
 
-Agent 只能提供 `agent_advisory`。`decision`、A1–A5 和权威
-`repair_request` 由 `deterministic-acceptance-v2` 生成。
+Agent 输出 A1–A5、`decision` 和 `repair_request`。Backend 校验报告内部一致性，
+并用确定性运行事实约束 A1、用成交白名单约束 A5，但不生成或覆盖 A2–A4。
 
-若静态预检、LEAN 执行或 Acceptance 失败，Repair Agent 会收到：
+若窄预检、LEAN 执行或 Acceptance revise，Repair Agent 会收到：
 
 - 原始完整源码；
 - 精确静态诊断或 LEAN 错误；
@@ -231,7 +226,9 @@ Agent 只能提供 `agent_advisory`。`decision`、A1–A5 和权威
 - 已存在的有效训练、预测、目标和成交事实；
 - 当前 CandidateDesign。
 
-每个候选最多修复三次。每次必须返回完整代码，不能只返回 Patch。
+运行失败时不会调用 Acceptance；即使 details 不可用也会进入 Repair。运行失败和
+Acceptance revise 共用最多三次源码修改，每次修改后必须重跑 Worker。Acceptance
+API/格式重试不消耗源码修改次数。
 
 ## 7. 如何提高 AI 代码通过 LEAN 的概率
 
@@ -251,7 +248,7 @@ Designer 和 Repair 都获得同一份 AlphaForge LEAN 模板，包含：
 - 正确的 Schedule 形式；
 - `History` 和 `af_split_history_frames` 用法；
 - `af_record_*` 的真实函数签名；
-- `af_rebalance_to_weights` 调用方式。
+- 标准订单 API 与可选 `af_rebalance_daily_weights` 的适用边界。
 
 ### 7.3 JSON 与语义重试
 
@@ -259,6 +256,7 @@ Designer 和 Repair 都获得同一份 AlphaForge LEAN 模板，包含：
 - JSON 可解析但字段或完整源码不合法：携带精确错误再生成一次；
 - scalar 与单元素字符串列表等无损形态先规范化，不浪费模型调用；
 - Repair 返回原源码、缺失变更摘要或缺失中断阶段时进行一次语义重试；
+- JSON 与语义重试共享两次模型调用上限，不会嵌套放大到四次；
 - 网络、鉴权和配置错误不会盲目重试。
 
 ### 7.4 History 行数与时间完整性
@@ -274,7 +272,7 @@ History 请求大于实际最小训练行数。训练特征顺序与预测特征
 - `ml_training_run_count`
 - `ml_prediction_count`
 - `transparent_signal_event_count`
-- prediction/signal 与 target 的同时间连接
+- prediction/signal 与 target/order 的运行证据
 - `staged_rebalance_completed_count`
 - `filled_order_count`
 
@@ -283,8 +281,9 @@ History 请求大于实际最小训练行数。训练特征顺序与预测特征
 
 ### 7.6 修订有效性与防退化
 
-Backend 比较前后源码语义哈希、行为事实、指标和已解决检查。只有注释变化或没有
-解决失败阶段的修订不会被视为有效。
+Backend 比较前后源码语义哈希、行为事实、指标和已解决检查，并把结果连同上一轮
+Acceptance 提供给独立 Agent。该信息用于解释修订是否有效，但 Backend 不篡改
+Agent 对 A2–A4 的判断。
 
 如果后续 Repair 退化为零交易，系统保留此前有成交且指标最好的
 `best_observed_attempt` 用于审计和展示，但候选仍保持 Rejected，不能伪装成通过。

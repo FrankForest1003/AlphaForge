@@ -51,24 +51,13 @@ Designer 不再接收完整 LEAN 文档，而接收四类紧凑信息：
 
 Traditional 的 `training_plan` 必须为空且不得出现模型训练；ML 和 Hybrid 必须明确特征、训练计划、`.fit`、`.predict`、训练证据和预测证据。Hybrid 还必须包含命名的透明信号项。
 
-## Worker 前的确定性预检
+## Worker 前的窄预检
 
-`agent/validation.py` 在消耗一次 LEAN 回测前检查：
-
-- `UserStrategy(AlphaForgeBaseAlgorithm)` 和 `initialize_strategy` 是否存在；
-- 七项共享设置和 `af_configure_security` 是否完整；
-- 是否使用 `af_track_symbol` 和 `af_rebalance_to_weights`；
-- 是否存在 `history[TradeBar]`、直接 `set_holdings`、直接 `liquidate`、低层 `DMatrix`；
-- import 和危险调用是否超出允许范围；
-- Traditional/ML/Hybrid 的轨道完整性；
-- ML/Hybrid 是否包含真实训练、预测和证据记录。
-- `schedule.on` 是否使用三参数或带名称的四参数重载，拒绝不存在的 `.do(...)` Builder 写法；
-- `af_record_ml_training` 与 `af_record_ml_prediction` 是否各自只接收一个字典，并包含完整的标准字段；
-- Traditional/Hybrid 是否用 `af_record_signal(name, payload)` 留下透明信号证据；
-- 是否把合法的负 `iloc` 尾部索引错误地当成历史不足，从而让信号分支永远不可达；
-- 是否对负 shift 产生的不可用未来标签执行 `fillna(0)`。
-
-预检结果包含稳定诊断码、源码 SHA-256 和警告。失败源码不会提交 Worker，而是直接进入 `static_validation` Repair。
+`agent/validation.py` 只检查 Python 语法，以及 `open`、动态执行、文件、网络、
+子进程等明确危险能力。它保留源码与 AST 语义哈希，但不再要求
+`initialize_strategy`、特定 helper、特定关键词或轨道形状，也不禁止标准
+`set_holdings`/`liquidate`。LEAN 负责 API 和可运行性；独立 Acceptance Agent
+结合源码与真实运行证据判断 A2–A4。
 
 ## 定向修复与运行证据
 
@@ -104,7 +93,10 @@ self.af_record_ml_prediction({
 
 两个函数都不接受多个位置参数或关键字参数。Prediction 必须在最终 Top-K 已经确定后记录，`selected` 必须等于真实目标组合成员资格。
 
-Worker Attempt 仍持久化完整控制台日志，但发送给 Acceptance 的日志摘录最多 12,000 字符，发送给 Repair 的摘录最多 20,000 字符。摘录保留错误上下文、`main.py` 行号、统计信息、数据使用信息、开头和结尾，避免每日 debug 把 Agent 请求重新推高到 30 万 token。Acceptance 不再请求在 `on_data` 中加入无限量 debug，而优先要求结构化 `af_record_*` 事件。
+Worker Attempt 持久化完整 Worker 结果和控制台日志。Acceptance 使用关键摘录；
+运行失败进入 Repair 时发送完整日志、完整结果、全部失败订单、OrderEvents 和失败前
+组合快照。details 缺失仍然 Repair。Acceptance 不再请求在 `on_data` 中加入无限量
+debug，而优先要求结构化 `af_record_*` 事件。
 
 DeepSeek 返回空 content 或无效 JSON 时，客户端会自动重试一次，并在重试中关闭 hidden thinking 和 reasoning effort。Trace 会保存每次尝试，便于区分模型偶发错误与策略错误。
 
@@ -115,6 +107,9 @@ JSON 能解析但语义 schema 不合法时也会单独重试一次，例如
 `source_code`。第二次请求只携带公开上下文和精确校验错误，要求重新返回完整设计与
 完整源码。Trace 使用 `semantic_validation_attempts` 保存两次调用；第二次仍失败
 才把候选标记为 Failed。
+
+JSON 解析重试与外层语义重试共享同一个两次模型调用预算，因此不会形成
+“两次语义尝试 × 每次两次 JSON 尝试”的四次调用。
 
 Repair 对缺少完整源码、无有效 `change_summary`、缺少
 `first_interrupted_stage` 或返回未变化源码也执行一次同类语义重试。重试仍严格
@@ -147,7 +142,7 @@ schema 因此让三条轨道全部多调用一次；Hybrid 的可运行修订曾
   History 请求数量不得比自己的最小长度判断少一行；
 - `PREDICTIONS_WITHOUT_TRAINING` 成为独立因果分类。Repair 必须优先检查训练行数和
   early-return，后续已有 predictions/targets/fills 时不得臆测为 schedule 失效；
-- Agent advisory 与 Backend 确定性 repair request 分离。后者是权威输入；
+- Acceptance Agent 独立输出 A1–A5 和 accept/revise；Backend 只守卫 A1/A5 硬事实与报告一致性；
 - 终局 Repair 若退化或调用失败，Backend 保留最佳有交易 Attempt，但仍显示真实
   Rejected 状态。
 
@@ -162,7 +157,10 @@ Acceptance 的含义是“可运行、可审计、因果链完整”，不是“
 - `strategy_behavior_change`：交易行为或回测指标发生变化；
 - `ineffective`：只有注释/格式变化，或没有解决任何既有失败。
 
-Repair 返回完全相同的源码会直接失败；只有注释和格式变化时，AST 语义哈希不变。若模型声称接受一个确定性无效修订，Backend 会把 A2 改回 revise 并要求真正修改。Evidence-only 修订仍允许解决 A2/A3/A4，因为审计能力本身就是这些检查的一部分；PK 胜负另行依据回测结果决定。
+Repair 返回完全相同的源码会直接失败；只有注释和格式变化时，AST 语义哈希不变。
+Backend 会把修订有效性和上一轮报告传给 Acceptance Agent，但不会把 A2 改写成
+预设结论。Evidence-only 修订仍可能由 Agent 判定解决 A2/A3/A4；PK 胜负另行依据
+回测结果决定。
 
 ## 五轮 PK 历史
 

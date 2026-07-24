@@ -1,7 +1,7 @@
 from datetime import datetime
 
 from AlgorithmImports import *
-from alphaforge_base import AlphaForgeBaseAlgorithm
+from alphaforge_base import AlphaForgeBaseAlgorithm, AlphaForgeStagedRebalancer
 
 
 class ClassicThirtyStockMeanReversion(AlphaForgeBaseAlgorithm):
@@ -31,7 +31,8 @@ class ClassicThirtyStockMeanReversion(AlphaForgeBaseAlgorithm):
             raise ValueError("Select at least one stock")
         return tickers
 
-    def initialize_strategy(self):
+    def initialize(self):
+        self._af_execution = AlphaForgeStagedRebalancer(self)
         start = datetime.fromisoformat(self._parameter("start_date", "2016-01-04"))
         end = datetime.fromisoformat(self._parameter("end_date", "2026-06-30"))
         self.set_start_date(start.year, start.month, start.day)
@@ -81,7 +82,7 @@ class ClassicThirtyStockMeanReversion(AlphaForgeBaseAlgorithm):
             self.rebalance,
         )
 
-    def on_alpha_data(self, data):
+    def on_data(self, data):
         pass
 
     def rebalance(self):
@@ -99,7 +100,7 @@ class ClassicThirtyStockMeanReversion(AlphaForgeBaseAlgorithm):
                     "selected": [],
                 },
             )
-            self.af_liquidate_all("Risk-off: QQQ below SMA")
+            self._af_execution.af_liquidate_all("Risk-off: QQQ below SMA")
             return
 
         scores = {
@@ -114,7 +115,7 @@ class ClassicThirtyStockMeanReversion(AlphaForgeBaseAlgorithm):
                 "mean_reversion_no_oversold_assets",
                 {"returns": {symbol.value: score for symbol, score in ranked}},
             )
-            self.af_liquidate_all("No negative-return mean-reversion candidates")
+            self._af_execution.af_liquidate_all("No negative-return mean-reversion candidates")
             return
 
         per_asset = min(self.max_position_weight, self.target_gross / len(selected))
@@ -127,10 +128,10 @@ class ClassicThirtyStockMeanReversion(AlphaForgeBaseAlgorithm):
                 "lookback": self.lookback,
             },
         )
-        self.af_rebalance_to_weights(
+        self._af_execution.af_rebalance_to_weights(
             {symbol: per_asset for symbol in selected},
             "Monthly cross-sectional mean-reversion rebalance",
         )
 
-    def on_alpha_end(self):
+    def on_end_of_algorithm(self):
         self.debug("ALPHAFORGE_CLASSIC_30_MEAN_REVERSION_COMPLETED")

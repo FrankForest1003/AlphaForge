@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import os
 import re
@@ -174,6 +175,88 @@ def resolve_python_dll() -> Path:
     raise WorkerError("Python 3.11 shared library was not found")
 
 
+def install_runtime_observer(algorithm_file: Path, algorithm_class: str) -> str:
+    """Wrap standard callbacks inside the copied class without managed inheritance."""
+    source = algorithm_file.read_text(encoding="utf-8")
+    try:
+        tree = ast.parse(source, filename=str(algorithm_file))
+    except SyntaxError as exc:
+        raise WorkerError(f"Strategy source is invalid Python: {exc}") from exc
+    classes = [
+        node
+        for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == algorithm_class
+    ]
+    if len(classes) != 1:
+        raise WorkerError(
+            f"Strategy source must define exactly one {algorithm_class} class"
+        )
+    strategy = classes[0]
+    callbacks = {
+        "initialize": None,
+        "on_data": None,
+        "on_order_event": None,
+        "on_end_of_algorithm": None,
+    }
+    for node in strategy.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in callbacks:
+            callbacks[node.name] = node
+    if callbacks["initialize"] is None:
+        raise WorkerError(f"{algorithm_class} must define initialize")
+
+    lines = source.splitlines(keepends=True)
+    renamed = {
+        name: f"_af_user_{name}"
+        for name, node in callbacks.items()
+        if node is not None
+    }
+    for name, replacement in renamed.items():
+        node = callbacks[name]
+        assert node is not None
+        line_index = node.lineno - 1
+        pattern = re.compile(rf"(\bdef\s+){re.escape(name)}(\s*\()")
+        lines[line_index], count = pattern.subn(
+            rf"\1{replacement}\2",
+            lines[line_index],
+            count=1,
+        )
+        if count != 1:
+            raise WorkerError(f"Unable to instrument {algorithm_class}.{name}")
+
+    def callback_expression(name: str) -> str:
+        replacement = renamed.get(name)
+        return f"self.{replacement}" if replacement else "None"
+
+    wrapper = (
+        "\n"
+        "    def initialize(self):\n"
+        "        return _AlphaForgeRuntimeObserver.initialize(\n"
+        f"            self, {callback_expression('initialize')}\n"
+        "        )\n\n"
+        "    def on_data(self, data):\n"
+        "        return _AlphaForgeRuntimeObserver.on_data(\n"
+        f"            self, data, {callback_expression('on_data')}\n"
+        "        )\n\n"
+        "    def on_order_event(self, order_event):\n"
+        "        return _AlphaForgeRuntimeObserver.on_order_event(\n"
+        f"            self, order_event, {callback_expression('on_order_event')}\n"
+        "        )\n\n"
+        "    def on_end_of_algorithm(self):\n"
+        "        return _AlphaForgeRuntimeObserver.on_end_of_algorithm(\n"
+        f"            self, {callback_expression('on_end_of_algorithm')}\n"
+        "        )\n"
+    )
+    insertion = strategy.end_lineno
+    lines[insertion:insertion] = [wrapper]
+    instrumented = "".join(lines)
+    instrumented += (
+        "\nfrom alphaforge_base import "
+        "AlphaForgeRuntimeObserver as _AlphaForgeRuntimeObserver\n"
+    )
+    algorithm_file.write_text(instrumented, encoding="utf-8", newline="\n")
+    return algorithm_class
+
+
 def stream_process(command: list[str], cwd: Path, env: dict[str, str], log_path: Path, timeout: int) -> tuple[int, bool]:
     process = subprocess.Popen(
         command,
@@ -260,10 +343,14 @@ def main() -> int:
     result_path = result_dir / "result.json"
     shutil.copy2(args.algorithm, job_main)
     shutil.copy2(support_source, job_support)
+    observed_algorithm_class = install_runtime_observer(
+        job_main,
+        args.algorithm_class,
+    )
 
     generated = build_job_config(
         template_config.read_text(encoding="utf-8-sig"),
-        args.algorithm_class,
+        observed_algorithm_class,
         job_main,
         data_folder,
         parameters,

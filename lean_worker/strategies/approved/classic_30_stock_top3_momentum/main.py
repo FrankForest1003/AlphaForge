@@ -1,7 +1,7 @@
 from datetime import datetime
 
 from AlgorithmImports import *
-from alphaforge_base import AlphaForgeBaseAlgorithm
+from alphaforge_base import AlphaForgeBaseAlgorithm, AlphaForgeStagedRebalancer
 
 
 class ClassicThirtyStockTop3Momentum(AlphaForgeBaseAlgorithm):
@@ -29,7 +29,8 @@ class ClassicThirtyStockTop3Momentum(AlphaForgeBaseAlgorithm):
             raise ValueError("Select at least one stock")
         return tickers
 
-    def initialize_strategy(self):
+    def initialize(self):
+        self._af_execution = AlphaForgeStagedRebalancer(self)
         start = datetime.fromisoformat(self._parameter("start_date", "2015-01-02"))
         end = datetime.fromisoformat(self._parameter("end_date", "2026-07-17"))
         self.set_start_date(start.year, start.month, start.day)
@@ -79,7 +80,7 @@ class ClassicThirtyStockTop3Momentum(AlphaForgeBaseAlgorithm):
             self.rebalance,
         )
 
-    def on_alpha_data(self, data):
+    def on_data(self, data):
         pass
 
     def rebalance(self):
@@ -111,7 +112,7 @@ class ClassicThirtyStockTop3Momentum(AlphaForgeBaseAlgorithm):
                     "selected": [],
                 },
             )
-            self.af_liquidate_all("Risk-off: QQQ below SMA")
+            self._af_execution.af_liquidate_all("Risk-off: QQQ below SMA")
             return
 
         scores = ready_scores
@@ -122,7 +123,7 @@ class ClassicThirtyStockTop3Momentum(AlphaForgeBaseAlgorithm):
                 "classic_30_no_positive_momentum",
                 {"scores": {symbol.value: score for symbol, score in ranked}},
             )
-            self.af_liquidate_all("Risk-off: no positive momentum")
+            self._af_execution.af_liquidate_all("Risk-off: no positive momentum")
             return
 
         per_asset = min(self.max_position_weight, self.target_gross / len(selected))
@@ -136,10 +137,10 @@ class ClassicThirtyStockTop3Momentum(AlphaForgeBaseAlgorithm):
                 "risk_filter_enabled": self.risk_filter_enabled,
             },
         )
-        self.af_rebalance_to_weights(
+        self._af_execution.af_rebalance_to_weights(
             target_weights,
             "Monthly Top-K momentum rebalance",
         )
 
-    def on_alpha_end(self):
+    def on_end_of_algorithm(self):
         self.debug("ALPHAFORGE_CLASSIC_30_TOP3_MOMENTUM_COMPLETED")

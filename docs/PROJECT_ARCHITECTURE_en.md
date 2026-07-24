@@ -8,16 +8,16 @@ AlphaForge is a local web platform for financial AI education and strategy
 experimentation. A user creates a Human Strategy under a shared Experiment Contract.
 The system runs four public baselines and asks three independent DeepSeek-powered
 Designers to create Traditional, Machine Learning, and Hybrid candidates. Every strategy
-must then execute inside the same QuantConnect LEAN environment before deterministic
-rules decide whether its behavior matches its declared track and whether its results are
-comparable.
+must then execute inside the same QuantConnect LEAN environment before an independent
+Acceptance Agent audits whether its behavior matches its declared track. Deterministic
+Backend guards cover report coherence and hard A1/A5 facts.
 
 The objective is not to let a language model announce that it has found an “optimal
 strategy.” AlphaForge builds an auditable process:
 
 1. freeze public experiment conditions;
 2. generate a structured strategy design and complete source code;
-3. validate the code deterministically;
+3. apply narrow syntax and dangerous-capability preflight;
 4. execute it in LEAN;
 5. derive evidence from the real run;
 6. repair failures under a bounded revision budget;
@@ -50,7 +50,7 @@ The application contains three Docker services:
 | Service | Default local port | Responsibility |
 |---|---:|---|
 | Frontend | `8501` | Experiment creation, AI Forge, results, learning, robustness, and PK history |
-| Backend | `8000` | Request validation, orchestration, deterministic acceptance, and analysis |
+| Backend | `8000` | Request validation, orchestration, acceptance guards, and analysis |
 | LEAN Worker | `18081` | Job management, local LEAN execution, logs, summaries, and detailed evidence |
 
 The frontend reaches the Backend through a Vite proxy. The Backend calls the Worker over
@@ -103,11 +103,11 @@ endpoints with a local token.
 | `frontend/` | React single-page application and user workspaces |
 | `backend/app/main.py` | FastAPI entry point and REST endpoints |
 | `backend/app/services/baseline_service.py` | Forge orchestration, analysis, history, and robustness |
-| `backend/app/services/acceptance_policy.py` | Authoritative Backend A1–A5 policy |
+| `backend/app/services/acceptance_policy.py` | Acceptance JSON-envelope normalization |
 | `agent/designer.py` | Designs and complete source for three AI tracks |
 | `agent/repair.py` | Repairs code from static, LEAN, and acceptance evidence |
-| `agent/acceptance.py` | Interprets run evidence and produces advisory notes |
-| `agent/validation.py` | AST safety, API, track, and shared-setting checks |
+| `agent/acceptance.py` | Independently audits A1–A5 and decides accept/revise |
+| `agent/validation.py` | Narrow syntax and dangerous-capability preflight |
 | `agent/prompts.py` | Versioned capability contract, recipes, and output protocol |
 | `lean_worker/app/` | Worker HTTP service, job management, and data status |
 | `lean_worker/worker/` | LEAN launch, result parsing, and runtime file management |
@@ -181,60 +181,56 @@ The current approach is a minimal-delta challenger: preserve a mechanism demonst
 by a strong same-track baseline and change only two dimensions instead of replacing the
 model, signal, horizon, Top K, weighting, and cadence at once.
 
-### 6.4 Deterministic Static Preflight
+### 6.4 Narrow Static Preflight
 
-AI code is not sent directly to LEAN. The AST validator checks:
+Before LEAN submission, the validator checks only:
 
 - valid Python syntax;
-- the presence of `UserStrategy`;
-- inheritance from `AlphaForgeBaseAlgorithm`;
-- allowed imports;
-- forbidden capabilities such as `open`, `exec`, networking, and subprocesses;
-- attempts to override reserved `af_*` methods;
-- consumption of all seven shared settings;
-- bypasses of `af_rebalance_to_weights`;
-- supported History DataFrame forms;
-- obvious forward-label filling;
-- actual Traditional, ML, or Hybrid track capabilities.
+- valid Python syntax;
+- `open`, `exec`, and clear file, network, or subprocess capabilities.
 
-The report includes a source SHA-256, AST semantic SHA-256, and structured diagnostics.
-Only passing candidates reach the Worker.
+The report still includes source and AST semantic SHA-256 values, but keyword checks do
+not replace LEAN executability or the Acceptance Agent's causal and track judgment.
 
 ### 6.5 LEAN Backtest
 
 The Worker creates an isolated job directory, places candidate source and
 `alphaforge_base.py` into the LEAN project, and launches the local LEAN engine.
 
-The shared base class:
+The shared base class only:
 
-- applies fees, slippage, leverage, and the benchmark consistently;
+- provides fee, slippage, leverage, and benchmark helpers;
 - tracks allowed stocks;
-- performs staged target-weight execution, selling before buying;
-- preserves a cash buffer;
 - records orders, fills, positions, exposure, signals, training, predictions, and
   rebalance events;
 - writes `alphaforge_details.json`.
+
+Strategies use the standard QuantConnect lifecycle and standard order APIs. A Daily
+basket that depends on proceeds from reductions may opt into
+`af_rebalance_daily_weights`; the base imposes no cash buffer, gross-exposure cap, or
+mandatory execution path. The Worker instruments callbacks only in the job copy.
 
 The Worker returns a normal summary, the complete console log, and structured details.
 The Backend determines whether trading occurred from Worker facts, not Agent prose.
 
 ### 6.6 Acceptance and Repair Loop
 
-After a completed run, the Acceptance Agent explains the evidence. The Backend owns the
-final decision:
+After a completed run, the independent Acceptance Agent audits the evidence and owns the
+semantic decision:
 
 | Check | Purpose |
 |---|---|
 | A1 | Filled orders, real holdings, and positive exposure |
-| A2 | Connected market-data → signal/feature → model/prediction → rank → target → completed rebalance → fill path |
+| A2 | Connected market-data → signal/feature → model/prediction → rank → target/order → fill path |
 | A3 | Runtime behavior matches the declared Traditional, ML, or Hybrid track |
 | A4 | Time integrity and training-before-prediction evidence |
 | A5 | Shared settings and the permitted stock universe are respected |
 
-The Agent can only provide `agent_advisory`. The authoritative `decision`, A1–A5
-statuses, and `repair_request` come from `deterministic-acceptance-v2`.
+The Agent returns A1–A5, `decision`, and `repair_request`. The Backend checks report
+coherence and enforces A1 activity facts and A5 traded-universe facts, but does not
+generate or overwrite A2–A4.
 
-When static validation, LEAN, or Acceptance fails, the Repair Agent receives:
+When narrow preflight, LEAN, or Acceptance revise occurs, the Repair Agent receives:
 
 - the complete submitted source;
 - exact static diagnostics or LEAN errors;
@@ -244,8 +240,10 @@ When static validation, LEAN, or Acceptance fails, the Repair Agent receives:
 - existing valid training, prediction, target, and fill facts;
 - the current CandidateDesign.
 
-Each candidate can receive at most three source revisions. Every Repair response must
-contain a complete file rather than a patch.
+Worker failures never call Acceptance and still enter Repair when details are
+unavailable. Runtime failures and Acceptance revise share at most three source changes,
+and every change reruns Worker. Acceptance API/format retries do not consume that source
+budget.
 
 ## 7. How AlphaForge Improves LEAN Pass Probability
 
@@ -267,7 +265,7 @@ Designer and Repair share one AlphaForge LEAN template containing:
 - valid Schedule patterns;
 - supported `History` and `af_split_history_frames` forms;
 - real `af_record_*` signatures;
-- `af_rebalance_to_weights` usage.
+- standard order APIs and the boundary for optional `af_rebalance_daily_weights`.
 
 ### 7.3 JSON and Semantic Retry
 
@@ -277,6 +275,7 @@ Designer and Repair share one AlphaForge LEAN template containing:
 - Lossless scalar/string-list shapes are normalized before another model call.
 - A Repair response with unchanged source, missing change summary, or missing interrupted
   stage receives one semantic retry.
+- JSON and semantic retries share one two-call model budget and cannot multiply to four.
 - Authentication, network, and configuration failures are not retried blindly.
 
 ### 7.4 History Cardinality and Time Integrity
@@ -293,7 +292,7 @@ A model name in source does not prove that a model ran. AlphaForge separately re
 - `ml_training_run_count`;
 - `ml_prediction_count`;
 - `transparent_signal_event_count`;
-- prediction/signal-to-target links at the same decision time;
+- prediction/signal-to-target or order evidence;
 - `staged_rebalance_completed_count`;
 - `filled_order_count`.
 
@@ -304,8 +303,8 @@ evidence.
 ### 7.6 Revision Effectiveness and Regression Protection
 
 The Backend compares semantic source hashes, runtime behavior, metrics, and resolved
-checks between revisions. Comment-only edits and revisions that do not repair the failed
-stage are not considered effective.
+checks, then supplies that information and the prior Acceptance report to the independent
+Agent. It is explanatory evidence; the Backend does not rewrite A2–A4.
 
 If a later Repair regresses to zero activity, the system retains the best prior runnable
 `best_observed_attempt` for audit and display while keeping the truthful Rejected state.

@@ -64,7 +64,7 @@ class UserStrategy(AlphaForgeBaseAlgorithm):
         value = self.get_parameter(name)
         return value if value not in (None, "") else default
 
-    def initialize_strategy(self):
+    def initialize(self):
         start = datetime.fromisoformat(self._parameter("start_date", "2020-01-02"))
         end = datetime.fromisoformat(self._parameter("end_date", "2024-12-31"))
         self.set_start_date(start.year, start.month, start.day)
@@ -96,15 +96,20 @@ class UserStrategy(AlphaForgeBaseAlgorithm):
             self.time_rules.after_market_open(self.symbols[0], 30),
             self.rebalance,
         )
+        self.set_warm_up(2, Resolution.DAILY)
 
     def rebalance(self):
-        weight = 0.95 / len(self.symbols)
-        self.af_rebalance_to_weights(
-            {symbol: weight for symbol in self.symbols},
-            "Monthly equal weight",
+        if self.is_warming_up:
+            return
+        weight = 0.90 / len(self.symbols)
+        targets = [PortfolioTarget(symbol, weight) for symbol in self.symbols]
+        self.set_holdings(
+            targets,
+            liquidate_existing_holdings=True,
+            tag="Monthly equal weight",
         )
 
-    def on_alpha_data(self, data):
+    def on_data(self, data):
         pass
 `;
 
@@ -660,7 +665,7 @@ function BuildWorkspace({ catalog, loadingCatalog, onCreated }) {
                 <span>Strategy Preview</span>
                 <strong>{signal === "momentum" ? "Momentum" : "Mean Reversion"} Ranking</strong>
                 <p>
-                  Rank the selected pool using a {lookback}-day signal, hold {holdings} {Number(holdings) === 1 ? "stock" : "stocks"}, and rebalance {rebalance} at 95% gross exposure.
+                  Rank the selected pool using a {lookback}-day signal, hold {holdings} {Number(holdings) === 1 ? "stock" : "stocks"}, and rebalance {rebalance} at 90% gross exposure.
                 </p>
               </div>
             </div>
@@ -1479,16 +1484,13 @@ function ReviewHistory({ history }) {
               <ChevronDown size={17} />
             </summary>
             <div className="review-body">
-              {report.policy_version ? (
+              {report.decision ? (
                 <div className="review-authority">
                   <ShieldCheck size={17} />
                   <div>
-                    <strong>Backend-verified decision</strong>
+                    <strong>Independent Acceptance Agent</strong>
                     <span>
-                      {report.policy_version}
-                      {report.agent_advisory_decision
-                        ? ` · Agent advised ${report.agent_advisory_decision}`
-                        : " · Agent supplied evidence notes only"}
+                      Agent decision: {report.decision} · Backend verifies report coherence and A1/A5 facts
                     </span>
                   </div>
                 </div>
