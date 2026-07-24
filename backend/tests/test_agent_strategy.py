@@ -6,7 +6,8 @@ from types import SimpleNamespace
 import pytest
 
 from agent import DeepSeekCritic, DeepSeekDesigner
-from app.schemas import CritiqueReport, RunSettings
+from agent.prompts import TRACK_SPEC_EXAMPLES
+from app.schemas import CritiqueReport, RunSettings, StrategyTemplateSpec
 from app.services.baseline_service import ForgeService
 
 
@@ -113,7 +114,21 @@ def test_designer_returns_parameters_and_prompt_contains_no_python_context():
     assert "AlgorithmImports" not in prompt
     assert "QuantConnect" not in prompt
     assert "lean_documentation" not in prompt
-    assert '"strategy_dsl"' in prompt
+    assert '"valid_strategy_spec_example"' in prompt
+    assert '"parameter_rules"' in prompt
+    assert '"feature.kind"' not in prompt
+
+
+@pytest.mark.parametrize("track", ["Traditional", "ML", "Hybrid"])
+def test_prompt_track_examples_are_directly_schema_valid(track):
+    validated = StrategyTemplateSpec.model_validate(TRACK_SPEC_EXAMPLES[track])
+    payload = validated.model_dump(mode="json")
+
+    assert payload["track"] == track
+    serialized = json.dumps(TRACK_SPEC_EXAMPLES[track])
+    assert '"rule"' not in serialized
+    assert '"constraint"' not in serialized
+    assert '"feature.kind"' not in serialized
 
 
 def test_designer_revision_must_change_parameters():

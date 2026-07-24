@@ -8,9 +8,10 @@ from pydantic import ValidationError
 from agent.client import DeepSeekCallError, DeepSeekJSONClient
 from agent.prompts import (
     DESIGNER_SYSTEM_PROMPT,
+    PARAMETER_RULES,
     PROPOSAL_SHAPE,
-    STRATEGY_DSL,
     TRACK_BRIEFS,
+    TRACK_SPEC_EXAMPLES,
 )
 from app.schemas import CandidateProposal, StrategyTemplateSpec
 
@@ -107,7 +108,8 @@ class DeepSeekDesigner:
             "previous_strategy_spec": previous_spec,
             "critic_report": critique,
             "prior_iteration_results": iteration_history or [],
-            "strategy_dsl": STRATEGY_DSL,
+            "parameter_rules": PARAMETER_RULES,
+            "valid_strategy_spec_example": TRACK_SPEC_EXAMPLES[track],
             "output_shape": PROPOSAL_SHAPE,
         }
         return [
@@ -154,8 +156,10 @@ class DeepSeekDesigner:
                         "role": "user",
                         "content": (
                             "Your previous JSON failed the parameter schema: "
-                            f"{previous_error}. Return the complete corrected JSON object; "
-                            "do not return code or a patch."
+                            f"{previous_error}. Return the complete corrected JSON object. "
+                            "Do not return code or a patch. Copy this exact nesting and "
+                            "replace only values or repeated list items:\n"
+                            f"{json.dumps(TRACK_SPEC_EXAMPLES[track], ensure_ascii=False)}"
                         ),
                     }
                 )
