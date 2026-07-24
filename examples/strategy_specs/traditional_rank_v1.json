@@ -1,0 +1,51 @@
+{
+  "schema_version": "template-v1",
+  "strategy_name": "Transparent Momentum Volatility Rank",
+  "track": "Traditional",
+  "thesis": "Medium-term momentum combined with a lower-volatility preference produces a transparent diversified ranking.",
+  "signal": {
+    "components": [
+      {
+        "feature": {
+          "kind": "return",
+          "window": 126
+        },
+        "direction": "higher",
+        "weight": 0.7
+      },
+      {
+        "feature": {
+          "kind": "volatility",
+          "window": 42
+        },
+        "direction": "lower",
+        "weight": 0.3
+      }
+    ]
+  },
+  "model": null,
+  "selection": {
+    "top_k": 5,
+    "require_positive_score": false,
+    "hybrid_model_weight": 0.5
+  },
+  "portfolio": {
+    "weighting": "inverse_volatility",
+    "gross_exposure": 0.9,
+    "max_position_weight": 0.25,
+    "volatility_window": 63,
+    "minimum_variance_blend": 0.35,
+    "rebalance_threshold": 0.02
+  },
+  "schedule": {
+    "frequency": "monthly",
+    "minutes_after_open": 30
+  },
+  "risk": {
+    "market_trend_filter": false,
+    "market_sma_window": 200,
+    "stop_loss": null,
+    "maximum_drawdown": null,
+    "cooldown_days": 21
+  }
+}

@@ -259,7 +259,7 @@ function strategyRows(run) {
       scoreId,
       strategy: `${formatTrack(item.track)} Strategy`,
       category: "Generated Strategy",
-      revisions: item.repair_attempts || 0,
+      revisions: item.iteration_count || 0,
       scorecard: scorecards.get(scoreId),
     });
   }
@@ -738,7 +738,7 @@ function AIForgeWorkspace({ run, onBuild }) {
         <PageHeader
           eyebrow="Independent AI Track"
           title="AI Forge"
-          description="Inspect independent candidate design, validation, backtesting, and acceptance."
+          description="Inspect parameter design, Critic feedback, and best-of-three selection."
         />
         <EmptyRun onBuild={onBuild} />
       </>
@@ -750,10 +750,10 @@ function AIForgeWorkspace({ run, onBuild }) {
     (run.baselines || []).length === 4 &&
     run.baselines.every((item) => item.state === "completed");
   const designsReady =
-    candidates.length === 3 && candidates.every((item) => Boolean(item.source_code));
-  const preflightReady =
+    candidates.length === 3 && candidates.every((item) => Boolean(item.strategy_spec));
+  const templateReady =
     candidates.length === 3 &&
-    candidates.every((item) => item.preflight?.status === "passed");
+    candidates.every((item) => Boolean(item.source_code));
   const workerStarted = candidates.some((item) => Boolean(item.worker_run_id));
   const reviewsFinished =
     candidates.length === 3 &&
@@ -774,19 +774,19 @@ function AIForgeWorkspace({ run, onBuild }) {
     },
     {
       number: "03",
-      title: "Static Validation",
-      copy: "Syntax, capability, settings, and track checks",
-      state: stageState(preflightReady, designsReady),
+      title: "Template Compile",
+      copy: "Validated parameters enter tested LEAN code",
+      state: stageState(templateReady, designsReady),
     },
     {
       number: "04",
       title: "LEAN Backtest",
-      copy: "Real orders and behavior evidence",
+      copy: "Up to three real trials per AI track",
       state: stageState(workerStarted && reviewsFinished, workerStarted),
     },
     {
       number: "05",
-      title: "Acceptance",
+      title: "Critic & Selection",
       copy: "A1–A5 evidence review",
       state: stageState(reviewsFinished, workerStarted),
     },
@@ -807,7 +807,7 @@ function AIForgeWorkspace({ run, onBuild }) {
           <h2>User Strategy Hidden From AI</h2>
           <p>
             Designers receive only the frozen run settings, four public baseline
-            results, and the AlphaForge capability contract. Human code, parameters,
+            results, and the bounded strategy DSL. Human code, parameters,
             results, trades, and education feedback are excluded.
           </p>
         </div>
@@ -836,8 +836,7 @@ function AIForgeWorkspace({ run, onBuild }) {
         <div className="forge-track-grid">
           {candidates.map((candidate) => {
             const design = candidate.design || {};
-            const preflight = candidate.preflight;
-            const diagnostics = preflight?.diagnostics || [];
+            const spec = candidate.strategy_spec || {};
             const usage = candidate.usage || {};
             return (
               <article className="forge-track-card" key={candidate.track}>
@@ -845,17 +844,18 @@ function AIForgeWorkspace({ run, onBuild }) {
                   <div className="strategy-avatar"><Sparkles size={18} /></div>
                   <div>
                     <span>{formatTrack(candidate.track)} Candidate</span>
-                    <h3>{design.strategy_name || "Design pending"}</h3>
+                    <h3>{spec.strategy_name || "Design pending"}</h3>
                   </div>
                   <StatusChip state={candidate.state} />
                 </div>
 
                 <p className="forge-thesis">
-                  {design.thesis || "The structured candidate design will appear after generation."}
+                  {spec.thesis || "The structured candidate design will appear after generation."}
                 </p>
-                {candidate.best_observed_attempt != null ? (
+                {candidate.best_iteration != null ? (
                   <div className="retained-attempt-note">
-                    Showing source and metrics from runnable Review {Number(candidate.best_observed_attempt) + 1}; later repair attempts did not pass Acceptance.
+                    Iteration {candidate.best_iteration} produced the strongest
+                    Sharpe-first result and is retained for this track.
                   </div>
                 ) : null}
 
@@ -870,16 +870,16 @@ function AIForgeWorkspace({ run, onBuild }) {
 
                 <div className="forge-evidence-row">
                   <div>
-                    <span>Preflight</span>
-                    <strong>{preflight ? statusLabel(preflight.status) : "Waiting"}</strong>
+                    <span>Template</span>
+                    <strong>{candidate.source_code ? "Compiled" : "Waiting"}</strong>
                   </div>
                   <div>
                     <span>LEAN Run</span>
                     <strong>{candidate.worker_run_id ? "Submitted" : "Waiting"}</strong>
                   </div>
                   <div>
-                    <span>Repairs</span>
-                    <strong>{candidate.repair_attempts || 0}</strong>
+                    <span>Trials</span>
+                    <strong>{candidate.iteration_count || 0} / 3</strong>
                   </div>
                   <div>
                     <span>Generation Retry</span>
@@ -891,64 +891,41 @@ function AIForgeWorkspace({ run, onBuild }) {
                   </div>
                 </div>
 
-                {design.signals?.length ? (
+                {candidate.strategy_spec ? (
                   <div className="design-block">
-                    <span>Decision Signals</span>
+                    <span>Template Parameters</span>
                     <div className="design-tags">
-                      {design.signals.map((item) => <i key={item}>{item}</i>)}
-                    </div>
-                  </div>
-                ) : null}
-
-                {design.strategy_spec ? (
-                  <div className="design-block">
-                    <span>Bounded Strategy Spec</span>
-                    <div className="design-tags">
-                      {Object.entries(design.strategy_spec)
+                      {Object.entries(candidate.strategy_spec)
                         .filter(([, value]) => value !== null && value !== undefined)
                         .map(([key, value]) => (
-                          <i key={key}>{key.replaceAll("_", " ")}: {String(value)}</i>
+                          <i key={key}>
+                            {key.replaceAll("_", " ")}: {
+                              typeof value === "object" ? JSON.stringify(value) : String(value)
+                            }
+                          </i>
                         ))}
                     </div>
                   </div>
                 ) : null}
 
-                {design.selection_rule ? (
-                  <div className="design-block">
-                    <span>Selection Rule</span>
-                    <p>{design.selection_rule}</p>
-                  </div>
-                ) : null}
-
-                {diagnostics.length ? (
-                  <div className="preflight-errors">
-                    <strong>Static validation findings</strong>
-                    <ul>
-                      {diagnostics.map((item, index) => (
-                        <li key={`${item.code}-${index}`}>
-                          <code>{item.code}</code> {item.message}
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                ) : preflight?.status === "passed" ? (
+                {candidate.source_code ? (
                   <div className="preflight-pass">
                     <CheckCircle2 size={16} />
-                    Deterministic source checks passed before LEAN submission.
+                    Schema-valid parameters compiled with template-v1.
                   </div>
                 ) : null}
 
-                {candidate.repair_history?.length ? (
+                {candidate.critique_history?.length ? (
                   <details className="repair-lineage">
                     <summary>
-                      Repair lineage · {candidate.repair_history.length}
+                      Critic feedback · {candidate.critique_history.length}
                       <ChevronDown size={16} />
                     </summary>
                     <div>
-                      {candidate.repair_history.map((item) => (
-                        <p key={`${item.attempt}-${item.trigger}`}>
-                          <strong>R{item.attempt} · {item.classification}</strong>
-                          <span>{item.first_interrupted_stage || item.trigger}</span>
+                      {candidate.critique_history.map((item) => (
+                        <p key={item.iteration}>
+                          <strong>Iteration {item.iteration}</strong>
+                          <span>{item.report?.diagnosis}</span>
                         </p>
                       ))}
                     </div>
@@ -1400,7 +1377,7 @@ function ResultsTable({ rows }) {
       <div className="card-heading"><div><span className="section-kicker">Comparable Results</span><h2>Strategy Comparison</h2></div></div>
       <div className="table-scroll">
         <table>
-          <thead><tr><th>Strategy</th><th>Category</th><th>Status</th><th>Score</th><th>Revisions</th><th>CAGR</th><th>Sharpe Ratio</th><th>Maximum Drawdown</th><th>Ending Equity</th></tr></thead>
+          <thead><tr><th>Strategy</th><th>Category</th><th>Status</th><th>Score</th><th>Trials</th><th>CAGR</th><th>Sharpe Ratio</th><th>Maximum Drawdown</th><th>Ending Equity</th></tr></thead>
           <tbody>
             {rows.map((row) => (
               <tr key={row.id}>
@@ -1439,86 +1416,51 @@ function BehaviorGrid({ evidence }) {
   );
 }
 
-function RevisionEffect({ effect }) {
-  if (!effect) return null;
-  const labels = {
-    initial_evaluation: "Initial execution",
-    evidence_only: "Evidence-only revision",
-    strategy_behavior_change: "Strategy behavior changed",
-    ineffective: "Ineffective revision",
-  };
-  return (
-    <div className={`revision-effect effect-${effect.kind || "initial_evaluation"}`}>
-      <div>
-        <History size={17} />
-        <strong>{labels[effect.kind] || "Revision analysis"}</strong>
-      </div>
-      <p>{effect.note}</p>
-      <div className="revision-facts">
-        {effect.semantic_source_changed !== null ? (
-          <span>Executable code: {effect.semantic_source_changed ? "changed" : "unchanged"}</span>
-        ) : null}
-        {effect.trading_behavior_changed !== null ? (
-          <span>Trading behavior: {effect.trading_behavior_changed ? "changed" : "unchanged"}</span>
-        ) : null}
-        {effect.result_changed !== null ? (
-          <span>Metrics: {effect.result_changed ? "changed" : "unchanged"}</span>
-        ) : null}
-        {effect.resolved_checks?.length ? <span>Resolved: {effect.resolved_checks.join(", ")}</span> : null}
-      </div>
-    </div>
-  );
-}
-
-function ReviewHistory({ history }) {
-  if (!history?.length) return <p className="muted-copy">Review details will appear after the strategy completes a backtest.</p>;
+function IterationHistory({ candidate }) {
+  const iterations = candidate?.iterations || [];
+  if (!iterations.length) {
+    return <p className="muted-copy">Iteration results will appear after the first template backtest.</p>;
+  }
   return (
     <div className="review-history">
-      {history.map((entry, index) => {
-        const report = entry.report || {};
+      {iterations.map((entry, index) => {
+        const critique = entry.critique || {};
+        const isBest = Number(candidate.best_iteration) === Number(entry.iteration);
         return (
-          <details key={`${entry.worker_run_id}-${index}`} open={index === history.length - 1}>
+          <details key={entry.worker_run_id || entry.iteration} open={isBest || index === iterations.length - 1}>
             <summary>
-              <span>Review {entry.attempt || index + 1}</span>
-              <span className={`decision decision-${report.decision}`}>{report.decision === "accept" ? "Accepted" : "Revision Requested"}</span>
+              <span>Iteration {entry.iteration}</span>
+              <span className={`decision ${isBest ? "decision-accept" : "decision-revise"}`}>
+                {isBest ? "Best retained" : "Evaluated"}
+              </span>
               <ChevronDown size={17} />
             </summary>
             <div className="review-body">
-              {report.decision ? (
+              <div className="review-metrics">
+                <span>CAGR <strong>{formatMetric(entry.summary?.cagr, "percent")}</strong></span>
+                <span>Sharpe <strong>{formatMetric(entry.summary?.sharpe_ratio, "number")}</strong></span>
+                <span>Drawdown <strong>{formatMetric(entry.summary?.maximum_drawdown, "percent")}</strong></span>
+                <span>Equity <strong>{formatMetric(entry.summary?.end_equity, "currency")}</strong></span>
+              </div>
+              <BehaviorGrid evidence={entry.behavior_evidence} />
+              {critique.diagnosis ? (
                 <div className="review-authority">
                   <ShieldCheck size={17} />
-                  <div>
-                    <strong>Independent Acceptance Agent</strong>
-                    <span>
-                      Agent decision: {report.decision} · Backend verifies report coherence and A1/A5 facts
-                    </span>
-                  </div>
+                  <div><strong>Performance Critic</strong><span>{critique.diagnosis}</span></div>
                 </div>
               ) : null}
-              <RevisionEffect effect={entry.revision_effectiveness} />
-              {entry.summary ? (
-                <div className="review-metrics">
-                  <span>CAGR <strong>{formatMetric(entry.summary.cagr, "percent")}</strong></span>
-                  <span>Sharpe <strong>{formatMetric(entry.summary.sharpe_ratio, "number")}</strong></span>
-                  <span>Drawdown <strong>{formatMetric(entry.summary.maximum_drawdown, "percent")}</strong></span>
-                  <span>Equity <strong>{formatMetric(entry.summary.end_equity, "currency")}</strong></span>
+              {critique.recommended_changes?.length ? (
+                <div className="repair-request">
+                  <strong>Suggestions returned to Designer</strong>
+                  <ul>
+                    {critique.recommended_changes.map((change, changeIndex) => (
+                      <li key={`${change.field}-${changeIndex}`}>
+                        <code>{change.field}</code> · {change.direction}: {change.reason}
+                      </li>
+                    ))}
+                  </ul>
+                  <p>{critique.overfitting_warning}</p>
                 </div>
-              ) : null}
-              <BehaviorGrid evidence={entry.behavior_evidence} />
-              <div className="check-list">
-                {(report.checks || []).map((check) => (
-                  <div className={`check-row check-${check.status}`} key={check.id}>
-                    {check.status === "pass" ? <CheckCircle2 size={19} /> : <XCircle size={19} />}
-                    <div><strong>{check.id} · {check.status === "pass" ? "Passed" : "Failed"}</strong><p>{check.reason}</p>{check.evidence?.length ? <ul>{check.evidence.map((item, evidenceIndex) => <li key={evidenceIndex}>{item}</li>)}</ul> : null}</div>
-                  </div>
-                ))}
-              </div>
-              {report.repair_request ? <div className="repair-request"><strong>Revision Request</strong><p>{report.repair_request}</p></div> : null}
-              {entry.source_code ? (
-                <details className="revision-source">
-                  <summary><Code2 size={15} /> View code used in this review</summary>
-                  <pre><code>{entry.source_code}</code></pre>
-                </details>
               ) : null}
             </div>
           </details>
@@ -1538,12 +1480,11 @@ function GeneratedReviews({ candidates }) {
           <div className="candidate-review" key={candidate.track}>
             <div className="candidate-title">
               <div className="strategy-avatar"><ShieldCheck size={19} /></div>
-              <div><strong>{formatTrack(candidate.track)} Strategy</strong><span>{candidate.repair_attempts || 0} Revisions · {candidate.generation_retries || 0} Generation Retries</span></div>
+              <div><strong>{formatTrack(candidate.track)} Strategy</strong><span>{candidate.iteration_count || 0} Trials · best {candidate.best_iteration || "pending"}</span></div>
               <StatusChip state={candidate.state} />
             </div>
             {candidate.error && ["failed", "rejected"].includes(candidate.state) ? <div className="inline-error">{candidate.error}</div> : null}
-            {candidate.best_observed_attempt != null ? <div className="retained-attempt-note">Metrics and source were retained from runnable Review {Number(candidate.best_observed_attempt) + 1}; status remains Rejected.</div> : null}
-            <ReviewHistory history={candidate.acceptance_history} />
+            <IterationHistory candidate={candidate} />
           </div>
         ))}
       </div>
@@ -1672,7 +1613,7 @@ function ArenaWorkspace({ history, loading, error, onRefresh }) {
                     <div key={candidate.track}>
                       <div className="round-candidate-title"><strong>{formatTrack(candidate.track)}</strong><StatusChip state={candidate.state} /></div>
                       {candidate.error ? <p className="round-candidate-error">{candidate.error}</p> : null}
-                      <ReviewHistory history={candidate.acceptance_history} />
+                      <IterationHistory candidate={candidate} />
                     </div>
                   ))}
                 </div>
@@ -1691,7 +1632,7 @@ function CodeWorkspace({ run, onBuild }) {
     const result = [];
     if (run.human?.source_code) result.push({ id: "human", label: "Human Strategy", category: "Human Strategy", source: run.human.source_code, state: run.human.state });
     for (const item of run.candidates || []) {
-      if (item.source_code) result.push({ id: item.track, label: `${formatTrack(item.track)} Strategy`, category: "Generated Strategy", source: item.source_code, state: item.state });
+      if (item.source_code) result.push({ id: item.track, label: `${formatTrack(item.track)} Strategy`, category: "Template-compiled Strategy", source: item.source_code, state: item.state });
     }
     return result;
   }, [run]);

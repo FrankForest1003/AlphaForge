@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import math
 import statistics
@@ -12,13 +13,18 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from agent import (
-    ACCEPTANCE_CHECK_IDS,
-    DESIGNER_TRACKS,
-    validate_candidate_source,
+from agent import DESIGNER_TRACKS
+from app.schemas import (
+    GuidedHumanStrategy,
+    HumanStrategyRequest,
+    RunSettings,
+    compact_iteration_result,
 )
-from app.schemas import GuidedHumanStrategy, HumanStrategyRequest, RunSettings
-from app.services.acceptance_policy import normalize_acceptance_payload
+from app.services.strategy_template import (
+    TEMPLATE_VERSION,
+    compile_strategy_source,
+    validate_strategy_spec,
+)
 from app.services.worker_client import LeanWorkerClient
 
 
@@ -46,35 +52,10 @@ BASELINES = (
 )
 
 TERMINAL_STATES = {"completed", "completed_with_data_gaps", "failed", "timeout"}
-MAX_REPAIR_ATTEMPTS = 3
+MAX_TEMPLATE_BACKTESTS = 3
 MAX_MATCH_ROUNDS = 5
 MAX_PUBLIC_CURVE_POINTS = 520
 
-
-CRITICAL_LOG_MARKERS = (
-    "Algorithm finished warming up.",
-    "Firing On End Of Algorithm",
-    "Algorithm Id:(UserStrategy) completed",
-    "STATISTICS:: Total Orders ",
-    "STATISTICS:: Start Equity ",
-    "STATISTICS:: End Equity ",
-    "STATISTICS:: Total Fees ",
-    "STATISTICS:: Portfolio Turnover ",
-    "DATA USAGE:: Failed data requests ",
-)
-
-AGENT_LOG_MARKERS = (
-    "ERROR::",
-    "Runtime Error",
-    "PythonException",
-    "Traceback",
-    "Order Error:",
-    " in main.py:",
-    "Scheduled event:",
-    "No method matches given arguments",
-    "STATISTICS::",
-    "DATA USAGE::",
-)
 
 BASELINE_LESSONS = {
     "Momentum Rank": {
@@ -98,46 +79,6 @@ BASELINE_LESSONS = {
         "watch": "A smoother portfolio can still suffer if the forecast and rebalance horizons disagree.",
     },
 }
-
-
-def extract_critical_log_evidence(console_log: str) -> str:
-    return "\n".join(
-        line
-        for line in console_log.splitlines()
-        if any(marker in line for marker in CRITICAL_LOG_MARKERS)
-    )
-
-
-def compact_console_log(console_log: str, max_chars: int = 16_000) -> str:
-    """Bound Agent context while keeping full logs in the persisted Worker attempt."""
-
-    if max_chars < 1_000:
-        raise ValueError("max_chars must be at least 1000")
-    if len(console_log) <= max_chars:
-        return console_log
-
-    lines = console_log.splitlines()
-    selected_indexes: set[int] = set()
-    for index, line in enumerate(lines):
-        if any(marker in line for marker in AGENT_LOG_MARKERS):
-            selected_indexes.update(
-                range(max(0, index - 2), min(len(lines), index + 3))
-            )
-    selected_indexes.update(range(min(20, len(lines))))
-    selected_indexes.update(range(max(0, len(lines) - 80), len(lines)))
-    excerpt = "\n".join(lines[index] for index in sorted(selected_indexes))
-
-    header = (
-        f"[AlphaForge compact LEAN log: original_chars={len(console_log)}, "
-        f"selected_lines={len(selected_indexes)}]\n"
-    )
-    budget = max_chars - len(header)
-    if len(excerpt) > budget:
-        separator = "\n[... additional selected log text omitted ...]\n"
-        head_chars = int((budget - len(separator)) * 0.55)
-        tail_chars = budget - len(separator) - head_chars
-        excerpt = excerpt[:head_chars] + separator + excerpt[-tail_chars:]
-    return header + excerpt
 
 
 def _number(value: Any, default: float | None = None) -> float | None:
@@ -323,115 +264,6 @@ def build_performance_analysis(
                 else None
             ),
         },
-    }
-
-
-def extract_error_log_excerpt(
-    console_log: str,
-    order_id: int | None = None,
-) -> list[str]:
-    lines = console_log.splitlines()
-    selected: set[int] = set()
-    order_markers = (
-        (f"ids: [{order_id}]", f"Id: {order_id},")
-        if order_id is not None
-        else ()
-    )
-    for index, line in enumerate(lines):
-        lowered = line.lower()
-        matches_order = bool(order_markers) and any(
-            marker in line for marker in order_markers
-        )
-        matches_error = order_id is None and (
-            "error::" in lowered
-            or "order error:" in lowered
-            or "traceback (most recent call last)" in lowered
-            or "unhandled exception" in lowered
-        )
-        if matches_order or matches_error:
-            selected.update(range(max(0, index - 2), min(len(lines), index + 3)))
-    return [lines[index] for index in sorted(selected)]
-
-
-def build_runtime_failure_evidence(
-    details: dict[str, Any] | None,
-    console_log: str,
-    *,
-    details_error: str | None = None,
-) -> dict[str, Any]:
-    """Relate a failed order to the event, portfolio state, and exact log facts."""
-
-    if not isinstance(details, dict):
-        return {
-            "details_available": False,
-            "details_error": details_error or "alphaforge_details.json is unavailable",
-            "failed_orders": [],
-            "error_log_excerpt": extract_error_log_excerpt(console_log)[-120:],
-        }
-
-    orders = details.get("orders")
-    events = details.get("order_events")
-    snapshots = details.get("position_snapshots")
-    orders = orders if isinstance(orders, list) else []
-    events = events if isinstance(events, list) else []
-    snapshots = snapshots if isinstance(snapshots, list) else []
-    orders_by_id = {
-        int(order["order_id"]): order
-        for order in orders
-        if isinstance(order, dict) and order.get("order_id") is not None
-    }
-
-    failed_orders: list[dict[str, Any]] = []
-    for event in events:
-        if not isinstance(event, dict) or event.get("order_id") is None:
-            continue
-        status = str(event.get("status", "")).strip().upper().split(".")[-1]
-        message = str(event.get("message") or "")
-        if status not in {"INVALID", "REJECTED"} and not any(
-            marker in message.lower()
-            for marker in ("error", "insufficient", "failed", "rejected")
-        ):
-            continue
-        order_id = int(event["order_id"])
-        order = orders_by_id.get(order_id, {})
-        event_time = str(event.get("time") or "")[:19]
-        prior = [
-            snapshot
-            for snapshot in snapshots
-            if isinstance(snapshot, dict)
-            and str(snapshot.get("time") or "")[:19] <= event_time
-        ]
-        portfolio_before_failure = max(
-            prior,
-            key=lambda snapshot: str(snapshot.get("time") or "")[:19],
-            default=None,
-        )
-        failed_orders.append(
-            {
-                "order": {
-                    "order_id": order_id,
-                    "symbol": order.get("symbol") or event.get("symbol"),
-                    "quantity": order.get("quantity"),
-                    "type": order.get("type"),
-                    "status": order.get("status") or event.get("status"),
-                    "submitted_at": order.get("time"),
-                    "tag": order.get("tag"),
-                    "price": order.get("price"),
-                },
-                "event": copy.deepcopy(event),
-                "portfolio_before_failure": copy.deepcopy(
-                    portfolio_before_failure
-                ),
-                "log_excerpt": extract_error_log_excerpt(console_log, order_id),
-            }
-        )
-    return {
-        "details_available": True,
-        "details_error": None,
-        "failed_orders": failed_orders,
-        "failed_order_count": len(failed_orders),
-        "evidence_truncated": False,
-        "error_log_excerpt": extract_error_log_excerpt(console_log)[-120:],
     }
 
 
@@ -626,290 +458,6 @@ def build_behavior_evidence(details: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def classify_candidate_failure(
-    *,
-    result: dict[str, Any],
-    console_log: str,
-    behavior_evidence: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Map observed failures to stable repair categories before asking an Agent."""
-
-    text = "\n".join(
-        [
-            str(result.get("status") or ""),
-            " ".join(str(item) for item in result.get("errors", [])),
-            console_log,
-        ]
-    ).lower()
-    if (
-        "no method matches given arguments for on" in text
-        or "required by the on method" in text
-    ):
-        return {
-            "code": "LEAN_SCHEDULE_SIGNATURE",
-            "summary": (
-                "ScheduleManager.on received an unsupported argument shape; pass "
-                "the callback directly in the three- or four-argument overload."
-            ),
-        }
-    if "af_record_ml_" in text and (
-        "takes 2 positional arguments" in text
-        or "unexpected keyword argument" in text
-    ):
-        return {
-            "code": "ALPHAFORGE_EVIDENCE_SIGNATURE",
-            "summary": (
-                "An af_record_ml_* method was not called with its single dict payload."
-            ),
-        }
-    patterns = (
-        (
-            "LEAN_SYMBOL_KEY",
-            ("no key found for either mapped or original key", "keyerror"),
-            "History or Slice access used a Symbol key that was not present.",
-        ),
-        (
-            "XGBOOST_DMATRIX_API",
-            ("dmatrix", "cannot unpack non-iterable dmatrix"),
-            "The strategy used an unstable low-level XGBoost DMatrix path.",
-        ),
-        (
-            "TRADEBARS_COLLECTION_API",
-            ("tradebars", "has no attribute 'end_time'"),
-            "The strategy treated a TradeBars collection as an individual TradeBar.",
-        ),
-        (
-            "BUYING_POWER",
-            ("insufficient buying power",),
-            "Target exposure or order sequencing exceeded available buying power.",
-        ),
-        (
-            "PYTHON_RUNTIME",
-            ("runtime error", "pythonexception"),
-            "LEAN raised a Python runtime exception.",
-        ),
-    )
-    for code, markers, summary in patterns:
-        if all(marker in text for marker in markers):
-            return {"code": code, "summary": summary}
-
-    evidence = behavior_evidence or {}
-    if (
-        result.get("status") == "completed"
-        and int(evidence.get("ml_training_run_count") or 0) == 0
-        and int(evidence.get("ml_prediction_count") or 0) > 0
-    ):
-        return {
-            "code": "PREDICTIONS_WITHOUT_TRAINING",
-            "summary": (
-                "Predictions were recorded without a recorded training run. Inspect "
-                "training-data row cardinality and early-return guards before changing "
-                "the schedule, portfolio construction, or risk exposure."
-            ),
-        }
-    if (
-        result.get("status") == "completed"
-        and int(evidence.get("filled_order_count") or 0) == 0
-    ):
-        if int(evidence.get("ml_training_run_count") or 0) == 0:
-            code = "ZERO_ACTIVITY_NO_MODEL"
-            summary = "The run completed with no fills and no recorded model training."
-        elif int(evidence.get("ml_prediction_count") or 0) == 0:
-            code = "ZERO_ACTIVITY_NO_PREDICTIONS"
-            summary = "The model trained, but no recorded predictions reached selection."
-        elif int(evidence.get("nonzero_target_event_count") or 0) == 0:
-            code = "ZERO_ACTIVITY_NO_TARGETS"
-            summary = "Predictions existed, but no non-zero target event was recorded."
-        else:
-            code = "ZERO_ACTIVITY_NO_ORDERS"
-            summary = "Non-zero targets existed, but no order filled."
-        return {"code": code, "summary": summary}
-    return {
-        "code": "UNCLASSIFIED",
-        "summary": "Use the first concrete error or interrupted evidence stage.",
-    }
-
-
-def build_revision_effectiveness(
-    *,
-    previous: dict[str, Any] | None,
-    summary: dict[str, Any],
-    behavior_evidence: dict[str, Any],
-    preflight: dict[str, Any],
-    report: dict[str, Any],
-) -> dict[str, Any]:
-    if previous is None:
-        return {
-            "kind": "initial_evaluation",
-            "effective": True,
-            "semantic_source_changed": None,
-            "result_changed": None,
-            "trading_behavior_changed": None,
-            "resolved_checks": [],
-            "remaining_failed_checks": [
-                item["id"] for item in report["checks"] if item["status"] == "fail"
-            ],
-            "note": "First accepted-or-reviewed execution for this candidate.",
-        }
-
-    previous_report = previous.get("report") or {}
-    previous_failed = {
-        item.get("id")
-        for item in previous_report.get("checks", [])
-        if item.get("status") == "fail"
-    }
-    current_failed = {
-        item.get("id")
-        for item in report.get("checks", [])
-        if item.get("status") == "fail"
-    }
-    resolved = sorted(previous_failed - current_failed)
-
-    previous_preflight = previous.get("preflight") or {}
-    semantic_changed = (
-        preflight.get("semantic_sha256")
-        != previous_preflight.get("semantic_sha256")
-    )
-
-    summary_keys = (
-        "cagr",
-        "sharpe_ratio",
-        "maximum_drawdown",
-        "end_equity",
-    )
-    result_changed = any(
-        summary.get(key) != (previous.get("summary") or {}).get(key)
-        for key in summary_keys
-    )
-    behavior_keys = (
-        "filled_order_count",
-        "invested_snapshot_count",
-        "max_gross_exposure",
-        "rebalance_count",
-        "nonzero_target_event_count",
-        "signal_event_count",
-        "ml_training_run_count",
-        "ml_prediction_count",
-    )
-    previous_behavior = previous.get("behavior_evidence") or {}
-    behavior_changed = any(
-        behavior_evidence.get(key) != previous_behavior.get(key)
-        for key in behavior_keys
-    )
-
-    needs_execution_change = "A1" in previous_failed
-    effective = bool(
-        semantic_changed
-        and resolved
-        and (not needs_execution_change or behavior_changed or result_changed)
-    )
-    if not semantic_changed:
-        kind = "ineffective"
-        note = "Only comments or formatting changed; executable strategy logic did not."
-    elif result_changed or behavior_changed:
-        kind = "strategy_behavior_change"
-        note = "Executable code and observed trading behavior or results changed."
-    elif resolved:
-        kind = "evidence_only"
-        note = (
-            "The revision improved audit evidence without changing trading results. "
-            "Acceptance is not a profitability award."
-        )
-    else:
-        kind = "ineffective"
-        note = "Executable code changed, but no previously failed check was resolved."
-
-    return {
-        "kind": kind,
-        "effective": effective,
-        "semantic_source_changed": semantic_changed,
-        "result_changed": result_changed,
-        "trading_behavior_changed": behavior_changed,
-        "resolved_checks": resolved,
-        "remaining_failed_checks": sorted(current_failed),
-        "note": note,
-    }
-
-
-def validate_acceptance_report(
-    report: dict[str, Any],
-    behavior_evidence: dict[str, Any],
-    run_settings: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    report = normalize_acceptance_payload(report)
-    decision = report.get("decision")
-    if decision not in {"accept", "revise"}:
-        raise ValueError("acceptance decision must be accept or revise")
-    checks = report.get("checks")
-    if not isinstance(checks, list) or len(checks) != len(ACCEPTANCE_CHECK_IDS):
-        raise ValueError("acceptance report must contain exactly checks A1 through A5")
-
-    by_id: dict[str, dict[str, Any]] = {}
-    for check in checks:
-        if not isinstance(check, dict) or check.get("id") not in ACCEPTANCE_CHECK_IDS:
-            raise ValueError("acceptance check id must be one of A1 through A5")
-        check_id = str(check["id"])
-        if check_id in by_id:
-            raise ValueError(f"acceptance check {check_id} is duplicated")
-        if check.get("status") not in {"pass", "fail"}:
-            raise ValueError(f"acceptance check {check_id} must pass or fail")
-        evidence = check.get("evidence")
-        if (
-            not isinstance(evidence, list)
-            or not evidence
-            or not all(isinstance(item, str) and item.strip() for item in evidence)
-        ):
-            raise ValueError(f"acceptance check {check_id} needs concrete evidence")
-        if not isinstance(check.get("reason"), str) or not check["reason"].strip():
-            raise ValueError(f"acceptance check {check_id} needs a reason")
-        by_id[check_id] = check
-    if set(by_id) != set(ACCEPTANCE_CHECK_IDS):
-        raise ValueError("acceptance report must contain exactly checks A1 through A5")
-
-    activity_passes = (
-        int(behavior_evidence.get("filled_order_count") or 0) > 0
-        and int(behavior_evidence.get("invested_snapshot_count") or 0) > 0
-        and float(behavior_evidence.get("max_gross_exposure") or 0) > 0
-    )
-    expected_a1 = "pass" if activity_passes else "fail"
-    if by_id["A1"]["status"] != expected_a1:
-        raise ValueError("acceptance check A1 contradicts behavior evidence")
-
-    settings = run_settings or {}
-    if settings:
-        allowed_symbols = {
-            str(symbol).strip().upper()
-            for symbol in settings.get("symbols", [])
-            if str(symbol).strip()
-        }
-        traded_symbols = {
-            str(symbol).strip().upper()
-            for symbol in behavior_evidence.get("traded_symbols", [])
-            if str(symbol).strip()
-        }
-        benchmark = str(settings.get("benchmark") or "").strip().upper()
-        unauthorized = traded_symbols - allowed_symbols
-        benchmark_traded = bool(
-            benchmark and benchmark in traded_symbols and benchmark not in allowed_symbols
-        )
-        expected_a5 = "fail" if unauthorized or benchmark_traded else "pass"
-        if by_id["A5"]["status"] != expected_a5:
-            raise ValueError("acceptance check A5 contradicts traded-symbol evidence")
-
-    statuses = [by_id[check_id]["status"] for check_id in ACCEPTANCE_CHECK_IDS]
-    repair_request = report.get("repair_request")
-    if decision == "accept":
-        if any(status != "pass" for status in statuses) or repair_request is not None:
-            raise ValueError("accept requires all checks to pass and a null repair_request")
-    elif (
-        all(status == "pass" for status in statuses)
-        or not isinstance(repair_request, str)
-        or not repair_request.strip()
-    ):
-        raise ValueError("revise requires a failed check and a non-empty repair_request")
-    return report
-
-
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -1036,7 +584,6 @@ def _comparison_entries(run: dict[str, Any]) -> list[dict[str, Any]]:
                 "summary": copy.deepcopy(item.get("summary") or {}),
                 "analysis": copy.deepcopy(item.get("analysis") or {}),
                 "behavior_evidence": copy.deepcopy(item.get("behavior_evidence") or {}),
-                "repair_attempts": 0,
                 "explainability": 0.95,
             }
         )
@@ -1051,7 +598,6 @@ def _comparison_entries(run: dict[str, Any]) -> list[dict[str, Any]]:
             "summary": copy.deepcopy(human.get("summary") or {}),
             "analysis": copy.deepcopy(human.get("analysis") or {}),
             "behavior_evidence": copy.deepcopy(human.get("behavior_evidence") or {}),
-            "repair_attempts": 0,
             "explainability": 0.88 if human.get("mode") == "guided" else 0.7,
         }
     )
@@ -1066,7 +612,6 @@ def _comparison_entries(run: dict[str, Any]) -> list[dict[str, Any]]:
                 "summary": copy.deepcopy(item.get("summary") or {}),
                 "analysis": copy.deepcopy(item.get("analysis") or {}),
                 "behavior_evidence": copy.deepcopy(item.get("behavior_evidence") or {}),
-                "repair_attempts": int(item.get("repair_attempts") or 0),
                 "explainability": 0.9 if item.get("design") else 0.65,
             }
         )
@@ -1200,10 +745,7 @@ def build_battle_analysis(run: dict[str, Any]) -> dict[str, Any]:
                 1.0 if float(evidence.get("max_gross_exposure") or 0) > 0 else 0.0,
             ]
         )
-        robustness = (
-            0.6 * evidence_quality
-            + 0.4 * max(0.4, 1.0 - 0.15 * entry["repair_attempts"])
-        )
+        robustness = evidence_quality
         cost = (
             0.6
             * _normalized(
@@ -1565,8 +1107,7 @@ class ForgeService:
         *,
         worker: LeanWorkerClient,
         designer: Any,
-        repairer: Any,
-        acceptance_agent: Any,
+        critic: Any,
         allowed_symbols: set[str],
         allowed_benchmarks: set[str],
         trace_root: Path | None = None,
@@ -1574,8 +1115,7 @@ class ForgeService:
     ) -> None:
         self.worker = worker
         self.designer = designer
-        self.repairer = repairer
-        self.acceptance_agent = acceptance_agent
+        self.critic = critic
         self.allowed_symbols = {item.upper() for item in allowed_symbols}
         self.allowed_benchmarks = {item.upper() for item in allowed_benchmarks}
         self._runs: dict[str, dict[str, Any]] = {}
@@ -1642,7 +1182,7 @@ class ForgeService:
             winner = {
                 "side": "human",
                 "label": "Human",
-                "reason": "No AI candidate passed acceptance.",
+                "reason": "No AI parameter candidate completed an eligible trial.",
             }
         elif not human_ready:
             winner = {
@@ -1679,7 +1219,7 @@ class ForgeService:
             best_ai_track = best_ai.get("track") if best_ai else None
 
         return {
-            "schema_version": "1.1",
+            "schema_version": "2.0",
             "run_id": run["run_id"],
             "state": run["state"],
             "stage": run["stage"],
@@ -1701,14 +1241,13 @@ class ForgeService:
                     "summary": copy.deepcopy(item.get("summary") or {}),
                     "error": item.get("error"),
                     "generation_retries": item.get("generation_retries", 0),
-                    "repair_attempts": item.get("repair_attempts", 0),
-                    "best_observed_attempt": item.get("best_observed_attempt"),
+                    "iteration_count": item.get("iteration_count", 0),
                     "design": copy.deepcopy(item.get("design")),
-                    "repair_history": copy.deepcopy(
-                        item.get("repair_history") or []
-                    ),
-                    "acceptance_history": copy.deepcopy(
-                        item.get("acceptance_history") or []
+                    "strategy_spec": copy.deepcopy(item.get("strategy_spec")),
+                    "best_iteration": item.get("best_iteration"),
+                    "iterations": copy.deepcopy(item.get("iterations") or []),
+                    "critique_history": copy.deepcopy(
+                        item.get("critique_history") or []
                     ),
                 }
                 for item in candidates
@@ -1808,7 +1347,7 @@ class ForgeService:
                 "ai_forge_includes": [
                     "run_settings",
                     "public_baseline_results",
-                    "agent_capability_contract_v3",
+                    "template_parameter_dsl_v1",
                 ],
                 "ai_forge_excludes": [
                     "human_source",
@@ -1819,7 +1358,6 @@ class ForgeService:
                 ],
             },
             "agent_calls": [],
-            "validation_attempts": [],
             "worker_attempts": [],
         }
         with self._lock:
@@ -1884,6 +1422,8 @@ class ForgeService:
         worker_run_id: str,
         source_code: str,
         parameters: dict[str, str],
+        strategy_spec: dict[str, Any] | None = None,
+        spec_sha256: str | None = None,
     ) -> None:
         entry = {
             "track": track,
@@ -1892,36 +1432,18 @@ class ForgeService:
             "submitted_at": utc_now(),
             "finished_at": None,
             "source_code": source_code,
+            "strategy_spec": copy.deepcopy(strategy_spec),
+            "strategy_spec_sha256": spec_sha256,
+            "template_version": TEMPLATE_VERSION if strategy_spec else None,
             "parameters": copy.deepcopy(parameters),
             "result": None,
             "console_log": None,
             "behavior_evidence": None,
-            "runtime_failure_evidence": None,
-            "acceptance_report": None,
             "outcome": "running",
             "error": None,
         }
         with self._lock:
             self._traces[run_id]["worker_attempts"].append(entry)
-            self._traces[run_id]["updated_at"] = utc_now()
-            self._persist_trace_locked(run_id)
-
-    def _record_validation_attempt(
-        self,
-        *,
-        run_id: str,
-        track: str,
-        attempt: int,
-        report: dict[str, Any],
-    ) -> None:
-        entry = {
-            "track": track,
-            "attempt": attempt,
-            "validated_at": utc_now(),
-            "report": copy.deepcopy(report),
-        }
-        with self._lock:
-            self._traces[run_id]["validation_attempts"].append(entry)
             self._traces[run_id]["updated_at"] = utc_now()
             self._persist_trace_locked(run_id)
 
@@ -2015,19 +1537,20 @@ class ForgeService:
                     "worker_run_id": None,
                     "source_code": None,
                     "design": None,
+                    "strategy_spec": None,
+                    "strategy_spec_sha256": None,
+                    "template_version": TEMPLATE_VERSION,
                     "summary": {},
                     "analysis": {},
                     "behavior_evidence": {},
                     "error": None,
                     "usage": {},
                     "generation_retries": 0,
-                    "repair_attempts": 0,
-                    "preflight": None,
-                    "validation_history": [],
-                    "repair_history": [],
-                    "acceptance": None,
-                    "acceptance_history": [],
-                    "best_observed_attempt": None,
+                    "iteration_count": 0,
+                    "best_iteration": None,
+                    "iterations": [],
+                    "critique_history": [],
+                    "failure_classification": None,
                 }
                 for track in DESIGNER_TRACKS
             ],
@@ -2472,7 +1995,7 @@ class ForgeService:
             for key in keys
         }
 
-    def _run_candidate(
+    def _run_template_candidate(
         self,
         *,
         run_id: str,
@@ -2481,180 +2004,74 @@ class ForgeService:
         settings: RunSettings,
         parameters: dict[str, str],
         baseline_results: list[dict[str, Any]],
-        generated: dict[str, Any],
+        initial_proposal: dict[str, Any],
     ) -> None:
-        source_code = generated["source_code"]
-        design = generated.get("design")
-        usage = self._add_usage({}, generated.get("usage", {}))
-        validation_history: list[dict[str, Any]] = []
-        repair_history: list[dict[str, Any]] = []
-        self._change_item(
-            run_id,
-            "candidates",
-            index,
-            state="submitting",
-            source_code=source_code,
-            design=design,
-            usage=usage,
-            repair_attempts=0,
-            preflight=None,
-            validation_history=[],
-            repair_history=[],
-            error=None,
-        )
+        """Run up to three parameter trials and retain the best completed result."""
 
-        acceptance_history: list[dict[str, Any]] = []
-        best_observed: dict[str, Any] | None = None
+        proposal = initial_proposal
+        usage = self._add_usage({}, proposal.get("usage", {}))
+        iterations: list[dict[str, Any]] = []
+        critiques: list[dict[str, Any]] = []
+        generation_retries = int(proposal.get("generation_retries", 0) or 0)
 
-        def restore_best_observed(error: str) -> bool:
-            if best_observed is None:
-                return False
-            self._change_item(
+        for iteration_number in range(1, MAX_TEMPLATE_BACKTESTS + 1):
+            self._change(
                 run_id,
-                "candidates",
-                index,
-                state="rejected",
-                worker_run_id=best_observed["worker_run_id"],
-                source_code=best_observed["source_code"],
-                summary=copy.deepcopy(best_observed["summary"]),
-                analysis=copy.deepcopy(best_observed["analysis"]),
-                behavior_evidence=copy.deepcopy(
-                    best_observed["behavior_evidence"]
+                stage=(
+                    f"Running {track} parameters · iteration "
+                    f"{iteration_number}/{MAX_TEMPLATE_BACKTESTS}"
                 ),
-                preflight=copy.deepcopy(best_observed["preflight"]),
-                acceptance=copy.deepcopy(best_observed["acceptance"]),
-                best_observed_attempt=best_observed["attempt"],
-                error=error,
-            )
-            return True
-
-        for repair_attempt in range(MAX_REPAIR_ATTEMPTS + 1):
-            preflight = validate_candidate_source(source_code, track)
-            validation_history.append(
-                {
-                    "attempt": repair_attempt,
-                    **copy.deepcopy(preflight),
-                }
-            )
-            self._record_validation_attempt(
-                run_id=run_id,
-                track=track,
-                attempt=repair_attempt,
-                report=preflight,
-            )
-            self._change_item(
-                run_id,
-                "candidates",
-                index,
-                preflight=preflight,
-                validation_history=copy.deepcopy(validation_history),
-            )
-            if preflight["status"] != "passed":
-                messages = [
-                    f"{item['code']}: {item['message']}"
-                    for item in preflight["diagnostics"]
-                ]
-                repair_reason = "; ".join(messages)
-                if repair_attempt == MAX_REPAIR_ATTEMPTS:
-                    if not restore_best_observed(repair_reason):
-                        self._change_item(
-                            run_id,
-                            "candidates",
-                            index,
-                            state="failed",
-                            error=repair_reason,
-                        )
-                    return
-                next_attempt = repair_attempt + 1
-                self._change(
-                    run_id,
-                    stage=(
-                        f"Repairing {track} candidate static validation "
-                        f"· attempt {next_attempt}"
-                    ),
-                )
-                self._change_item(
-                    run_id,
-                    "candidates",
-                    index,
-                    state="repairing",
-                    repair_attempts=next_attempt,
-                    error=repair_reason,
-                )
-                try:
-                    repaired = self.repairer.repair(
-                        track=track,
-                        run_settings=settings.model_dump(mode="json"),
-                        baseline_results=baseline_results,
-                        source_code=source_code,
-                        worker_result={
-                            "status": "static_validation_failed",
-                            "errors": messages,
-                        },
-                        lean_console_log=repair_reason,
-                        repair_attempt=next_attempt,
-                        repair_trigger="static_validation",
-                        acceptance_report=None,
-                        validation_report=preflight,
-                        candidate_design=design,
-                    )
-                    self._record_agent_call(
-                        run_id=run_id,
-                        track=track,
-                        stage="repair",
-                        attempt=next_attempt,
-                        trace=repaired.get("trace"),
-                    )
-                except Exception as exc:
-                    self._record_agent_call(
-                        run_id=run_id,
-                        track=track,
-                        stage="repair",
-                        attempt=next_attempt,
-                        trace=getattr(exc, "trace", None),
-                        error=exc,
-                    )
-                    if restore_best_observed(
-                        f"Repair Agent failed after a runnable attempt: {exc}"
-                    ):
-                        return
-                    raise
-                source_code = repaired["source_code"]
-                usage = self._add_usage(usage, repaired.get("usage", {}))
-                repair_history.append(
-                    {
-                        "attempt": next_attempt,
-                        "trigger": "static_validation",
-                        "classification": "STATIC_VALIDATION",
-                        "change_summary": repaired.get("change_summary", []),
-                        "first_interrupted_stage": repaired.get(
-                            "first_interrupted_stage"
-                        ),
-                    }
-                )
-                self._change_item(
-                    run_id,
-                    "candidates",
-                    index,
-                    state="submitting",
-                    source_code=source_code,
-                    usage=usage,
-                    repair_history=copy.deepcopy(repair_history),
-                    error=None,
-                )
-                continue
-
-            submitted = self.worker.submit_custom(source_code, parameters)
-            worker_run_id = submitted["run_id"]
-            self._record_worker_attempt(
-                run_id=run_id,
-                track=track,
-                attempt=repair_attempt,
-                worker_run_id=worker_run_id,
-                source_code=source_code,
-                parameters=parameters,
             )
             try:
+                validated = validate_strategy_spec(proposal["strategy_spec"])
+                spec = validated.model_dump(mode="json")
+                source = compile_strategy_source(validated)
+            except Exception as exc:
+                self._change_item(
+                    run_id,
+                    "candidates",
+                    index,
+                    state="failed",
+                    error=f"Template parameter contract failed: {exc}",
+                    failure_classification="agent_parameter_schema",
+                )
+                return
+
+            canonical = json.dumps(
+                spec,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+            design = copy.deepcopy(proposal.get("design") or {})
+            self._change_item(
+                run_id,
+                "candidates",
+                index,
+                state="submitting",
+                source_code=source,
+                design=design,
+                strategy_spec=spec,
+                strategy_spec_sha256=digest,
+                usage=usage,
+                generation_retries=generation_retries,
+                error=None,
+            )
+
+            try:
+                submitted = self.worker.submit_custom(source, parameters)
+                worker_run_id = submitted["run_id"]
+                self._record_worker_attempt(
+                    run_id=run_id,
+                    track=track,
+                    attempt=iteration_number,
+                    worker_run_id=worker_run_id,
+                    source_code=source,
+                    parameters=parameters,
+                    strategy_spec=spec,
+                    spec_sha256=digest,
+                )
                 result = self._wait_for_worker(
                     run_id,
                     "candidates",
@@ -2662,332 +2079,221 @@ class ForgeService:
                     worker_run_id,
                 )
             except Exception as exc:
-                result = {"status": "failed", "summary": {}, "errors": [str(exc)]}
-
-            if result.get("status") == "completed":
-                self._change(
+                self._change_item(
                     run_id,
-                    stage=f"Validating {track} candidate · attempt {len(acceptance_history) + 1}",
+                    "candidates",
+                    index,
+                    state="failed",
+                    error=str(exc),
+                    failure_classification="template_or_infrastructure_defect",
                 )
-                self._change_item(run_id, "candidates", index, state="validating")
-                try:
-                    console_log = self.worker.log(worker_run_id)
-                    behavior_evidence = build_behavior_evidence(
-                        self.worker.details(worker_run_id)
-                    )
-                    acceptance_console_log = compact_console_log(
-                        console_log,
-                        max_chars=12_000,
-                    )
-                except Exception as exc:
-                    self._update_worker_attempt(
-                        run_id=run_id,
-                        worker_run_id=worker_run_id,
-                        finished_at=utc_now(),
-                        result=result,
-                        outcome="evidence_failed",
-                        error={"type": type(exc).__name__, "message": str(exc)},
-                    )
-                    raise
+                return
+
+            if result.get("status") != "completed":
+                message = (
+                    "; ".join(result.get("errors", []))
+                    or "A schema-valid template strategy failed in LEAN"
+                )
                 self._update_worker_attempt(
                     run_id=run_id,
                     worker_run_id=worker_run_id,
                     finished_at=utc_now(),
                     result=result,
-                    console_log=console_log,
-                    behavior_evidence=behavior_evidence,
-                    outcome="awaiting_acceptance",
-                    error=None,
-                )
-                acceptance_attempt = len(acceptance_history) + 1
-                try:
-                    evaluated = self.acceptance_agent.evaluate(
-                        track=track,
-                        run_settings=settings.model_dump(mode="json"),
-                        critical_log_evidence=extract_critical_log_evidence(console_log),
-                        source_code=source_code,
-                        worker_result=result,
-                        lean_console_log=acceptance_console_log,
-                        behavior_evidence=behavior_evidence,
-                        acceptance_attempt=acceptance_attempt,
-                        candidate_design=design,
-                        preflight_report=preflight,
-                        previous_acceptance=(
-                            acceptance_history[-1]
-                            if acceptance_history
-                            else None
-                        ),
-                    )
-                    self._record_agent_call(
-                        run_id=run_id,
-                        track=track,
-                        stage="acceptance",
-                        attempt=acceptance_attempt,
-                        trace=evaluated.get("trace"),
-                    )
-                except Exception as exc:
-                    self._record_agent_call(
-                        run_id=run_id,
-                        track=track,
-                        stage="acceptance",
-                        attempt=acceptance_attempt,
-                        trace=getattr(exc, "trace", None),
-                        error=exc,
-                    )
-                    self._update_worker_attempt(
-                        run_id=run_id,
-                        worker_run_id=worker_run_id,
-                        outcome="acceptance_call_failed",
-                        error={"type": type(exc).__name__, "message": str(exc)},
-                    )
-                    raise
-                usage = self._add_usage(usage, evaluated.get("usage", {}))
-                self._change_item(run_id, "candidates", index, usage=usage)
-                try:
-                    agent_report = normalize_acceptance_payload(
-                        evaluated.get("report", {})
-                    )
-                    report = validate_acceptance_report(
-                        agent_report,
-                        behavior_evidence=behavior_evidence,
-                        run_settings=settings.model_dump(mode="json"),
-                    )
-                except Exception as exc:
-                    self._update_worker_attempt(
-                        run_id=run_id,
-                        worker_run_id=worker_run_id,
-                        outcome="acceptance_response_invalid",
-                        error={"type": type(exc).__name__, "message": str(exc)},
-                    )
-                    raise
-                previous_acceptance = (
-                    acceptance_history[-1] if acceptance_history else None
-                )
-                revision_effectiveness = build_revision_effectiveness(
-                    previous=previous_acceptance,
-                    summary=result.get("summary", {}),
-                    behavior_evidence=behavior_evidence,
-                    preflight=preflight,
-                    report=report,
-                )
-                acceptance_history.append(
-                    {
-                        "attempt": len(acceptance_history) + 1,
-                        "worker_run_id": worker_run_id,
-                        "summary": copy.deepcopy(result.get("summary", {})),
-                        "behavior_evidence": behavior_evidence,
-                        "preflight": preflight,
-                        "report": report,
-                        "agent_report": agent_report,
-                        "revision_effectiveness": revision_effectiveness,
-                        "source_code": source_code,
-                        "usage": evaluated.get("usage", {}),
-                    }
+                    outcome="template_runtime_defect",
+                    error={"type": "template_runtime_defect", "message": message},
                 )
                 self._change_item(
                     run_id,
                     "candidates",
                     index,
-                    acceptance=report,
-                    acceptance_history=copy.deepcopy(acceptance_history),
-                    usage=usage,
+                    state="failed",
+                    error=message,
+                    failure_classification="template_or_infrastructure_defect",
                 )
-                if int(behavior_evidence.get("filled_order_count") or 0) > 0:
-                    with self._lock:
-                        candidate_snapshot = copy.deepcopy(
-                            self._runs[run_id]["candidates"][index]
-                        )
-                    observed = {
-                        "attempt": repair_attempt,
-                        "worker_run_id": worker_run_id,
-                        "source_code": source_code,
-                        "summary": copy.deepcopy(result.get("summary", {})),
-                        "analysis": candidate_snapshot.get("analysis", {}),
-                        "behavior_evidence": behavior_evidence,
-                        "preflight": preflight,
-                        "acceptance": report,
-                    }
-                    if (
-                        best_observed is None
-                        or self._entry_score(observed["summary"])
-                        > self._entry_score(best_observed["summary"])
-                    ):
-                        best_observed = observed
-                if report["decision"] == "accept":
-                    self._update_worker_attempt(
-                        run_id=run_id,
-                        worker_run_id=worker_run_id,
-                        acceptance_report=report,
-                        outcome="accepted",
-                    )
-                    self._change_item(
-                        run_id,
-                        "candidates",
-                        index,
-                        state="accepted",
-                        error=None,
-                    )
-                    return
-                self._update_worker_attempt(
-                    run_id=run_id,
-                    worker_run_id=worker_run_id,
-                    acceptance_report=report,
-                    outcome="acceptance_revision",
-                )
-                if repair_attempt == MAX_REPAIR_ATTEMPTS:
-                    if not restore_best_observed(report["repair_request"]):
-                        self._change_item(
-                            run_id,
-                            "candidates",
-                            index,
-                            state="rejected",
-                            error=report["repair_request"],
-                        )
-                    return
-                repair_trigger = "acceptance_revision"
-                acceptance_report = report
-                repair_reason = report["repair_request"]
-                diagnostic_report = {
-                    "preflight": preflight,
-                    "failure_classification": classify_candidate_failure(
-                        result=result,
-                        console_log=console_log,
-                        behavior_evidence=behavior_evidence,
-                    ),
-                    "behavior_evidence": behavior_evidence,
-                    "failed_checks": [
-                        check["id"]
-                        for check in report["checks"]
-                        if check["status"] == "fail"
-                    ],
-                }
-            else:
-                try:
-                    console_log = self.worker.log(worker_run_id)
-                except Exception:
-                    console_log = "\n".join(result.get("errors", []))
-                try:
-                    failure_details = self.worker.details(worker_run_id)
-                    details_error = None
-                except Exception as exc:
-                    failure_details = None
-                    details_error = f"{type(exc).__name__}: {exc}"
-                runtime_failure_evidence = build_runtime_failure_evidence(
-                    failure_details,
-                    console_log,
-                    details_error=details_error,
-                )
-                repair_reason = (
-                    "; ".join(result.get("errors", [])) or "LEAN run failed"
-                )
-                self._update_worker_attempt(
-                    run_id=run_id,
-                    worker_run_id=worker_run_id,
-                    finished_at=utc_now(),
-                    result=result,
-                    console_log=console_log,
-                    runtime_failure_evidence=runtime_failure_evidence,
-                    outcome="runtime_failure",
-                    error={"type": "worker_failure", "message": repair_reason},
-                )
-                if repair_attempt == MAX_REPAIR_ATTEMPTS:
-                    terminal_error = (
-                        "; ".join(result.get("errors", []))
-                        or "LEAN run failed"
-                    )
-                    if not restore_best_observed(terminal_error):
-                        self._change_item(
-                            run_id,
-                            "candidates",
-                            index,
-                            state="failed",
-                            error=terminal_error,
-                        )
-                    return
-                repair_trigger = "runtime_failure"
-                acceptance_report = None
-                diagnostic_report = {
-                    "preflight": preflight,
-                    "failure_classification": classify_candidate_failure(
-                        result=result,
-                        console_log=console_log,
-                    ),
-                    "runtime_failure_evidence": runtime_failure_evidence,
-                }
+                return
 
-            next_attempt = repair_attempt + 1
-            self._change(
-                run_id,
-                stage=f"Repairing {track} candidate · attempt {next_attempt}",
+            with self._lock:
+                snapshot = copy.deepcopy(self._runs[run_id]["candidates"][index])
+            summary = copy.deepcopy(snapshot.get("summary") or {})
+            analysis = copy.deepcopy(snapshot.get("analysis") or {})
+            behavior = copy.deepcopy(snapshot.get("behavior_evidence") or {})
+            compact_result = compact_iteration_result(
+                iteration=iteration_number,
+                summary=summary,
+                analysis=analysis,
+                behavior_evidence=behavior,
+            )
+            score_key = self._entry_score(summary)
+            iteration = {
+                "iteration": iteration_number,
+                "state": "completed",
+                "worker_run_id": worker_run_id,
+                "template_version": TEMPLATE_VERSION,
+                "strategy_spec_sha256": digest,
+                "strategy_spec": spec,
+                "design": design,
+                "source_code": source,
+                "summary": summary,
+                "analysis": analysis,
+                "behavior_evidence": behavior,
+                "selection_key": [
+                    value if math.isfinite(value) else -1.0e12
+                    for value in score_key
+                ],
+                "critique": None,
+            }
+            iterations.append(iteration)
+            self._update_worker_attempt(
+                run_id=run_id,
+                worker_run_id=worker_run_id,
+                finished_at=utc_now(),
+                result=result,
+                behavior_evidence=behavior,
+                outcome="completed_parameter_iteration",
+                error=None,
             )
             self._change_item(
                 run_id,
                 "candidates",
                 index,
-                state="repairing",
-                repair_attempts=next_attempt,
-                error=repair_reason,
+                state="criticizing",
+                iterations=copy.deepcopy(iterations),
+                iteration_count=len(iterations),
             )
+
+            prior_results = [
+                compact_iteration_result(
+                    iteration=item["iteration"],
+                    summary=item["summary"],
+                    analysis=item["analysis"],
+                    behavior_evidence=item["behavior_evidence"],
+                )
+                for item in iterations[:-1]
+            ]
             try:
-                repaired = self.repairer.repair(
+                evaluated = self.critic.evaluate(
                     track=track,
-                    run_settings=settings.model_dump(mode="json"),
+                    iteration=iteration_number,
+                    strategy_spec=spec,
+                    iteration_result=compact_result,
                     baseline_results=baseline_results,
-                    source_code=source_code,
-                    worker_result=result,
-                    lean_console_log=console_log,
-                    repair_attempt=next_attempt,
-                    repair_trigger=repair_trigger,
-                    acceptance_report=acceptance_report,
-                    validation_report=diagnostic_report,
-                    candidate_design=design,
+                    iteration_history=prior_results,
                 )
                 self._record_agent_call(
                     run_id=run_id,
                     track=track,
-                    stage="repair",
-                    attempt=next_attempt,
-                    trace=repaired.get("trace"),
+                    stage="critic",
+                    attempt=iteration_number,
+                    trace=evaluated.get("trace"),
+                )
+                critique = evaluated["report"]
+                usage = self._add_usage(usage, evaluated.get("usage", {}))
+                iterations[-1]["critique"] = critique
+                critiques.append(
+                    {
+                        "iteration": iteration_number,
+                        "worker_run_id": worker_run_id,
+                        "report": copy.deepcopy(critique),
+                    }
                 )
             except Exception as exc:
                 self._record_agent_call(
                     run_id=run_id,
                     track=track,
-                    stage="repair",
-                    attempt=next_attempt,
+                    stage="critic",
+                    attempt=iteration_number,
                     trace=getattr(exc, "trace", None),
                     error=exc,
                 )
-                if restore_best_observed(
-                    f"Repair Agent failed after a runnable attempt: {exc}"
-                ):
-                    return
-                raise
-            source_code = repaired["source_code"]
-            usage = self._add_usage(usage, repaired.get("usage", {}))
-            repair_history.append(
-                {
-                    "attempt": next_attempt,
-                    "trigger": repair_trigger,
-                    "classification": diagnostic_report[
-                        "failure_classification"
-                    ]["code"],
-                    "change_summary": repaired.get("change_summary", []),
-                    "first_interrupted_stage": repaired.get(
-                        "first_interrupted_stage"
-                    ),
-                }
-            )
+                iterations[-1]["critique_error"] = str(exc)
+                break
+
             self._change_item(
                 run_id,
                 "candidates",
                 index,
-                state="submitting",
-                source_code=source_code,
                 usage=usage,
-                repair_history=copy.deepcopy(repair_history),
-                error=None,
+                iterations=copy.deepcopy(iterations),
+                critique_history=copy.deepcopy(critiques),
             )
+            if iteration_number == MAX_TEMPLATE_BACKTESTS:
+                break
+
+            try:
+                proposal = self.designer.generate(
+                    track=track,
+                    run_settings=settings.model_dump(mode="json"),
+                    baseline_results=baseline_results,
+                    iteration=iteration_number + 1,
+                    previous_spec=spec,
+                    critique=critique,
+                    iteration_history=[
+                        compact_iteration_result(
+                            iteration=item["iteration"],
+                            summary=item["summary"],
+                            analysis=item["analysis"],
+                            behavior_evidence=item["behavior_evidence"],
+                        )
+                        for item in iterations
+                    ],
+                )
+                self._record_agent_call(
+                    run_id=run_id,
+                    track=track,
+                    stage="designer_revision",
+                    attempt=iteration_number + 1,
+                    trace=proposal.get("trace"),
+                )
+                usage = self._add_usage(usage, proposal.get("usage", {}))
+                generation_retries += int(
+                    proposal.get("generation_retries", 0) or 0
+                )
+            except Exception as exc:
+                self._record_agent_call(
+                    run_id=run_id,
+                    track=track,
+                    stage="designer_revision",
+                    attempt=iteration_number + 1,
+                    trace=getattr(exc, "trace", None),
+                    error=exc,
+                )
+                iterations[-1]["revision_error"] = str(exc)
+                break
+
+        if not iterations:
+            self._change_item(
+                run_id,
+                "candidates",
+                index,
+                state="failed",
+                error="No parameter iteration completed",
+                failure_classification="agent_or_platform_failure",
+            )
+            return
+
+        best = max(iterations, key=lambda item: tuple(item["selection_key"]))
+        self._change_item(
+            run_id,
+            "candidates",
+            index,
+            state="accepted",
+            worker_run_id=best["worker_run_id"],
+            source_code=best["source_code"],
+            design=best["design"],
+            strategy_spec=best["strategy_spec"],
+            strategy_spec_sha256=best["strategy_spec_sha256"],
+            summary=copy.deepcopy(best["summary"]),
+            analysis=copy.deepcopy(best["analysis"]),
+            behavior_evidence=copy.deepcopy(best["behavior_evidence"]),
+            usage=usage,
+            generation_retries=generation_retries,
+            iteration_count=len(iterations),
+            best_iteration=best["iteration"],
+            iterations=copy.deepcopy(iterations),
+            critique_history=copy.deepcopy(critiques),
+            failure_classification=None,
+            error=None,
+        )
 
     def _execute(
         self,
@@ -3102,7 +2408,7 @@ class ForgeService:
                             run_id=run_id,
                             track=track,
                             stage="designer",
-                            attempt=0,
+                            attempt=1,
                             trace=generated.get("trace"),
                         )
                         generated_candidates[index] = generated
@@ -3111,8 +2417,8 @@ class ForgeService:
                             "candidates",
                             index,
                             state="generated",
-                            source_code=generated["source_code"],
                             design=generated.get("design"),
+                            strategy_spec=generated.get("strategy_spec"),
                             usage=self._add_usage({}, generated.get("usage", {})),
                             generation_retries=int(
                                 generated.get("generation_retries", 0) or 0
@@ -3125,7 +2431,7 @@ class ForgeService:
                             run_id=run_id,
                             track=track,
                             stage="designer",
-                            attempt=0,
+                            attempt=1,
                             trace=failed_trace,
                             error=exc,
                         )
@@ -3153,14 +2459,14 @@ class ForgeService:
                     stage=f"Running {track} Designer candidate",
                 )
                 try:
-                    self._run_candidate(
+                    self._run_template_candidate(
                         run_id=run_id,
                         index=index,
                         track=track,
                         settings=settings,
                         parameters=parameters,
                         baseline_results=evidence,
-                        generated=generated,
+                        initial_proposal=generated,
                     )
                 except Exception as exc:
                     self._change_item(

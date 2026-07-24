@@ -52,7 +52,6 @@ services:
       ALPHAFORGE_WORKER_URL: http://lean-worker:8081
       ALPHAFORGE_WORKER_TOKEN: ${ALPHAFORGE_API_TOKEN:-local-dev-token}
       ALPHAFORGE_UNIVERSE_CONFIG: /app/configs/universe_whitelist_v1.0.json
-      ALPHAFORGE_LEAN_DOCS_PATH: /app/docs/lean-text
       ALPHAFORGE_TRACE_ROOT: /runtime/forge-traces
       ALPHAFORGE_HISTORY_ROOT: /runtime/run-history
       API_KEY: ${API_KEY:-}

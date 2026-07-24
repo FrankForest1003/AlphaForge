@@ -1,0 +1,723 @@
+from datetime import datetime, timedelta
+import json
+import math
+
+from AlgorithmImports import *
+import numpy as np
+import pandas as pd
+from sklearn.ensemble import (
+    ExtraTreesRegressor,
+    GradientBoostingRegressor,
+    RandomForestRegressor,
+)
+from sklearn.linear_model import Ridge
+
+from alphaforge_base import (
+    AlphaForgeBaseAlgorithm,
+    AlphaForgeStagedRebalancer,
+    af_split_history_frames,
+)
+
+
+# This file is immutable strategy infrastructure. The Backend replaces only the
+# JSON string marker after validating it against StrategyTemplateSpec.
+STRATEGY_SPEC = json.loads(__ALPHAFORGE_STRATEGY_SPEC_JSON__)
+STRATEGY_SPEC_SHA256 = "__ALPHAFORGE_STRATEGY_SPEC_SHA256__"
+
+
+class UserStrategy(AlphaForgeBaseAlgorithm):
+    DEFAULT_UNIVERSE = [
+        "MSFT", "AAPL", "NVDA", "GOOGL", "AMZN", "META", "AVGO", "ASML", "AMD", "ORCL",
+        "JPM", "BRK.B", "V", "LLY", "JNJ", "ABBV", "TMO", "WMT", "COST", "PG",
+        "KO", "MCD", "CAT", "HON", "UNP", "ETN", "XOM", "LIN", "NEE", "PLD",
+    ]
+
+    def _parameter(self, name, default):
+        value = self.get_parameter(name)
+        return value if value not in (None, "") else default
+
+    def _selected_tickers(self):
+        raw = str(self._parameter("symbols", ",".join(self.DEFAULT_UNIVERSE)))
+        tickers = []
+        for ticker in raw.split(","):
+            normalized = ticker.strip().upper()
+            if normalized and normalized not in tickers:
+                tickers.append(normalized)
+        unknown = sorted(set(tickers).difference(self.DEFAULT_UNIVERSE))
+        if unknown:
+            raise ValueError(f"Symbols outside AlphaForge whitelist: {unknown}")
+        if len(tickers) < 5:
+            raise ValueError("AlphaForge template requires at least five stocks")
+        return tickers
+
+    def initialize(self):
+        self.spec = STRATEGY_SPEC
+        self._af_execution = AlphaForgeStagedRebalancer(self)
+        start = datetime.fromisoformat(self._parameter("start_date", "2020-01-02"))
+        end = datetime.fromisoformat(self._parameter("end_date", "2024-12-31"))
+        self.set_start_date(start.year, start.month, start.day)
+        self.set_end_date(end.year, end.month, end.day)
+        self.set_cash(float(self._parameter("initial_cash", "100000")))
+
+        self.fee_bps = float(self._parameter("transaction_cost_bps", "10"))
+        self.slippage_bps = float(self._parameter("slippage_bps", "5"))
+        tickers = self._selected_tickers()
+        self.symbols = []
+        for ticker in tickers:
+            security = self.add_equity(ticker, Resolution.DAILY)
+            self.af_configure_security(
+                security,
+                fee_bps=self.fee_bps,
+                slippage_bps=self.slippage_bps,
+            )
+            self.symbols.append(self.af_track_symbol(security.symbol))
+
+        benchmark_ticker = str(self._parameter("benchmark", "SPY")).strip().upper()
+        benchmark = self.add_equity(benchmark_ticker, Resolution.DAILY)
+        self.af_configure_security(benchmark)
+        self.benchmark_symbol = benchmark.symbol
+        self.af_use_security_benchmark(self.benchmark_symbol)
+        self.settings.minimum_order_margin_portfolio_percentage = 0
+
+        self.track = self.spec["track"]
+        self.signal_spec = self.spec.get("signal")
+        self.model_spec = self.spec.get("model")
+        self.selection_spec = self.spec["selection"]
+        self.portfolio_spec = self.spec["portfolio"]
+        self.schedule_spec = self.spec["schedule"]
+        self.risk_spec = self.spec["risk"]
+        self.top_k = min(int(self.selection_spec["top_k"]), len(self.symbols))
+
+        self.model = None
+        self.rebalance_count = 0
+        self.portfolio_peak = float(self.portfolio.total_portfolio_value)
+        self.risk_pause_until = None
+        self.cooldown_until = {}
+
+        feature_specs = {}
+        if self.signal_spec is not None:
+            for component in self.signal_spec["components"]:
+                feature = component["feature"]
+                feature_specs[self._feature_key(feature)] = feature
+        if self.model_spec is not None:
+            for feature in self.model_spec["features"]:
+                feature_specs[self._feature_key(feature)] = feature
+        self.feature_specs = list(feature_specs.values())
+
+        maximum_feature_window = max(
+            [int(feature["window"]) for feature in self.feature_specs] + [2]
+        )
+        maximum_risk_window = (
+            int(self.risk_spec["market_sma_window"])
+            if self.risk_spec["market_trend_filter"]
+            else 2
+        )
+        allocation_window = int(self.portfolio_spec["volatility_window"])
+        self.maximum_lookback = max(
+            maximum_feature_window,
+            maximum_risk_window,
+            allocation_window,
+        )
+        if self.model_spec is None:
+            self.history_bars = self.maximum_lookback + 20
+        else:
+            desired_per_symbol = max(
+                20,
+                int(
+                    math.ceil(
+                        int(self.model_spec["pooled_training_rows"])
+                        / float(len(self.symbols))
+                    )
+                ),
+            )
+            self.history_bars = (
+                self.maximum_lookback
+                + int(self.model_spec["horizon_days"])
+                + desired_per_symbol
+                + 20
+            )
+
+        self.set_warm_up(self.history_bars, Resolution.DAILY)
+        reference = self.symbols[0]
+        if self.schedule_spec["frequency"] == "weekly":
+            date_rule = self.date_rules.week_start(reference)
+        else:
+            date_rule = self.date_rules.month_start(reference)
+        self.schedule.on(
+            date_rule,
+            self.time_rules.after_market_open(
+                reference,
+                int(self.schedule_spec["minutes_after_open"]),
+            ),
+            self.rebalance,
+        )
+
+    @staticmethod
+    def _feature_key(feature):
+        return f"{feature['kind']}_{int(feature['window'])}"
+
+    def _feature_frame(self, frame, benchmark_close):
+        close = frame["close"].astype(float)
+        volume = frame["volume"].astype(float)
+        benchmark_aligned = benchmark_close.reindex(close.index).ffill()
+        daily_return = close.pct_change()
+        features = pd.DataFrame(index=frame.index)
+        for feature in self.feature_specs:
+            kind = feature["kind"]
+            window = int(feature["window"])
+            key = self._feature_key(feature)
+            if kind == "return":
+                values = close.pct_change(window)
+            elif kind == "volatility":
+                values = daily_return.rolling(window).std() * math.sqrt(252)
+            elif kind == "sma_gap":
+                values = close / close.rolling(window).mean() - 1.0
+            elif kind == "relative_return":
+                values = (
+                    close.pct_change(window)
+                    - benchmark_aligned.pct_change(window)
+                )
+            elif kind == "volume_change":
+                values = volume.pct_change(window)
+            elif kind == "rsi":
+                change = close.diff()
+                gain = change.clip(lower=0.0).rolling(window).mean()
+                loss = (-change.clip(upper=0.0)).rolling(window).mean()
+                relative_strength = gain / loss.replace(0.0, np.nan)
+                values = 100.0 - 100.0 / (1.0 + relative_strength)
+                values = values.fillna(50.0)
+            else:
+                raise ValueError(f"Unsupported feature kind: {kind}")
+            features[key] = values.replace([np.inf, -np.inf], np.nan)
+        return features
+
+    @staticmethod
+    def _cross_sectional_ranks(frame):
+        return (
+            frame.groupby(level=0)
+            .rank(method="average", pct=True)
+            .mul(2.0)
+            .sub(1.0)
+            .replace([np.inf, -np.inf], np.nan)
+            .fillna(0.0)
+        )
+
+    @staticmethod
+    def _current_ranks(frame):
+        return (
+            frame.rank(method="average", pct=True)
+            .mul(2.0)
+            .sub(1.0)
+            .replace([np.inf, -np.inf], np.nan)
+            .fillna(0.0)
+        )
+
+    def _make_model(self):
+        algorithm = self.model_spec["algorithm"]
+        seed = 42
+        if algorithm == "gradient_boosting":
+            return GradientBoostingRegressor(
+                loss="huber",
+                random_state=seed,
+                n_estimators=int(self.model_spec["n_estimators"]),
+                learning_rate=float(self.model_spec["learning_rate"]),
+                max_depth=int(self.model_spec["max_depth"]),
+                min_samples_leaf=int(self.model_spec["min_samples_leaf"]),
+            )
+        if algorithm == "random_forest":
+            return RandomForestRegressor(
+                random_state=seed,
+                n_estimators=int(self.model_spec["n_estimators"]),
+                max_depth=int(self.model_spec["max_depth"]),
+                min_samples_leaf=int(self.model_spec["min_samples_leaf"]),
+                n_jobs=1,
+            )
+        if algorithm == "extra_trees":
+            return ExtraTreesRegressor(
+                random_state=seed,
+                n_estimators=int(self.model_spec["n_estimators"]),
+                max_depth=int(self.model_spec["max_depth"]),
+                min_samples_leaf=int(self.model_spec["min_samples_leaf"]),
+                n_jobs=1,
+            )
+        if algorithm == "ridge":
+            return Ridge(alpha=float(self.model_spec["ridge_alpha"]))
+        raise ValueError(f"Unsupported model algorithm: {algorithm}")
+
+    def _train_and_predict(self, frames, benchmark_close, current_features):
+        feature_keys = [
+            self._feature_key(feature)
+            for feature in self.model_spec["features"]
+        ]
+        horizon = int(self.model_spec["horizon_days"])
+        requested_rows = int(self.model_spec["pooled_training_rows"])
+        rows_per_symbol = max(
+            20,
+            int(math.ceil(requested_rows / float(len(self.symbols)))),
+        )
+        train_frames = []
+        for symbol in self.symbols:
+            frame = frames.get(symbol.value.upper())
+            if frame is None or frame.empty or symbol not in current_features:
+                continue
+            features = self._feature_frame(frame, benchmark_close)[feature_keys]
+            close = frame["close"].astype(float)
+            target = close.shift(-horizon) / close - 1.0
+            if self.model_spec["target"] == "excess_return":
+                aligned = benchmark_close.reindex(close.index).ffill()
+                target = target - (aligned.shift(-horizon) / aligned - 1.0)
+            train = features.copy()
+            train["target"] = target
+            train = train.replace([np.inf, -np.inf], np.nan).dropna()
+            if len(train) < 20:
+                continue
+            train_frames.append(train.tail(rows_per_symbol))
+
+        if not train_frames:
+            return None
+        combined = pd.concat(train_frames, axis=0).sort_index()
+        if len(combined) < requested_rows:
+            self.af_record_signal(
+                "template_insufficient_training_rows",
+                {
+                    "observed_rows": int(len(combined)),
+                    "required_rows": requested_rows,
+                },
+            )
+            return None
+        combined = combined.tail(max(requested_rows, len(self.symbols) * 20))
+        combined.loc[:, feature_keys] = self._cross_sectional_ranks(
+            combined[feature_keys]
+        )
+
+        current_matrix = pd.DataFrame.from_dict(
+            {
+                symbol: current_features[symbol][feature_keys]
+                for symbol in current_features
+            },
+            orient="index",
+        )
+        current_matrix = self._current_ranks(current_matrix[feature_keys])
+        x_train = combined[feature_keys].to_numpy(dtype=float)
+        y_train = combined["target"].to_numpy(dtype=float)
+        finite = np.isfinite(y_train) & np.all(np.isfinite(x_train), axis=1)
+        x_train = x_train[finite]
+        y_train = y_train[finite]
+        if len(x_train) < requested_rows:
+            return None
+
+        should_retrain = (
+            self.model is None
+            or self.rebalance_count
+            % int(self.model_spec["retrain_every_rebalances"])
+            == 0
+        )
+        if should_retrain:
+            self.model = self._make_model()
+            self.model.fit(x_train, y_train)
+            importance = {}
+            if hasattr(self.model, "feature_importances_"):
+                importance = {
+                    name: float(value)
+                    for name, value in zip(
+                        feature_keys,
+                        self.model.feature_importances_,
+                    )
+                }
+            elif hasattr(self.model, "coef_"):
+                importance = {
+                    name: float(value)
+                    for name, value in zip(feature_keys, self.model.coef_)
+                }
+            self.af_record_ml_training(
+                {
+                    "model_type": type(self.model).__name__,
+                    "training_rows": int(len(x_train)),
+                    "label_horizon_days": horizon,
+                    "random_seed": 42,
+                    "feature_names": feature_keys,
+                    "feature_importance": importance,
+                    "strategy_spec_sha256": STRATEGY_SPEC_SHA256,
+                }
+            )
+        if self.model is None:
+            return None
+        return {
+            symbol: float(
+                self.model.predict(
+                    np.asarray(
+                        [current_matrix.loc[symbol, feature_keys].to_numpy(dtype=float)]
+                    )
+                )[0]
+            )
+            for symbol in current_matrix.index
+        }
+
+    def _transparent_scores(self, current_features):
+        component_scores = []
+        component_weights = []
+        for component in self.signal_spec["components"]:
+            key = self._feature_key(component["feature"])
+            raw = pd.Series(
+                {
+                    symbol: float(values[key])
+                    for symbol, values in current_features.items()
+                    if key in values and np.isfinite(float(values[key]))
+                },
+                dtype=float,
+            )
+            if raw.empty:
+                continue
+            ranked = raw.rank(method="average", pct=True).mul(2.0).sub(1.0)
+            if component["direction"] == "lower":
+                ranked = -ranked
+            component_scores.append(ranked)
+            component_weights.append(float(component["weight"]))
+        if not component_scores:
+            return None
+        all_symbols = sorted(
+            set.intersection(*[set(series.index) for series in component_scores]),
+            key=lambda symbol: symbol.value,
+        )
+        if not all_symbols:
+            return None
+        weight_total = sum(component_weights)
+        combined = pd.Series(0.0, index=all_symbols, dtype=float)
+        for series, weight in zip(component_scores, component_weights):
+            combined = combined.add(
+                series.reindex(all_symbols) * weight / weight_total,
+                fill_value=0.0,
+            )
+        return combined
+
+    @staticmethod
+    def _minimum_variance_raw(selected, frames, window):
+        returns = {}
+        for symbol in selected:
+            frame = frames.get(symbol.value.upper())
+            if frame is None or frame.empty:
+                continue
+            returns[symbol] = frame["close"].astype(float).pct_change().tail(window)
+        matrix = pd.DataFrame(returns).dropna()
+        if len(matrix) < max(10, min(window, 30)) or len(matrix.columns) != len(selected):
+            return None
+        covariance = matrix.cov().to_numpy(dtype=float) * 252.0
+        diagonal = np.diag(covariance)
+        loading = np.maximum(diagonal, np.finfo(float).eps) * 1e-6
+        precision = np.linalg.pinv(covariance + np.diag(loading))
+        raw = np.clip(precision @ np.ones(len(selected)), 0.0, None)
+        if raw.sum() <= 0:
+            return None
+        return pd.Series(raw, index=selected, dtype=float)
+
+    def _allocate_with_cap(self, raw_weights):
+        clean = (
+            raw_weights.replace([np.inf, -np.inf], np.nan)
+            .fillna(0.0)
+            .clip(lower=0.0)
+        )
+        if clean.empty or clean.sum() <= 0:
+            clean = pd.Series(1.0, index=raw_weights.index, dtype=float)
+        allocation = pd.Series(0.0, index=clean.index, dtype=float)
+        remaining = list(clean.index)
+        exposure = float(self.portfolio_spec["gross_exposure"])
+        cap = float(self.portfolio_spec["max_position_weight"])
+        while remaining and exposure > 1e-12:
+            remaining_values = clean.loc[remaining]
+            if remaining_values.sum() <= 0:
+                proposal = pd.Series(
+                    exposure / len(remaining),
+                    index=remaining,
+                    dtype=float,
+                )
+            else:
+                proposal = remaining_values / remaining_values.sum() * exposure
+            capped = proposal[proposal > cap].index.tolist()
+            if not capped:
+                allocation.loc[remaining] = proposal
+                break
+            for symbol in capped:
+                allocation.loc[symbol] = cap
+                remaining.remove(symbol)
+                exposure -= cap
+        return allocation
+
+    def _target_weights(self, selected, scores, frames):
+        method = self.portfolio_spec["weighting"]
+        if method == "equal":
+            raw = pd.Series(1.0, index=selected, dtype=float)
+        elif method == "inverse_volatility":
+            window = int(self.portfolio_spec["volatility_window"])
+            raw = {}
+            for symbol in selected:
+                frame = frames.get(symbol.value.upper())
+                volatility = (
+                    frame["close"].astype(float).pct_change().tail(window).std()
+                    if frame is not None and not frame.empty
+                    else np.nan
+                )
+                raw[symbol] = (
+                    1.0 / float(volatility)
+                    if np.isfinite(volatility) and volatility > 0
+                    else 0.0
+                )
+            raw = pd.Series(raw, dtype=float)
+        elif method == "minimum_variance":
+            raw = self._minimum_variance_raw(
+                selected,
+                frames,
+                int(self.portfolio_spec["volatility_window"]),
+            )
+            if raw is None:
+                raw = pd.Series(1.0, index=selected, dtype=float)
+        else:
+            selected_scores = scores.reindex(selected).astype(float)
+            score_raw = selected_scores - selected_scores.min() + 0.05
+            if method == "score":
+                raw = score_raw
+            else:
+                minimum_variance = self._minimum_variance_raw(
+                    selected,
+                    frames,
+                    int(self.portfolio_spec["volatility_window"]),
+                )
+                if minimum_variance is None:
+                    raw = score_raw
+                else:
+                    blend = float(
+                        self.portfolio_spec["minimum_variance_blend"]
+                    )
+                    score_normalized = score_raw / score_raw.sum()
+                    minimum_normalized = minimum_variance / minimum_variance.sum()
+                    raw = (
+                        (1.0 - blend) * score_normalized
+                        + blend * minimum_normalized
+                    )
+        return self._allocate_with_cap(raw)
+
+    def _risk_filter_passes(self, benchmark_frame):
+        if not self.risk_spec["market_trend_filter"]:
+            return True
+        close = benchmark_frame["close"].astype(float)
+        window = int(self.risk_spec["market_sma_window"])
+        if len(close) < window:
+            return False
+        moving_average = close.rolling(window).mean().iloc[-1]
+        return bool(np.isfinite(moving_average) and close.iloc[-1] > moving_average)
+
+    def rebalance(self):
+        if self.is_warming_up:
+            return
+        if self.risk_pause_until is not None and self.time < self.risk_pause_until:
+            return
+        self.rebalance_count += 1
+        history_symbols = list(self.symbols)
+        if self.benchmark_symbol not in history_symbols:
+            history_symbols.append(self.benchmark_symbol)
+        history = self.history(history_symbols, self.history_bars, Resolution.DAILY)
+        if history is None or history.empty:
+            return
+        frames = af_split_history_frames(history)
+        benchmark_frame = frames.get(self.benchmark_symbol.value.upper())
+        if benchmark_frame is None or benchmark_frame.empty:
+            return
+        if not self._risk_filter_passes(benchmark_frame):
+            self.af_record_signal(
+                "template_market_risk_off",
+                {"selected": [], "strategy_spec_sha256": STRATEGY_SPEC_SHA256},
+            )
+            self._af_execution.af_liquidate_all("Template market trend risk-off")
+            return
+
+        benchmark_close = benchmark_frame["close"].astype(float)
+        current_features = {}
+        for symbol in self.symbols:
+            if (
+                symbol in self.cooldown_until
+                and self.time < self.cooldown_until[symbol]
+            ):
+                continue
+            frame = frames.get(symbol.value.upper())
+            if frame is None or frame.empty:
+                continue
+            features = self._feature_frame(frame, benchmark_close).dropna()
+            if features.empty:
+                continue
+            current_features[symbol] = features.iloc[-1]
+        if len(current_features) < self.top_k:
+            return
+
+        transparent_scores = (
+            self._transparent_scores(current_features)
+            if self.signal_spec is not None
+            else None
+        )
+        predictions = (
+            self._train_and_predict(
+                frames,
+                benchmark_close,
+                current_features,
+            )
+            if self.model_spec is not None
+            else None
+        )
+        if self.track == "Traditional":
+            if transparent_scores is None:
+                return
+            final_scores = transparent_scores
+        elif self.track == "ML":
+            if not predictions:
+                return
+            final_scores = (
+                pd.Series(predictions, dtype=float)
+                .rank(method="average", pct=True)
+                .mul(2.0)
+                .sub(1.0)
+            )
+        else:
+            if transparent_scores is None or not predictions:
+                return
+            model_scores = (
+                pd.Series(predictions, dtype=float)
+                .rank(method="average", pct=True)
+                .mul(2.0)
+                .sub(1.0)
+            )
+            common = transparent_scores.index.intersection(model_scores.index)
+            if len(common) < self.top_k:
+                return
+            model_weight = float(self.selection_spec["hybrid_model_weight"])
+            final_scores = (
+                model_weight * model_scores.reindex(common)
+                + (1.0 - model_weight) * transparent_scores.reindex(common)
+            )
+
+        ranked = final_scores.sort_values(ascending=False)
+        if self.selection_spec["require_positive_score"]:
+            ranked = ranked[ranked > 0]
+        selected = list(ranked.head(self.top_k).index)
+        if len(selected) < self.top_k:
+            self._af_execution.af_liquidate_all(
+                "Template selection gate produced too few candidates"
+            )
+            return
+        target_series = self._target_weights(
+            selected,
+            final_scores,
+            frames,
+        )
+        target_weights = {
+            symbol: float(weight)
+            for symbol, weight in target_series.items()
+            if float(weight) > 0
+        }
+
+        threshold = float(self.portfolio_spec["rebalance_threshold"])
+        portfolio_value = float(self.portfolio.total_portfolio_value)
+        if threshold > 0 and portfolio_value > 0:
+            for symbol in list(target_weights):
+                current = (
+                    float(self.portfolio[symbol].holdings_value)
+                    / portfolio_value
+                )
+                if abs(target_weights[symbol] - current) < threshold:
+                    target_weights[symbol] = max(0.0, current)
+            gross = sum(target_weights.values())
+            cap = float(self.portfolio_spec["gross_exposure"])
+            if gross > cap and gross > 0:
+                target_weights = {
+                    symbol: weight * cap / gross
+                    for symbol, weight in target_weights.items()
+                }
+
+        if transparent_scores is not None:
+            self.af_record_signal(
+                "template_transparent_signal",
+                {
+                    "scores": {
+                        symbol.value: float(score)
+                        for symbol, score in transparent_scores.items()
+                    },
+                    "selected": [symbol.value for symbol in selected],
+                    "targets": {
+                        symbol.value: weight
+                        for symbol, weight in target_weights.items()
+                    },
+                    "strategy_spec_sha256": STRATEGY_SPEC_SHA256,
+                },
+            )
+        if predictions:
+            prediction_ranks = pd.Series(predictions).rank(
+                method="min",
+                ascending=False,
+            )
+            for symbol, prediction in predictions.items():
+                self.af_record_ml_prediction(
+                    {
+                        "symbol": symbol.value,
+                        "predicted_alpha": float(prediction),
+                        "rank": int(prediction_ranks[symbol]),
+                        "selected": symbol in selected,
+                        "target_weight": float(target_weights.get(symbol, 0.0)),
+                        "final_score": float(final_scores.get(symbol, 0.0)),
+                    }
+                )
+        self._af_execution.af_rebalance_to_weights(
+            target_weights,
+            f"{self.track} template rebalance",
+        )
+
+    def on_data(self, data):
+        if self.is_warming_up:
+            return
+        portfolio_value = float(self.portfolio.total_portfolio_value)
+        self.portfolio_peak = max(self.portfolio_peak, portfolio_value)
+        maximum_drawdown = self.risk_spec.get("maximum_drawdown")
+        if (
+            maximum_drawdown is not None
+            and self.portfolio_peak > 0
+            and 1.0 - portfolio_value / self.portfolio_peak
+            >= float(maximum_drawdown)
+        ):
+            self._af_execution.af_liquidate_all("Template drawdown pause")
+            self.risk_pause_until = self.time + timedelta(
+                days=int(self.risk_spec["cooldown_days"])
+            )
+            self.portfolio_peak = portfolio_value
+            return
+
+        stop_loss = self.risk_spec.get("stop_loss")
+        if stop_loss is None:
+            return
+        stopped = []
+        for symbol in self.symbols:
+            holding = self.portfolio[symbol]
+            if not holding.invested or float(holding.average_price) <= 0:
+                continue
+            price = float(self.securities[symbol].price)
+            position_return = price / float(holding.average_price) - 1.0
+            if position_return <= -float(stop_loss):
+                stopped.append(symbol)
+                self.cooldown_until[symbol] = self.time + timedelta(
+                    days=int(self.risk_spec["cooldown_days"])
+                )
+        if stopped and portfolio_value > 0:
+            remaining = {
+                symbol: max(
+                    0.0,
+                    float(self.portfolio[symbol].holdings_value)
+                    / portfolio_value,
+                )
+                for symbol in self.symbols
+                if symbol not in stopped and self.portfolio[symbol].invested
+            }
+            self._af_execution.af_rebalance_to_weights(
+                remaining,
+                "Template stop-loss exit",
+            )
+
+    def on_end_of_algorithm(self):
+        self.debug(
+            "ALPHAFORGE_PARAMETERIZED_TEMPLATE_COMPLETED "
+            + STRATEGY_SPEC_SHA256
+        )

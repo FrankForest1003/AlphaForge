@@ -13,7 +13,6 @@ class Settings:
     worker_base_url: str
     worker_token: str
     universe_path: Path
-    lean_docs_path: Path
     trace_root: Path
     history_root: Path
     api_key: str
@@ -47,12 +46,6 @@ def load_settings() -> Settings:
                 / "lean_worker"
                 / "config"
                 / "universe_whitelist_v1.0.json",
-            )
-        ).resolve(),
-        lean_docs_path=Path(
-            os.getenv(
-                "ALPHAFORGE_LEAN_DOCS_PATH",
-                REPOSITORY_ROOT / "docs" / "lean" / "text" / "alphaforge-python-v1",
             )
         ).resolve(),
         trace_root=Path(

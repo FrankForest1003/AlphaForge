@@ -11,7 +11,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY backend/app ./app
 COPY agent ./agent
 COPY lean_worker/config/universe_whitelist_v1.0.json ./configs/universe_whitelist_v1.0.json
-COPY ["docs/lean/text/alphaforge-python-v1", "./docs/lean-text"]
 
 EXPOSE 8000
 HEALTHCHECK --interval=20s --timeout=5s --start-period=10s --retries=3 \

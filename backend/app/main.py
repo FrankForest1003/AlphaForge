@@ -7,10 +7,8 @@ from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 
 from agent import (
-    DeepSeekAcceptanceAgent,
+    DeepSeekCritic,
     DeepSeekDesigner,
-    DeepSeekRepairAgent,
-    load_lean_text,
 )
 from app.config import load_settings
 from app.schemas import ForgeRunRequest, RobustnessRunRequest
@@ -34,27 +32,18 @@ benchmarks = {
     if item.get("role") == "benchmark"
 }
 worker = LeanWorkerClient(settings.worker_base_url, settings.worker_token)
-lean_documentation = load_lean_text(settings.lean_docs_path)
 agent_options = {
     "api_key": settings.api_key,
     "base_url": settings.base_url,
     "model": settings.model,
     "thinking_enabled": settings.thinking_enabled,
 }
-designer = DeepSeekDesigner(
-    **agent_options,
-    lean_documentation=lean_documentation,
-)
-repairer = DeepSeekRepairAgent(
-    **agent_options,
-    lean_documentation=lean_documentation,
-)
-acceptance_agent = DeepSeekAcceptanceAgent(**agent_options)
+designer = DeepSeekDesigner(**agent_options)
+critic = DeepSeekCritic(**agent_options)
 forge = ForgeService(
     worker=worker,
     designer=designer,
-    repairer=repairer,
-    acceptance_agent=acceptance_agent,
+    critic=critic,
     allowed_symbols=tradable_symbols,
     allowed_benchmarks=benchmarks,
     trace_root=settings.trace_root,
@@ -66,7 +55,7 @@ app = FastAPI(
     version="1.0.0",
     description=(
         "Four public baselines, one Human strategy, and three parallel "
-        "DeepSeek-designed LEAN strategies."
+        "DeepSeek-designed parameter strategies compiled into a fixed LEAN template."
     ),
 )
 app.add_middleware(
@@ -89,7 +78,7 @@ def health() -> dict[str, Any]:
         "status": "ok" if healthy else "degraded",
         "worker": worker_health,
         "designer": designer.health(),
-        "acceptance_agent": acceptance_agent.health(),
+        "critic": critic.health(),
     }
 
 

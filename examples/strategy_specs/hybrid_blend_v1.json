@@ -1,0 +1,84 @@
+{
+  "schema_version": "template-v1",
+  "strategy_name": "Hybrid ML Relative Strength Blend",
+  "track": "Hybrid",
+  "thesis": "Combining nonlinear excess-return forecasts with transparent relative strength improves ranking diversification.",
+  "signal": {
+    "components": [
+      {
+        "feature": {
+          "kind": "relative_return",
+          "window": 63
+        },
+        "direction": "higher",
+        "weight": 0.65
+      },
+      {
+        "feature": {
+          "kind": "volatility",
+          "window": 42
+        },
+        "direction": "lower",
+        "weight": 0.35
+      }
+    ]
+  },
+  "model": {
+    "algorithm": "gradient_boosting",
+    "features": [
+      {
+        "kind": "return",
+        "window": 21
+      },
+      {
+        "kind": "return",
+        "window": 126
+      },
+      {
+        "kind": "volatility",
+        "window": 42
+      },
+      {
+        "kind": "relative_return",
+        "window": 63
+      },
+      {
+        "kind": "rsi",
+        "window": 14
+      }
+    ],
+    "target": "excess_return",
+    "horizon_days": 21,
+    "pooled_training_rows": 240,
+    "retrain_every_rebalances": 3,
+    "n_estimators": 60,
+    "learning_rate": 0.05,
+    "max_depth": 2,
+    "min_samples_leaf": 8,
+    "ridge_alpha": 1.0
+  },
+  "selection": {
+    "top_k": 5,
+    "require_positive_score": false,
+    "hybrid_model_weight": 0.55
+  },
+  "portfolio": {
+    "weighting": "blend_score_minimum_variance",
+    "gross_exposure": 0.9,
+    "max_position_weight": 0.25,
+    "volatility_window": 63,
+    "minimum_variance_blend": 0.35,
+    "rebalance_threshold": 0.02
+  },
+  "schedule": {
+    "frequency": "monthly",
+    "minutes_after_open": 30
+  },
+  "risk": {
+    "market_trend_filter": false,
+    "market_sma_window": 200,
+    "stop_loss": null,
+    "maximum_drawdown": null,
+    "cooldown_days": 21
+  }
+}

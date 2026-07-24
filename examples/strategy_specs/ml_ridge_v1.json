@@ -1,0 +1,65 @@
+{
+  "schema_version": "template-v1",
+  "strategy_name": "Pooled Ridge Excess Return Rank",
+  "track": "ML",
+  "thesis": "A regularized pooled model can rank medium-horizon excess returns while limiting model variance.",
+  "signal": null,
+  "model": {
+    "algorithm": "ridge",
+    "features": [
+      {
+        "kind": "return",
+        "window": 21
+      },
+      {
+        "kind": "return",
+        "window": 126
+      },
+      {
+        "kind": "volatility",
+        "window": 42
+      },
+      {
+        "kind": "relative_return",
+        "window": 63
+      },
+      {
+        "kind": "sma_gap",
+        "window": 100
+      }
+    ],
+    "target": "excess_return",
+    "horizon_days": 21,
+    "pooled_training_rows": 240,
+    "retrain_every_rebalances": 1,
+    "n_estimators": 120,
+    "learning_rate": 0.05,
+    "max_depth": 2,
+    "min_samples_leaf": 12,
+    "ridge_alpha": 3.0
+  },
+  "selection": {
+    "top_k": 5,
+    "require_positive_score": false,
+    "hybrid_model_weight": 0.5
+  },
+  "portfolio": {
+    "weighting": "score",
+    "gross_exposure": 0.9,
+    "max_position_weight": 0.25,
+    "volatility_window": 63,
+    "minimum_variance_blend": 0.35,
+    "rebalance_threshold": 0.02
+  },
+  "schedule": {
+    "frequency": "monthly",
+    "minutes_after_open": 30
+  },
+  "risk": {
+    "market_trend_filter": false,
+    "market_sma_window": 200,
+    "stop_loss": null,
+    "maximum_drawdown": null,
+    "cooldown_days": 21
+  }
+}
