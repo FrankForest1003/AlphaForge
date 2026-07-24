@@ -14,9 +14,13 @@ from app.schemas import GuidedHumanStrategy, HumanStrategyRequest, RunSettings
 from app.services.baseline_service import (
     BASELINES,
     ForgeService,
+    build_battle_analysis,
     build_guided_human_source,
     build_behavior_evidence,
+    build_performance_analysis,
     build_revision_effectiveness,
+    build_robustness_verdict,
+    build_runtime_failure_evidence,
     classify_candidate_failure,
     compact_console_log,
     extract_critical_log_evidence,
@@ -53,6 +57,13 @@ def fake_design(track):
         "training_plan": None if track == "Traditional" else "Fit on prior rows.",
         "selection_rule": "Rank valid values and select the top two.",
         "rebalance_rule": "Rebalance monthly.",
+        "reference_baselines": ["Momentum Rank", "Gradient Boosting"],
+        "improvement_hypothesis": "Improve risk-adjusted return with a different bounded design.",
+        "differentiation": [
+            "Use a different feature mix.",
+            "Use inverse-volatility weighting.",
+        ],
+        "expected_tradeoff": "Lower concentration may reduce both drawdown and upside capture.",
         "risk_controls": ["95% gross cap", "long-only weights"],
         "causal_chain": [
             "market rows",
@@ -186,7 +197,15 @@ class FakeWorker:
                     "decision_id": f"{event_time}#1",
                     "targets": {"MSFT": 0.5},
                 },
-            }
+            },
+            {
+                "time": event_time,
+                "name": "staged_rebalance_completed",
+                "payload": {
+                    "targets": {"MSFT": 0.5},
+                    "actual_weights": {"MSFT": 0.5},
+                },
+            },
         ]
         signals = [
             {
@@ -506,6 +525,34 @@ def test_forge_runs_four_baselines_human_and_three_designer_candidates():
     assert all("contract" not in str(item).lower() for item in worker.registry_submissions)
 
 
+def test_robustness_battery_runs_separately_after_forge_completion():
+    worker = FakeWorker()
+    service = ForgeService(
+        worker=worker,
+        designer=FakeDesigner(),
+        repairer=FakeRepairer(),
+        acceptance_agent=FakeAcceptanceAgent(),
+        allowed_symbols=SYMBOLS,
+        allowed_benchmarks={"SPY"},
+    )
+    created = service.create(settings(), human_guided())
+    wait_for(service, created["run_id"])
+
+    started = service.start_robustness(created["run_id"], "best_ai")
+    assert started["state"] == "queued"
+    for _ in range(100):
+        robustness = service.get(created["run_id"])["robustness"]
+        if robustness["state"] in {"completed", "failed"}:
+            break
+        time.sleep(0.01)
+
+    assert robustness["state"] == "completed"
+    assert robustness["verdict"]["policy_version"] == "deterministic-robustness-v1"
+    assert len(robustness["scenarios"]) == 3
+    assert all(item["state"] == "completed" for item in robustness["scenarios"])
+    assert len(worker.custom_submissions) == 7
+
+
 def test_forge_rejects_stock_outside_local_catalog():
     service = ForgeService(
         worker=FakeWorker(),
@@ -635,6 +682,9 @@ def test_deepseek_prompt_uses_compact_contract_and_structured_design():
     assert "exactly one dict positional argument" in prompt
     assert "LEAN Python ScheduleManager has no `.do(...)` builder" in prompt
     assert '"label_horizon_days"' in prompt
+    assert '"reference_baselines"' in prompt
+    assert '"improvement_hypothesis"' in prompt
+    assert "differ from the closest baseline in exactly two" in prompt
     assert '"selected": bool(symbol in selected_symbols)' in prompt
     assert "max_position_weight" not in prompt
     assert "contract_hash" not in prompt
@@ -778,6 +828,153 @@ def test_deepseek_invalid_json_keeps_raw_response_for_replay():
     assert "test-key" not in json.dumps(trace)
 
 
+def test_designer_retries_once_after_semantic_schema_failure():
+    invalid_design = fake_design("ML")
+    invalid_design["signals"] = []
+    responses = [
+        json.dumps(
+            {
+                "design": invalid_design,
+                "source_code": fake_candidate_source("ML"),
+            }
+        ),
+        json.dumps(
+            {
+                "design": fake_design("ML"),
+                "source_code": fake_candidate_source("ML"),
+            }
+        ),
+    ]
+
+    class Completions:
+        requests = []
+
+        def create(self, **request):
+            self.requests.append(request)
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(content=responses[len(self.requests) - 1])
+                    )
+                ],
+                usage=SimpleNamespace(
+                    prompt_tokens=10,
+                    completion_tokens=5,
+                    total_tokens=15,
+                ),
+            )
+
+    completions = Completions()
+    designer = DeepSeekDesigner(
+        api_key="test-key",
+        base_url="https://api.deepseek.com",
+        model="deepseek-v4-pro",
+        thinking_enabled=False,
+        lean_documentation="FULL DOCUMENT",
+        client=SimpleNamespace(chat=SimpleNamespace(completions=completions)),
+    )
+    generated = designer.generate(
+        track="ML",
+        run_settings=settings().model_dump(mode="json"),
+        baseline_results=[],
+    )
+
+    assert len(completions.requests) == 2
+    assert "design.signals must be a list of non-empty strings" in (
+        completions.requests[1]["messages"][-1]["content"]
+    )
+    assert generated["usage"]["total_tokens"] == 30
+    assert generated["trace"]["semantic_retry_count"] == 1
+    assert [item["status"] for item in generated["trace"]["semantic_validation_attempts"]] == [
+        "schema_failed",
+        "passed",
+    ]
+
+
+def test_designer_normalizes_lossless_scalar_string_lists_without_retry():
+    design = fake_design("ML")
+    design["signals"] = "RandomForest prediction"
+    design["reference_baselines"] = "Gradient Boosting"
+
+    normalized = DeepSeekDesigner._validated_design(
+        {"design": design},
+        "ML",
+    )
+
+    assert normalized["signals"] == ["RandomForest prediction"]
+    assert normalized["reference_baselines"] == ["Gradient Boosting"]
+    assert normalized["differentiation"] == [
+        "Use a different feature mix.",
+        "Use inverse-volatility weighting.",
+    ]
+
+
+def test_repairer_retries_once_after_semantic_schema_failure():
+    responses = [
+        json.dumps(
+            {
+                "change_summary": [],
+                "first_interrupted_stage": "",
+                "source_code": "BROKEN COMPLETE SOURCE",
+            }
+        ),
+        json.dumps(
+            {
+                "change_summary": ["Corrected the failing schedule call."],
+                "first_interrupted_stage": "scheduled rebalance",
+                "source_code": "REPAIRED COMPLETE SOURCE",
+            }
+        ),
+    ]
+
+    class Completions:
+        def __init__(self):
+            self.requests = []
+
+        def create(self, **request):
+            self.requests.append(request)
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(
+                            content=responses[len(self.requests) - 1]
+                        )
+                    )
+                ],
+                usage=SimpleNamespace(
+                    prompt_tokens=10,
+                    completion_tokens=5,
+                    total_tokens=15,
+                ),
+            )
+
+    completions = Completions()
+    repairer = DeepSeekRepairAgent(
+        api_key="test-key",
+        base_url="https://api.deepseek.com",
+        model="deepseek-v4-pro",
+        thinking_enabled=False,
+        lean_documentation="FULL DOCUMENT",
+        client=SimpleNamespace(chat=SimpleNamespace(completions=completions)),
+    )
+    repaired = repairer.repair(
+        track="ML",
+        run_settings=settings().model_dump(mode="json"),
+        baseline_results=[],
+        source_code="BROKEN COMPLETE SOURCE",
+        worker_result={"status": "failed"},
+        lean_console_log="runtime failure",
+        repair_attempt=1,
+        repair_trigger="runtime_failure",
+    )
+
+    assert len(completions.requests) == 2
+    assert "change_summary" in completions.requests[1]["messages"][-1]["content"]
+    assert repaired["source_code"] == "REPAIRED COMPLETE SOURCE"
+    assert repaired["usage"]["total_tokens"] == 30
+    assert repaired["trace"]["semantic_retry_count"] == 1
+
+
 def test_designer_recovers_complete_source_when_only_json_closure_is_missing():
     design = fake_design("ML")
     source = fake_candidate_source("ML")
@@ -886,6 +1083,120 @@ def test_behavior_evidence_uses_filled_orders_and_invested_snapshots():
     assert evidence["traded_symbols"] == ["MSFT"]
     assert evidence["target_intent_event_count"] == 1
     assert evidence["transparent_signal_event_count"] == 0
+    assert evidence["staged_rebalance_started_count"] == 1
+    assert evidence["staged_rebalance_completed_count"] == 1
+
+
+def test_public_analysis_builds_equity_drawdown_cost_and_turnover():
+    details = {
+        "equity_curve": [
+            {"time": "2024-01-02T16:00:00", "portfolio_value": 100_000, "cash": 5_000},
+            {"time": "2024-01-03T16:00:00", "portfolio_value": 110_000, "cash": 4_000},
+            {"time": "2024-01-04T16:00:00", "portfolio_value": 99_000, "cash": 3_000},
+        ],
+        "benchmark_curve": [
+            {"time": "2024-01-02T16:00:00", "normalized_value": 1.0},
+            {"time": "2024-01-04T16:00:00", "normalized_value": 1.05},
+        ],
+        "order_events": [
+            {"fill_quantity": 10, "fill_price": 100, "fee": 2.5},
+        ],
+    }
+    analysis = build_performance_analysis(
+        details,
+        {"end_equity": 99_000, "maximum_drawdown": 0.10},
+        initial_cash=100_000,
+    )
+
+    assert analysis["equity_curve"][-1]["drawdown"] == pytest.approx(-0.10)
+    assert analysis["statistics"]["total_return"] == pytest.approx(-0.01)
+    assert analysis["statistics"]["total_fees"] == pytest.approx(2.5)
+    assert analysis["statistics"]["benchmark_total_return"] == pytest.approx(0.05)
+
+
+def test_robustness_verdict_scores_deterministic_stress_scenarios():
+    scenarios = [
+        {
+            "id": scenario_id,
+            "state": "completed",
+            "summary": {
+                "cagr": cagr,
+                "sharpe_ratio": 0.9,
+                "maximum_drawdown": 0.24,
+            },
+            "behavior_evidence": {
+                "filled_order_count": 12,
+                "max_gross_exposure": 0.9,
+            },
+        }
+        for scenario_id, cagr in (
+            ("recent_regime", 0.12),
+            ("delayed_start", 0.11),
+            ("friction_2x", 0.16),
+        )
+    ]
+
+    verdict = build_robustness_verdict(
+        {
+            "cagr": 0.20,
+            "sharpe_ratio": 1.0,
+            "maximum_drawdown": 0.20,
+        },
+        scenarios,
+    )
+
+    assert verdict["grade"] == "robust"
+    assert verdict["score"] == 100
+    assert all(len(item["checks"]) == 4 for item in scenarios)
+
+
+def test_predictions_without_training_has_specific_causal_classification():
+    classification = classify_candidate_failure(
+        result={"status": "completed"},
+        console_log="",
+        behavior_evidence={
+            "filled_order_count": 20,
+            "ml_training_run_count": 0,
+            "ml_prediction_count": 40,
+        },
+    )
+
+    assert classification["code"] == "PREDICTIONS_WITHOUT_TRAINING"
+    assert "row cardinality" in classification["summary"]
+
+
+def test_runtime_failure_evidence_relates_order_event_and_portfolio():
+    details = {
+        "orders": [
+            {
+                "order_id": 96,
+                "symbol": "AMZN",
+                "quantity": 1099,
+                "status": "INVALID",
+                "time": "2024-01-03T16:00:00",
+            }
+        ],
+        "order_events": [
+            {
+                "order_id": 96,
+                "symbol": "AMZN",
+                "status": "INVALID",
+                "time": "2024-01-03T16:00:00",
+                "message": "Insufficient buying power",
+            }
+        ],
+        "position_snapshots": [
+            {"time": "2024-01-03T15:59:00", "cash": 1_000, "portfolio_value": 100_000}
+        ],
+    }
+    evidence = build_runtime_failure_evidence(
+        details,
+        "ERROR:: Order Error: ids: [96] Insufficient buying power",
+    )
+
+    assert evidence["failed_order_count"] == 1
+    assert evidence["failed_orders"][0]["order"]["symbol"] == "AMZN"
+    assert evidence["failed_orders"][0]["portfolio_before_failure"]["cash"] == 1_000
 
 
 def test_critical_log_evidence_is_verbatim_and_focused():
@@ -1048,7 +1359,8 @@ def test_history_keeps_latest_five_pk_rounds(tmp_path):
     assert created_ids[0] not in {item["run_id"] for item in history}
     assert created_ids[-1] in {item["run_id"] for item in history}
     latest = service.get_history(created_ids[-1])
-    assert latest["winner"]["side"] in {"human", "ai"}
+    assert latest["winner"]["side"] in {"human", "ai", "draw"}
+    assert latest["battle_analysis"]["judge"]["method"] == "deterministic_weighted_score_v1"
     assert "source_code" not in latest["human"]
     assert len(list(history_root.glob("forge-*.json"))) == 5
 

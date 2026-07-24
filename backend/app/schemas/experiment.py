@@ -90,3 +90,9 @@ class ForgeRunRequest(BaseModel):
 
     settings: RunSettings
     human_strategy: HumanStrategyRequest
+
+
+class RobustnessRunRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    target: Literal["best_ai", "human"] = "best_ai"

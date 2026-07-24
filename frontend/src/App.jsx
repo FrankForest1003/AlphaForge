@@ -3,6 +3,7 @@ import {
   Activity,
   ArrowRight,
   BarChart3,
+  BookOpen,
   Check,
   CheckCircle2,
   ChevronDown,
@@ -12,11 +13,13 @@ import {
   Gauge,
   History,
   Layers3,
+  Lightbulb,
   Play,
   RefreshCw,
   Search,
   Settings2,
   ShieldCheck,
+  Scale,
   Sparkles,
   TrendingUp,
   Trophy,
@@ -28,6 +31,9 @@ import {
   BarChart,
   CartesianGrid,
   Cell,
+  Legend,
+  Line,
+  LineChart,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -136,6 +142,36 @@ const CATEGORY_COLORS = {
   "Generated Strategy": "#2f7f73",
 };
 
+const CURVE_COLORS = [
+  "#335c9b",
+  "#70829b",
+  "#8c6bb1",
+  "#4f8f83",
+  "#c18135",
+  "#22796f",
+  "#b45d48",
+  "#5573b7",
+];
+
+const BASELINE_CLASSROOM = {
+  "Momentum Rank": {
+    principle: "Hold the stocks with the strongest medium-term relative performance.",
+    lesson: "Trends can persist, but crowded leadership may reverse quickly.",
+  },
+  "Mean Reversion": {
+    principle: "Buy recent laggards when short-term price moves appear stretched.",
+    lesson: "Contrarian diversification helps only when weakness is temporary.",
+  },
+  "Gradient Boosting": {
+    principle: "Combine lagged features with a nonlinear model to rank expected returns.",
+    lesson: "Time-safe training and real prediction evidence matter more than model complexity.",
+  },
+  "Hybrid ML + Minimum Variance": {
+    principle: "Blend forecasts with covariance-aware portfolio construction.",
+    lesson: "Signal selection and risk allocation are separate design decisions.",
+  },
+};
+
 async function apiRequest(path, options = {}) {
   const response = await fetch(`${API_ROOT}${path}`, {
     headers: { "Content-Type": "application/json", ...(options.headers || {}) },
@@ -187,32 +223,81 @@ function formatNumber(value) {
 
 function strategyRows(run) {
   if (!run) return [];
-  const rows = (run.baselines || []).map((item) => ({
+  const scorecards = new Map(
+    (run.battle_analysis?.judge?.scorecards || []).map((item) => [item.id, item]),
+  );
+  const rows = (run.baselines || []).map((item, index) => ({
     ...item,
     id: `baseline-${item.name}`,
+    scoreId: `baseline-${index}`,
     strategy: item.name,
     category: "Reference Strategy",
     revisions: null,
+    scorecard: scorecards.get(`baseline-${index}`),
   }));
   if (run.human) {
     rows.push({
       ...run.human,
       id: "human",
+      scoreId: "human",
       strategy: "Human Strategy",
       category: "Human Strategy",
       revisions: null,
+      scorecard: scorecards.get("human"),
     });
   }
   for (const item of run.candidates || []) {
+    const scoreId = `ai-${String(item.track || "").toLowerCase()}`;
     rows.push({
       ...item,
       id: `generated-${item.track}`,
+      scoreId,
       strategy: `${formatTrack(item.track)} Strategy`,
       category: "Generated Strategy",
       revisions: item.repair_attempts || 0,
+      scorecard: scorecards.get(scoreId),
     });
   }
   return rows;
+}
+
+function curveDataset(rows, valueKey, benchmark, initialCash) {
+  const byDate = new Map();
+  const series = [];
+  rows.forEach((row, index) => {
+    const curve = row.analysis?.equity_curve || [];
+    if (!curve.length) return;
+    const key = row.id;
+    series.push({
+      key,
+      label: chartLabel(row.strategy),
+      color: CURVE_COLORS[index % CURVE_COLORS.length],
+    });
+    curve.forEach((point) => {
+      const date = point.date;
+      if (!date) return;
+      if (!byDate.has(date)) byDate.set(date, { date });
+      byDate.get(date)[key] = Number(point[valueKey]);
+    });
+  });
+
+  const benchmarkCurve = rows.find((row) => row.analysis?.benchmark_curve?.length)
+    ?.analysis?.benchmark_curve || [];
+  if (benchmarkCurve.length && valueKey === "equity") {
+    const key = "shared-benchmark";
+    series.push({ key, label: `Benchmark · ${benchmark || "SPY"}`, color: "#9aa6b5", dashed: true });
+    benchmarkCurve.forEach((point) => {
+      if (!point.date) return;
+      if (!byDate.has(point.date)) byDate.set(point.date, { date: point.date });
+      byDate.get(point.date)[key] = Number(
+        point.equity ?? Number(initialCash || 0) * Number(point.normalized_value || 1),
+      );
+    });
+  }
+  return {
+    data: [...byDate.values()].sort((left, right) => left.date.localeCompare(right.date)),
+    series,
+  };
 }
 
 function bestAcceptedAi(round) {
@@ -282,13 +367,21 @@ function Sidebar({ view, onView, runId, onOpenRun, serviceStatus }) {
           <Sparkles size={18} />
           Build
         </button>
+        <button className={view === "forge" ? "active" : ""} onClick={() => onView("forge")}>
+          <FlaskConical size={18} />
+          AI Forge
+        </button>
         <button className={view === "results" ? "active" : ""} onClick={() => onView("results")}>
           <BarChart3 size={18} />
           Results
         </button>
-        <button className={view === "forge" ? "active" : ""} onClick={() => onView("forge")}>
-          <FlaskConical size={18} />
-          AI Forge
+        <button className={view === "robustness" ? "active" : ""} onClick={() => onView("robustness")}>
+          <Gauge size={18} />
+          Robustness
+        </button>
+        <button className={view === "learning" ? "active" : ""} onClick={() => onView("learning")}>
+          <BookOpen size={18} />
+          Learning
         </button>
         <button className={view === "arena" ? "active" : ""} onClick={() => onView("arena")}>
           <Trophy size={18} />
@@ -755,6 +848,20 @@ function AIForgeWorkspace({ run, onBuild }) {
                 <p className="forge-thesis">
                   {design.thesis || "The structured candidate design will appear after generation."}
                 </p>
+                {candidate.best_observed_attempt != null ? (
+                  <div className="retained-attempt-note">
+                    Showing source and metrics from runnable Review {Number(candidate.best_observed_attempt) + 1}; later repair attempts did not pass Acceptance.
+                  </div>
+                ) : null}
+
+                {design.reference_baselines?.length ? (
+                  <div className="baseline-improvement-plan">
+                    <div><span>Public references</span><strong>{design.reference_baselines.join(" · ")}</strong></div>
+                    <p><b>Hypothesis</b>{design.improvement_hypothesis}</p>
+                    <p><b>What changes</b>{Array.isArray(design.differentiation) ? design.differentiation.join(" · ") : design.differentiation}</p>
+                    <p><b>Expected trade-off</b>{design.expected_tradeoff}</p>
+                  </div>
+                ) : null}
 
                 <div className="forge-evidence-row">
                   <div>
@@ -768,6 +875,10 @@ function AIForgeWorkspace({ run, onBuild }) {
                   <div>
                     <span>Repairs</span>
                     <strong>{candidate.repair_attempts || 0}</strong>
+                  </div>
+                  <div>
+                    <span>Generation Retry</span>
+                    <strong>{candidate.generation_retries || 0}</strong>
                   </div>
                   <div>
                     <span>Tokens</span>
@@ -894,19 +1005,404 @@ function MetricChart({ rows }) {
   );
 }
 
+function PortfolioJourney({ rows, settings }) {
+  const [view, setView] = useState("equity");
+  const valueKey = view === "equity" ? "equity" : "drawdown";
+  const { data, series } = curveDataset(
+    rows,
+    valueKey,
+    settings?.benchmark,
+    settings?.initial_cash,
+  );
+  return (
+    <section className="chart-card journey-card">
+      <div className="card-heading chart-heading">
+        <div>
+          <span className="section-kicker">Portfolio Journey</span>
+          <h2>{view === "equity" ? "Total Portfolio Value" : "Underwater Drawdown"}</h2>
+          <p className="card-subcopy">
+            {view === "equity"
+              ? "How one dollar of starting capital evolved through the shared test window."
+              : "Distance below each strategy’s previous equity peak; closer to zero is better."}
+          </p>
+        </div>
+        <div className="metric-switcher">
+          <button className={view === "equity" ? "active" : ""} onClick={() => setView("equity")}>Total Assets</button>
+          <button className={view === "drawdown" ? "active" : ""} onClick={() => setView("drawdown")}>Drawdown</button>
+        </div>
+      </div>
+      <div className="journey-chart">
+        {data.length ? (
+          <ResponsiveContainer width="100%" height="100%">
+            <LineChart data={data} margin={{ top: 16, right: 22, left: 12, bottom: 8 }}>
+              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e5eaf0" />
+              <XAxis dataKey="date" minTickGap={34} tick={{ fill: "#66758b", fontSize: 11 }} axisLine={false} tickLine={false} />
+              <YAxis
+                tick={{ fill: "#66758b", fontSize: 11 }}
+                axisLine={false}
+                tickLine={false}
+                width={84}
+                tickFormatter={(value) => formatMetric(value, view === "equity" ? "currency" : "percent")}
+              />
+              <Tooltip
+                labelFormatter={(label) => `Date · ${label}`}
+                formatter={(value, name) => [
+                  formatMetric(value, view === "equity" ? "currency" : "percent"),
+                  series.find((item) => item.key === name)?.label || name,
+                ]}
+              />
+              <Legend formatter={(value) => series.find((item) => item.key === value)?.label || value} />
+              {series.map((item) => (
+                <Line
+                  key={item.key}
+                  type="monotone"
+                  dataKey={item.key}
+                  name={item.key}
+                  stroke={item.color}
+                  strokeWidth={item.dashed ? 1.7 : 2.2}
+                  strokeDasharray={item.dashed ? "6 5" : undefined}
+                  dot={false}
+                  connectNulls
+                />
+              ))}
+            </LineChart>
+          </ResponsiveContainer>
+        ) : (
+          <div className="chart-empty"><Activity size={22} /><span>Worker equity curves will appear after completed backtests.</span></div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function RiskCostTable({ rows }) {
+  return (
+    <section className="table-card">
+      <div className="card-heading">
+        <div>
+          <span className="section-kicker">Risk &amp; Trading Cost</span>
+          <h2>What the headline return leaves out</h2>
+          <p className="card-subcopy">Derived from daily portfolio snapshots and actual filled order events.</p>
+        </div>
+      </div>
+      <div className="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>Strategy</th><th>Total Return</th><th>Sortino</th><th>Annual Volatility</th>
+              <th>Annual Turnover</th><th>Total Fees</th><th>Filled Orders</th><th>Max Gross</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row) => {
+              const statistics = row.analysis?.statistics || {};
+              const evidence = row.behavior_evidence || {};
+              return (
+                <tr key={`risk-${row.id}`}>
+                  <td><strong>{row.strategy}</strong></td>
+                  <td>{formatMetric(statistics.total_return, "percent")}</td>
+                  <td>{formatMetric(statistics.sortino_ratio, "number")}</td>
+                  <td>{formatMetric(statistics.annualized_volatility, "percent")}</td>
+                  <td>{formatMetric(statistics.annualized_turnover, "percent")}</td>
+                  <td>{formatMetric(statistics.total_fees, "currency")}</td>
+                  <td>{formatNumber(evidence.filled_order_count ?? statistics.filled_event_count)}</td>
+                  <td>{formatMetric(evidence.max_gross_exposure, "percent")}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
+
+function JudgeBreakdown({ analysis }) {
+  if (!analysis?.judge) return null;
+  const verdict = analysis.verdict || {};
+  const scorecards = (analysis.judge.scorecards || [])
+    .filter((item) => item.owner === "human" || item.owner === "ai")
+    .sort((left, right) => Number(right.score ?? -1) - Number(left.score ?? -1));
+  return (
+    <section className="judge-card">
+      <div className="judge-verdict">
+        <div className={`verdict-emblem verdict-${verdict.side || "none"}`}><Scale size={24} /></div>
+        <div>
+          <span className="section-kicker">Deterministic Battle Judge</span>
+          <h2>{verdict.label || "Waiting for eligible results"}</h2>
+          <p>{verdict.reason}</p>
+        </div>
+        {analysis.ai_champion ? (
+          <div className="champion-callout">
+            <span>AI Champion</span>
+            <strong>{analysis.ai_champion.label}</strong>
+            <small>{formatNumber(analysis.ai_champion.score)} / 100</small>
+          </div>
+        ) : null}
+      </div>
+      <div className="scorecard-grid">
+        {scorecards.map((card) => (
+          <article key={card.id} className={!card.eligible ? "scorecard-ineligible" : ""}>
+            <div><strong>{card.label}</strong><span>{card.eligible ? `${formatNumber(card.score)} points` : "Ineligible"}</span></div>
+            {card.eligible ? (
+              <dl>
+                <div><dt>Risk-adjusted</dt><dd>{formatNumber(card.components.risk_adjusted_return)}</dd></div>
+                <div><dt>Drawdown</dt><dd>{formatNumber(card.components.drawdown_and_volatility)}</dd></div>
+                <div><dt>Robustness</dt><dd>{formatNumber(card.components.robustness)}</dd></div>
+                <div><dt>Cost</dt><dd>{formatNumber(card.components.cost_and_turnover)}</dd></div>
+                <div><dt>Explainability</dt><dd>{formatNumber(card.components.explainability)}</dd></div>
+              </dl>
+            ) : <p>{card.eligibility_reasons?.join(" · ")}</p>}
+          </article>
+        ))}
+      </div>
+      <p className="judge-method">Public weights: 40% risk-adjusted return · 25% drawdown/volatility · 20% robustness · 10% cost/turnover · 5% explainability. Scores within two points are a draw.</p>
+    </section>
+  );
+}
+
+function LearningReview({ analysis }) {
+  const education = analysis?.education_summary;
+  if (!education) return null;
+  const best = education.best_strategy_analysis || {};
+  const feedback = education.human_feedback || {};
+  const card = education.knowledge_card || {};
+  return (
+    <section className="learning-review">
+      <div className="card-heading">
+        <div><span className="section-kicker">Learning Review</span><h2>What to keep, question, and improve</h2></div>
+      </div>
+      <div className="learning-grid">
+        <article className="learning-best">
+          <Trophy size={21} />
+          <div><span>Best strategy analysis</span><h3>{best.headline}</h3></div>
+          <ul>{(best.why_better || []).map((item) => <li key={item}>{item}</li>)}</ul>
+          <div className="tradeoff-note"><strong>Trade-offs and boundaries</strong>{(best.tradeoffs_and_boundaries || []).map((item) => <p key={item}>{item}</p>)}</div>
+        </article>
+        <article>
+          <Lightbulb size={21} />
+          <div><span>Your next round</span><h3>Specific improvement ideas</h3></div>
+          {feedback.strengths?.length ? <div className="strength-list"><strong>Worth preserving</strong>{feedback.strengths.map((item) => <p key={item}>✓ {item}</p>)}</div> : null}
+          <ol>{(feedback.improvements || []).map((item) => <li key={item}>{item}</li>)}</ol>
+        </article>
+        <article className="knowledge-card">
+          <BookOpen size={21} />
+          <div><span>Quant concept</span><h3>{card.title}</h3></div>
+          <p>{card.lesson}</p>
+          <blockquote>{card.question}</blockquote>
+        </article>
+      </div>
+      <p className="education-disclaimer">{education.risk_disclaimer}</p>
+    </section>
+  );
+}
+
+function BaselineClassroom({ baselines, lessons }) {
+  if (!baselines?.length) return null;
+  return (
+    <section className="classroom-card">
+      <div className="card-heading">
+        <div><span className="section-kicker">Baseline Classroom</span><h2>Four reference ideas, four different trade-offs</h2></div>
+      </div>
+      <div className="classroom-grid">
+        {baselines.map((baseline) => {
+          const lesson = lessons?.[baseline.name] || BASELINE_CLASSROOM[baseline.name] || {};
+          return (
+            <article key={baseline.name}>
+              <span>{baseline.family}</span>
+              <h3>{baseline.name}</h3>
+              <p>{lesson.principle}</p>
+              <small>{lesson.learn || lesson.lesson}</small>
+              {lesson.watch ? <em>Watch: {lesson.watch}</em> : null}
+            </article>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+function MetricGuide() {
+  const metrics = [
+    ["CAGR", "Annualized growth rate. It rewards compounding but says nothing about the path taken."],
+    ["Sharpe", "Return earned per unit of volatility. Higher is better when measured consistently."],
+    ["Sortino", "Similar to Sharpe, but penalizes downside volatility rather than all volatility."],
+    ["Maximum Drawdown", "Largest peak-to-trough loss. It approximates the patience and capital an investor needed."],
+    ["Turnover", "How much of the portfolio is traded. More turnover increases fee, slippage, and capacity risk."],
+    ["Gross Exposure", "Total absolute invested weight. It reveals whether returns used more market exposure."],
+  ];
+  return (
+    <section className="metric-guide">
+      <div className="card-heading">
+        <div><span className="section-kicker">How To Read The Evidence</span><h2>Metrics answer different questions</h2></div>
+      </div>
+      <div className="metric-guide-grid">
+        {metrics.map(([name, copy]) => <article key={name}><strong>{name}</strong><p>{copy}</p></article>)}
+      </div>
+    </section>
+  );
+}
+
+function LearningWorkspace({ run, loading, error, onResults, onBuild }) {
+  if (!run && loading) return <div className="page-loading"><RefreshCw className="spin" size={24} /> Loading Learning Review</div>;
+  if (!run) {
+    return (
+      <>
+        <PageHeader eyebrow="Education Center" title="Learning Review" description="Complete a Forge Run to unlock strategy lessons and personalized next-round guidance." />
+        <EmptyRun onBuild={onBuild} />
+        {error ? <div className="inline-error centered">{error}</div> : null}
+      </>
+    );
+  }
+  const analysis = run.battle_analysis;
+  return (
+    <>
+      <PageHeader
+        eyebrow="Education Center"
+        title="Learning Review"
+        description="Understand why strategies behaved differently before changing code or starting another round."
+        actions={<button className="secondary-button" onClick={onResults}><BarChart3 size={16} /> Back to Results</button>}
+      />
+      {!analysis ? (
+        <section className="learning-pending">
+          <Activity size={22} />
+          <div><strong>Teaching summary is waiting for completed evidence</strong><p>The baseline lessons are available now. Personalized advice appears after Human and AI runs finish.</p></div>
+        </section>
+      ) : null}
+      <LearningReview analysis={analysis} />
+      <MetricGuide />
+      <BaselineClassroom
+        baselines={run.baselines}
+        lessons={analysis?.baseline_classroom}
+      />
+    </>
+  );
+}
+
+function RobustnessWorkspace({ run, loading, error, onBuild, onStart }) {
+  const [target, setTarget] = useState("best_ai");
+  const [submitting, setSubmitting] = useState(false);
+  const [actionError, setActionError] = useState("");
+  const robustness = run?.robustness;
+  const active = ["queued", "running"].includes(robustness?.state);
+  const verdict = robustness?.verdict;
+  const start = async () => {
+    setSubmitting(true);
+    setActionError("");
+    try {
+      await onStart(target);
+    } catch (requestError) {
+      setActionError(requestError.message);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  if (!run && loading) return <div className="page-loading"><RefreshCw className="spin" size={24} /> Loading Robustness Lab</div>;
+  if (!run) {
+    return (
+      <>
+        <PageHeader eyebrow="Stress Testing" title="Robustness Lab" description="Complete a Forge Run before testing a selected strategy under controlled perturbations." />
+        <EmptyRun onBuild={onBuild} />
+        {error ? <div className="inline-error centered">{error}</div> : null}
+      </>
+    );
+  }
+
+  return (
+    <>
+      <PageHeader
+        eyebrow="Stress Testing"
+        title="Robustness Lab"
+        description="Run a deterministic stress battery separately from the main contest, without giving another LLM control of the verdict."
+        actions={active ? <StatusChip state={robustness.state} /> : null}
+      />
+      <section className="robustness-intro">
+        <div>
+          <span className="section-kicker">Protocol v1</span>
+          <h2>Change assumptions, not strategy code</h2>
+          <p>The exact frozen source is rerun with a recent-regime slice, a delayed start, double friction, and—when more than five stocks are available—a deterministic universe dropout.</p>
+        </div>
+        <div className="robustness-actions">
+          <label>
+            <span>Strategy under test</span>
+            <select value={target} onChange={(event) => setTarget(event.target.value)} disabled={active || submitting}>
+              <option value="best_ai">Best accepted AI</option>
+              <option value="human">Human strategy</option>
+            </select>
+          </label>
+          <button className="primary-button" onClick={start} disabled={active || submitting || run.state !== "completed"}>
+            {active || submitting ? <RefreshCw className="spin" size={17} /> : <Play size={17} />}
+            {robustness ? "Run Again" : "Run Robustness Test"}
+          </button>
+        </div>
+      </section>
+      {actionError ? <div className="inline-error">{actionError}</div> : null}
+      {robustness ? (
+        <>
+          <section className={`robustness-verdict robustness-${verdict?.grade || robustness.state}`}>
+            <div className="verdict-emblem"><ShieldCheck size={24} /></div>
+            <div>
+              <span>{robustness.target_label}</span>
+              <h2>{verdict ? `${formatNumber(verdict.score)} / 100 · ${statusLabel(verdict.grade)}` : statusLabel(robustness.state)}</h2>
+              <p>{verdict?.conclusion || "LEAN is running the frozen strategy through each stress scenario."}</p>
+            </div>
+          </section>
+          <section className="robustness-table-card">
+            <div className="table-scroll">
+              <table className="comparison-table robustness-table">
+                <thead><tr><th>Scenario</th><th>Status</th><th>CAGR</th><th>Sharpe</th><th>Drawdown</th><th>Return retained</th><th>Checks</th></tr></thead>
+                <tbody>
+                  {(robustness.scenarios || []).map((scenario) => {
+                    const passed = (scenario.checks || []).filter((check) => check.passed).length;
+                    return (
+                      <tr key={scenario.id}>
+                        <td><strong>{scenario.label}</strong><small>{scenario.purpose}</small></td>
+                        <td><StatusChip state={scenario.state} /></td>
+                        <td>{formatMetric(scenario.summary?.cagr, "percent")}</td>
+                        <td>{formatMetric(scenario.summary?.sharpe_ratio, "number")}</td>
+                        <td>{formatMetric(scenario.summary?.maximum_drawdown, "percent")}</td>
+                        <td>{scenario.cagr_retention == null ? "—" : formatMetric(scenario.cagr_retention, "percent")}</td>
+                        <td>{scenario.checks?.length ? `${passed}/${scenario.checks.length}` : "—"}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </section>
+          {verdict?.limitations?.length ? (
+            <section className="robustness-limitations">
+              <Lightbulb size={20} />
+              <div><strong>Interpretation limits</strong>{verdict.limitations.map((item) => <p key={item}>{item}</p>)}</div>
+            </section>
+          ) : null}
+          {robustness.error ? <div className="inline-error">{robustness.error}</div> : null}
+        </>
+      ) : (
+        <section className="robustness-empty">
+          <Gauge size={24} />
+          <div><strong>No robustness battery has been run yet</strong><p>This is intentionally optional so the normal Forge flow stays fast.</p></div>
+        </section>
+      )}
+    </>
+  );
+}
+
 function ResultsTable({ rows }) {
   return (
     <section className="table-card">
       <div className="card-heading"><div><span className="section-kicker">Comparable Results</span><h2>Strategy Comparison</h2></div></div>
       <div className="table-scroll">
         <table>
-          <thead><tr><th>Strategy</th><th>Category</th><th>Status</th><th>Revisions</th><th>CAGR</th><th>Sharpe Ratio</th><th>Maximum Drawdown</th><th>Ending Equity</th></tr></thead>
+          <thead><tr><th>Strategy</th><th>Category</th><th>Status</th><th>Score</th><th>Revisions</th><th>CAGR</th><th>Sharpe Ratio</th><th>Maximum Drawdown</th><th>Ending Equity</th></tr></thead>
           <tbody>
             {rows.map((row) => (
               <tr key={row.id}>
                 <td><strong>{row.strategy}</strong></td>
                 <td><span className={`category-tag category-${row.category.split(" ")[0].toLowerCase()}`}>{row.category}</span></td>
                 <td><StatusChip state={row.state} /></td>
+                <td>{row.scorecard?.eligible ? <strong>{formatNumber(row.scorecard.score)}</strong> : "—"}</td>
                 <td>{row.revisions === null ? "—" : row.revisions}</td>
                 <td>{formatMetric(row.summary?.cagr, "percent")}</td>
                 <td>{formatMetric(row.summary?.sharpe_ratio, "number")}</td>
@@ -928,6 +1424,8 @@ function BehaviorGrid({ evidence }) {
     ["Invested Snapshots", evidence.invested_snapshot_count],
     ["Maximum Gross Exposure", evidence.max_gross_exposure],
     ["Rebalances", evidence.rebalance_count],
+    ["Completed Rebalances", evidence.staged_rebalance_completed_count],
+    ["Replaced Targets", evidence.staged_rebalance_replacement_count],
   ];
   return (
     <div className="behavior-grid">
@@ -1038,10 +1536,11 @@ function GeneratedReviews({ candidates }) {
           <div className="candidate-review" key={candidate.track}>
             <div className="candidate-title">
               <div className="strategy-avatar"><ShieldCheck size={19} /></div>
-              <div><strong>{formatTrack(candidate.track)} Strategy</strong><span>{candidate.repair_attempts || 0} Revisions</span></div>
+              <div><strong>{formatTrack(candidate.track)} Strategy</strong><span>{candidate.repair_attempts || 0} Revisions · {candidate.generation_retries || 0} Generation Retries</span></div>
               <StatusChip state={candidate.state} />
             </div>
             {candidate.error && ["failed", "rejected"].includes(candidate.state) ? <div className="inline-error">{candidate.error}</div> : null}
+            {candidate.best_observed_attempt != null ? <div className="retained-attempt-note">Metrics and source were retained from runnable Review {Number(candidate.best_observed_attempt) + 1}; status remains Rejected.</div> : null}
             <ReviewHistory history={candidate.acceptance_history} />
           </div>
         ))}
@@ -1050,7 +1549,7 @@ function GeneratedReviews({ candidates }) {
   );
 }
 
-function ResultsWorkspace({ run, loading, error, onRefresh, onBuild }) {
+function ResultsWorkspace({ run, loading, error, onRefresh, onBuild, onLearning }) {
   if (!run && loading) return <div className="page-loading"><RefreshCw className="spin" size={24} /> Loading Run</div>;
   if (!run) return <><PageHeader eyebrow="Backtest Results" title="Results" description="Compare completed strategies and inspect their review history." /><EmptyRun onBuild={onBuild} />{error ? <div className="inline-error centered">{error}</div> : null}</>;
 
@@ -1065,7 +1564,12 @@ function ResultsWorkspace({ run, loading, error, onRefresh, onBuild }) {
         eyebrow="Backtest Results"
         title="Strategy Results"
         description={`Run ${run.run_id}`}
-        actions={<button className="secondary-button" onClick={onRefresh} disabled={loading}><RefreshCw className={loading ? "spin" : ""} size={16} /> Refresh</button>}
+        actions={(
+          <div className="header-action-row">
+            <button className="secondary-button" onClick={onLearning}><BookOpen size={16} /> Learning Review</button>
+            <button className="secondary-button" onClick={onRefresh} disabled={loading}><RefreshCw className={loading ? "spin" : ""} size={16} /> Refresh</button>
+          </div>
+        )}
       />
       <section className="run-overview">
         <div className="run-status-block">
@@ -1078,8 +1582,11 @@ function ResultsWorkspace({ run, loading, error, onRefresh, onBuild }) {
         <div className="overview-stat"><Gauge size={20} /><div><span>Benchmark</span><strong>{settings.benchmark || "—"}</strong></div></div>
       </section>
       {run.error ? <div className="inline-error">{run.error}</div> : null}
+      <JudgeBreakdown analysis={run.battle_analysis} />
       <MetricChart rows={rows} />
+      <PortfolioJourney rows={rows} settings={settings} />
       <ResultsTable rows={rows} />
+      <RiskCostTable rows={rows} />
       <GeneratedReviews candidates={run.candidates} />
     </>
   );
@@ -1115,7 +1622,7 @@ function ArenaWorkspace({ history, loading, error, onRefresh }) {
       <PageHeader
         eyebrow="Best of Five"
         title="Human vs AI · PK Arena"
-        description="Each completed Forge Run is one round. Accepted means auditable and runnable; the round winner is decided by Sharpe, then CAGR, then lower drawdown."
+        description="Each completed Forge Run is one round. The deterministic Judge balances risk-adjusted return, drawdown, robustness, trading cost, and explainability."
         actions={<button className="secondary-button" onClick={onRefresh} disabled={loading}><RefreshCw className={loading ? "spin" : ""} size={16} /> Refresh rounds</button>}
       />
       <section className="arena-scoreboard">
@@ -1139,7 +1646,10 @@ function ArenaWorkspace({ history, loading, error, onRefresh }) {
       ) : null}
       <div className="arena-round-list">
         {rounds.map((round, index) => {
-          const ai = bestAcceptedAi(round);
+          const championTrack = round.battle_analysis?.ai_champion?.track;
+          const ai = (round.candidates || []).find(
+            (candidate) => candidate.track === championTrack,
+          ) || bestAcceptedAi(round);
           const winnerSide = round.winner?.side;
           return (
             <article className="arena-round" key={round.run_id}>
@@ -1271,7 +1781,8 @@ export default function App() {
   }, [initialRunId, loadRun]);
 
   useEffect(() => {
-    if (!runId || (run && TERMINAL_RUN_STATES.has(run.state))) return undefined;
+    const robustnessActive = ["queued", "running"].includes(run?.robustness?.state);
+    if (!runId || (run && TERMINAL_RUN_STATES.has(run.state) && !robustnessActive)) return undefined;
     const timer = window.setInterval(() => loadRun(runId, { quiet: true }), 3000);
     return () => window.clearInterval(timer);
   }, [runId, run, loadRun]);
@@ -1292,13 +1803,25 @@ export default function App() {
     setView("results");
   };
 
+  const startRobustness = useCallback(async (target) => {
+    if (!runId) throw new Error("Create or open a Forge Run first.");
+    const result = await apiRequest(
+      `/forge-runs/${encodeURIComponent(runId)}/robustness`,
+      { method: "POST", body: JSON.stringify({ target }) },
+    );
+    setRun((current) => current ? { ...current, robustness: result } : current);
+    return result;
+  }, [runId]);
+
   return (
     <div className="app-shell">
       <Sidebar view={view} onView={setView} runId={runId} onOpenRun={openRun} serviceStatus={serviceStatus} />
       <main className="main-content">
         {view === "build" ? <BuildWorkspace catalog={catalog} loadingCatalog={catalogLoading} onCreated={handleCreated} /> : null}
-        {view === "results" ? <ResultsWorkspace run={run} loading={runLoading} error={runError} onRefresh={() => loadRun(runId)} onBuild={() => setView("build")} /> : null}
+        {view === "results" ? <ResultsWorkspace run={run} loading={runLoading} error={runError} onRefresh={() => loadRun(runId)} onBuild={() => setView("build")} onLearning={() => setView("learning")} /> : null}
         {view === "forge" ? <AIForgeWorkspace run={run} onBuild={() => setView("build")} /> : null}
+        {view === "robustness" ? <RobustnessWorkspace run={run} loading={runLoading} error={runError} onBuild={() => setView("build")} onStart={startRobustness} /> : null}
+        {view === "learning" ? <LearningWorkspace run={run} loading={runLoading} error={runError} onResults={() => setView("results")} onBuild={() => setView("build")} /> : null}
         {view === "arena" ? <ArenaWorkspace history={historyRounds} loading={historyLoading} error={historyError} onRefresh={loadHistory} /> : null}
         {view === "code" ? <CodeWorkspace run={run} onBuild={() => setView("build")} /> : null}
       </main>

@@ -141,7 +141,55 @@ Worker 是本机可信执行服务。自定义源码进入 Worker 后经过：
 
 Worker 本身仍是可信执行边界，不做源码准入；但 Backend 现在会在 AI 候选提交 Worker 前执行确定性 AST/源码预检。当前 AI 稳定路径允许 NumPy、pandas 和 scikit-learn，禁止低层 XGBoost `DMatrix`、直接 `SetHoldings`/`Liquidate`、动态执行和文件访问。Human 代码模式保持独立的现有检查与执行路径。
 
-Worker `result.json` 只包含 `run_id`、`status`、四项 `summary` 和 `errors`。完整控制台日志保存在对应结果目录。
+Worker `result.json` 只包含 `run_id`、`status`、标准化 `summary` 和 `errors`；
+`summary` 除 CAGR、Sharpe、MDD、End Equity 外，还会在 LEAN 提供时解析
+Sortino、年化波动、Alpha/Beta、Win Rate、费用与换手。完整控制台日志保存在对应结果目录。
+
+## 赛后裁决、结果可视化与教育层（2026-07-23 更新）
+
+最新 Results / Learning 流程已经补齐文档中的 Candidate Selector、Deterministic
+Battle Judge 和 Education Summary，但仍沿用当前单次 Forge Run 数据模型：
+
+1. Worker details 中的每日资产、benchmark、持仓快照和实际 OrderEvent 会被
+   Backend 压缩为公开的 `analysis`。前端展示总资产曲线、underwater drawdown、
+   Sortino、年化波动、估算年化换手、费用、成交和最大总敞口。
+2. AI Candidate Selector 只在 `accepted` 的 Traditional、ML、Hybrid 候选内部，
+   按公开加权分数选出 AI Champion；它不读取或决定 Human 相对胜负。
+3. Battle Judge 再比较冻结的 Human 结果和 AI Champion。固定权重为风险调整收益
+   40%、回撤与波动 25%、稳健性 20%、费用与换手 10%、可解释性 5%；两分以内
+   判定为 Draw。LLM 不参与最终分数和胜负。
+4. Results 页面只负责统计、总资产/回撤曲线、风险成本表、确定性裁决和候选审计；
+   独立 Learning 页面展示最优策略解释、代价与适用边界、用户值得保留的部分、
+   下一轮 2–3 项改进建议、指标知识卡和四个 Baseline Classroom 教学卡。
+5. Education Summary 只返回 Results/PK History。Trace 的 `context_manifest` 继续
+   明确排除 `education_output`、Human 代码、Human 指标和交易事实；它们不会进入
+   Designer、Repair 或下一轮 AI Forge。
+6. 分阶段调仓现在记录 started/completed/replaced/failed/canceled 计数。AI 候选
+   即使出现部分成交，只要没有至少一次完整调仓，确定性 A2 仍会失败。
+7. 运行失败时，Repair 额外接收结构化事实：失败订单、对应 OrderEvent、失败前
+   组合快照和局部日志。已知错误分类只作为辅助标签，未知错误不再依赖枚举规则。
+8. Designer 的 JSON 即使可解析，只要 `design.signals`、`strategy_spec` 或其他
+   结构化字段不符合契约，也不会立即把候选标成 Failed。Backend 会把精确 schema
+   错误反馈给同一 Designer，关闭歧义后完整重生成一次；第二次仍不合法才失败。
+   Repair 对缺少完整源码、无有效变更摘要、缺少中断阶段或源码实际未变化也采用
+   相同的一次语义重试。鉴权、网络和配置错误不会盲目重试。
+9. Designer 接收的四个公共基线证据现包含公开排名、波动、Sortino、换手、费用和
+   执行概况。每个设计必须点名 1–2 个参考基线、提出可证伪改进假设、说明恰好两个
+   差异化维度和预期代价。它仍然不能读取 Human 结果，也不能承诺一定战胜基线。
+10. Designer 现在采用 minimal-delta challenger：锚定同轨道较强基线，保留其已
+    验证机制，只改变恰好两个有界设计维度。字符串和单元素字符串列表会安全归一化，
+    不再因为等价 JSON 形态额外消耗一次生成。
+11. 当后续 Repair 退化为零交易或自身调用失败时，候选会保留此前成交且指标最好的
+    可运行 Attempt，并用 `best_observed_attempt` 标明展示来源；Rejected 状态仍然
+    保留，不能伪装成通过验收。
+12. 独立 `Robustness` 页面可对最佳已接受 AI 或 Human 冻结源码，按需运行近期
+    市场、延后起点、双倍成本和股票集合删减压力测试。结论由
+    `deterministic-robustness-v1` 计算，详细协议见
+    `docs/ROBUSTNESS_TESTING_V1_zh.md`。
+
+当前仍未伪装为已完成的长期模块包括正式 Project/Battle 数据库、StrategyVersion
+哈希 lineage、领取 AI 策略、Final Blind Challenge 和跨轮 AI Critic。现有五轮
+PK History 是课程演示用的轻量持久化层，不能等同于完整 Battle 数据模型。
 
 ## 测试
 

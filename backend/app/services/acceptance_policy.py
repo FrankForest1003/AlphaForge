@@ -4,7 +4,7 @@ from typing import Any
 
 
 ACCEPTANCE_CHECK_IDS = ("A1", "A2", "A3", "A4", "A5")
-POLICY_VERSION = "deterministic-acceptance-v1"
+POLICY_VERSION = "deterministic-acceptance-v2"
 TIME_INTEGRITY_DIAGNOSTICS = {
     "ML_FORWARD_LABEL_FILL",
 }
@@ -102,21 +102,28 @@ def _first_missing_stage(
                 int(evidence.get("hybrid_decision_link_count") or 0),
             )
         )
-    stages.extend(
-        [
-            (
-                "non-zero target intent",
-                int(
-                    evidence.get(
-                        "target_intent_event_count",
-                        evidence.get("nonzero_target_event_count"),
-                    )
-                    or 0
-                ),
+    stages.append(
+        (
+            "non-zero target intent",
+            int(
+                evidence.get(
+                    "target_intent_event_count",
+                    evidence.get("nonzero_target_event_count"),
+                )
+                or 0
             ),
-            ("filled orders", int(evidence.get("filled_order_count") or 0)),
-        ]
+        )
     )
+    # Evidence produced before schema 2.0 remains replayable. New Worker details
+    # always expose this counter, so a present zero is a deterministic failure.
+    if "staged_rebalance_completed_count" in evidence:
+        stages.append(
+            (
+                "completed staged rebalance",
+                int(evidence.get("staged_rebalance_completed_count") or 0),
+            )
+        )
+    stages.append(("filled orders", int(evidence.get("filled_order_count") or 0)))
     first_missing = next((name for name, count in stages if count <= 0), None)
     return first_missing, stages
 
@@ -174,9 +181,25 @@ def build_deterministic_acceptance_report(
         [
             f"worker_status={worker_result.get('status')}",
             *[f"{name}={count}" for name, count in causal_stages],
+            "staged_rebalance_replacement_count="
+            + str(
+                int(
+                    behavior_evidence.get(
+                        "staged_rebalance_replacement_count"
+                    )
+                    or 0
+                )
+            ),
+            "staged_rebalance_failed_count="
+            + str(
+                int(
+                    behavior_evidence.get("staged_rebalance_failed_count")
+                    or 0
+                )
+            ),
         ],
         (
-            "The deterministic runtime chain reaches recorded target intent and filled orders."
+            "The deterministic runtime chain reaches a completed staged rebalance and filled orders."
             if a2_pass
             else f"The first missing causal stage is: {first_missing or 'completed worker execution'}."
         ),
@@ -290,19 +313,18 @@ def build_deterministic_acceptance_report(
     failed = [item["id"] for item in checks if item["status"] == "fail"]
     decision = "accept" if not failed else "revise"
     repair_request = None
+    agent_advisory_repair_request = _advisory_repair(advisory)
     if failed:
         repair_request = (
             f"Deterministic policy failed {', '.join(failed)}. "
             f"First interrupted stage: {first_missing or failed[0]}."
         )
-        suggested = _advisory_repair(advisory)
-        if suggested:
-            repair_request += f" Agent repair suggestion: {suggested}"
 
     return {
         "decision": decision,
         "checks": checks,
         "repair_request": repair_request,
+        "agent_advisory_repair_request": agent_advisory_repair_request,
         "policy_version": POLICY_VERSION,
         "decision_source": "backend_deterministic_policy",
         "agent_advisory_decision": advisory.get("decision"),

@@ -24,7 +24,7 @@
 
 ```json
 {
-  "policy_version": "deterministic-acceptance-v1",
+  "policy_version": "deterministic-acceptance-v2",
   "decision_source": "backend_deterministic_policy",
   "agent_advisory_decision": "模型原始建议，仅供审计"
 }
@@ -68,6 +68,20 @@ Traditional 必须有透明信号且没有模型；ML 必须有模型且没有�
 - A5：AST 确认七项共享参数被实际读取，并检查成交股票未越过 RunSettings 白名单。
 
 Agent 的解释可以进入 `agent_advisory`，但不能覆盖这些状态。
+Backend 的 `repair_request` 现在只包含确定性首个缺失阶段；模型提出的修复猜测
+单独保存在 `agent_advisory_repair_request`。Repair 能看到它，但必须以确定性事实
+为准，避免未经证明的 schedule、数据或 API 猜测污染修复目标。
+
+### v2：完整调仓和运行失败事实
+
+v2 在原有因果链中增加 `staged_rebalance_completed_count`。只记录目标、提交订单
+或产生部分成交都不再足以通过 A2；共享调仓器必须至少记录一次
+`staged_rebalance_completed`。同时记录 replacement、failed 和 canceled 数量，
+用于识别“信号更新太快、上一轮调仓持续被替换”的问题。
+
+LEAN 失败时，Backend 还会从只读 details 中建立
+`runtime_failure_evidence`，把失败订单关联到 OrderEvent、失败前最近组合快照和
+局部原始日志。历史字符串分类继续保留为快速提示，但 Repair 不再依赖穷举错误。
 
 ## JSON 兼容
 

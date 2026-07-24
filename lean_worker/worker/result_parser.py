@@ -8,6 +8,17 @@ STATISTICS = {
     "Compounding Annual Return": ("cagr", "percent"),
     "Drawdown": ("maximum_drawdown", "percent"),
     "Sharpe Ratio": ("sharpe_ratio", "float"),
+    "Sortino Ratio": ("sortino_ratio", "float"),
+    "Annual Standard Deviation": ("annualized_volatility", "float"),
+    "Alpha": ("alpha", "float"),
+    "Beta": ("beta", "float"),
+    "Information Ratio": ("information_ratio", "float"),
+    "Win Rate": ("win_rate", "percent"),
+    "Loss Rate": ("loss_rate", "percent"),
+    "Net Profit": ("net_profit", "percent"),
+    "Total Fees": ("total_fees", "float"),
+    "Portfolio Turnover": ("portfolio_turnover", "percent"),
+    "Total Orders": ("total_orders", "float"),
     "End Equity": ("end_equity", "float"),
 }
 

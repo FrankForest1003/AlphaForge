@@ -32,20 +32,35 @@ class DeepSeekDesigner:
         design = payload.get("design")
         if not isinstance(design, dict):
             raise ValueError("DeepSeek response must contain one design object")
+        design = dict(design)
         required_strings = (
             "strategy_name",
             "track",
             "thesis",
             "selection_rule",
             "rebalance_rule",
+            "improvement_hypothesis",
+            "expected_tradeoff",
         )
         for key in required_strings:
             if not isinstance(design.get(key), str) or not design[key].strip():
                 raise ValueError(f"design.{key} must be a non-empty string")
         if design["track"] != track:
             raise ValueError(f"design.track must be exactly {track}")
-        for key in ("signals", "features", "risk_controls", "causal_chain"):
+        for key in (
+            "signals",
+            "features",
+            "risk_controls",
+            "causal_chain",
+            "reference_baselines",
+            "differentiation",
+        ):
             values = design.get(key)
+            # Collapsing a one-item JSON string list into a scalar loses no
+            # information, so normalize it instead of spending another API call.
+            if isinstance(values, str) and values.strip():
+                values = [values.strip()]
+                design[key] = values
             if (
                 not isinstance(values, list)
                 or (key != "features" and not values)
@@ -159,8 +174,13 @@ class DeepSeekDesigner:
             f"{json.dumps(request, ensure_ascii=False, indent=2)}\n\n"
             "First make the structured design internally consistent, then implement "
             "exactly that design in source_code. Replace the template comments; return "
-            "the complete file. Baseline results are public evidence, not targets that "
-            "must be beaten, and no Human strategy information is available."
+            "the complete file. First compare the four public baseline profiles and name "
+            "one or two references. Preserve a demonstrated strength, target one observed "
+            "weakness, and differ from the closest baseline in exactly two concrete "
+            "bounded design dimensions. Prefer the smallest auditable change that can test "
+            "the hypothesis; do not redesign four or five dimensions at once. This is a "
+            "testable hypothesis, not a promise to beat the baseline. No Human strategy "
+            "information is available."
         )
         return [
             {"role": "system", "content": DESIGNER_SYSTEM_PROMPT},
@@ -174,56 +194,110 @@ class DeepSeekDesigner:
         run_settings: dict[str, Any],
         baseline_results: list[dict[str, Any]],
     ) -> dict[str, Any]:
-        completed = self.deepseek.complete_json(
-            self.messages(
-                track=track,
-                run_settings=run_settings,
-                baseline_results=baseline_results,
-            ),
-            trace_context={
-                "designer_track": track,
-                "run_settings": run_settings,
-                "baseline_results": baseline_results,
-                "context_manifest": {
-                    "includes": [
-                        "public_baselines",
-                        "run_settings",
-                        "agent_capability_contract_v2",
-                    ],
-                    "excludes": [
-                        "human_source",
-                        "human_settings",
-                        "human_results",
-                        "education_output",
-                    ],
-                },
-            },
-            max_tokens=12_000,
-            empty_error="DeepSeek returned an empty response",
-            invalid_error="DeepSeek did not return valid JSON",
+        base_messages = self.messages(
+            track=track,
+            run_settings=run_settings,
+            baseline_results=baseline_results,
         )
-        payload = completed["payload"]
-        try:
-            design = self._validated_design(payload, track)
-        except ValueError as exc:
-            raise DeepSeekCallError(
-                str(exc),
-                trace=completed["trace"],
-            ) from exc
-        if not isinstance(payload.get("source_code"), str):
-            raise DeepSeekCallError(
-                "DeepSeek response must contain one source_code string",
-                trace=completed["trace"],
-            )
-        source_code = payload["source_code"].strip()
-        if not source_code:
-            raise DeepSeekCallError(
-                "DeepSeek returned empty source_code",
-                trace=completed["trace"],
-            )
-        return {
-            "design": design,
-            "source_code": source_code,
-            "usage": completed["usage"],
-            "trace": completed["trace"],
+        trace_context = {
+            "designer_track": track,
+            "run_settings": run_settings,
+            "baseline_results": baseline_results,
+            "context_manifest": {
+                "includes": [
+                    "public_baselines",
+                    "run_settings",
+                    "agent_capability_contract_v3",
+                ],
+                "excludes": [
+                    "human_source",
+                    "human_settings",
+                    "human_results",
+                    "education_output",
+                ],
+            },
         }
+        semantic_attempts: list[dict[str, Any]] = []
+        total_usage = {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+        }
+        previous_error: str | None = None
+        for semantic_attempt in range(2):
+            messages = list(base_messages)
+            if previous_error is not None:
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "The previous JSON parsed, but failed AlphaForge schema "
+                            f"validation: {previous_error}\n"
+                            "Regenerate the complete design and complete source_code once. "
+                            "Do not return a patch. Every required list must contain plain "
+                            "non-empty strings, and design.strategy_spec must use only the "
+                            "bounded values in output_schema."
+                        ),
+                    }
+                )
+            completed = self.deepseek.complete_json(
+                messages,
+                trace_context={
+                    **trace_context,
+                    "semantic_generation_attempt": semantic_attempt + 1,
+                    "previous_schema_error": previous_error,
+                },
+                max_tokens=12_000,
+                empty_error="DeepSeek returned an empty response",
+                invalid_error="DeepSeek did not return valid JSON",
+            )
+            for key in total_usage:
+                total_usage[key] += int(completed["usage"].get(key, 0) or 0)
+            payload = completed["payload"]
+            try:
+                design = self._validated_design(payload, track)
+                if not isinstance(payload.get("source_code"), str):
+                    raise ValueError(
+                        "DeepSeek response must contain one source_code string"
+                    )
+                source_code = payload["source_code"].strip()
+                if not source_code:
+                    raise ValueError("DeepSeek returned empty source_code")
+            except ValueError as exc:
+                previous_error = str(exc)
+                semantic_attempts.append(
+                    {
+                        "attempt": semantic_attempt + 1,
+                        "status": "schema_failed",
+                        "error": previous_error,
+                        "call": completed["trace"],
+                    }
+                )
+                if semantic_attempt == 0:
+                    continue
+                trace = dict(completed["trace"])
+                trace["semantic_validation_attempts"] = semantic_attempts
+                trace["semantic_retry_count"] = 1
+                trace["usage"] = total_usage
+                raise DeepSeekCallError(previous_error, trace=trace) from exc
+
+            semantic_attempts.append(
+                {
+                    "attempt": semantic_attempt + 1,
+                    "status": "passed",
+                    "error": None,
+                    "call": completed["trace"],
+                }
+            )
+            trace = dict(completed["trace"])
+            trace["semantic_validation_attempts"] = semantic_attempts
+            trace["semantic_retry_count"] = semantic_attempt
+            trace["usage"] = total_usage
+            return {
+                "design": design,
+                "source_code": source_code,
+                "usage": total_usage,
+                "trace": trace,
+                "generation_retries": semantic_attempt,
+            }
+        raise AssertionError("unreachable Designer semantic retry state")

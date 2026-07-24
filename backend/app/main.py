@@ -13,7 +13,7 @@ from agent import (
     load_lean_text,
 )
 from app.config import load_settings
-from app.schemas import ForgeRunRequest
+from app.schemas import ForgeRunRequest, RobustnessRunRequest
 from app.services import (
     BASELINES,
     ForgeService,
@@ -127,6 +127,20 @@ def get_forge_run(run_id: str) -> dict[str, Any]:
     if run is None:
         raise HTTPException(status_code=404, detail="unknown run_id")
     return run
+
+
+@app.post(
+    "/v1/forge-runs/{run_id}/robustness",
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def create_robustness_run(
+    run_id: str,
+    request: RobustnessRunRequest,
+) -> dict[str, Any]:
+    try:
+        return forge.start_robustness(run_id, request.target)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @app.get("/v1/forge-history")

@@ -156,6 +156,80 @@ describe("AlphaForge Studio", () => {
     expect(screen.queryByText("PRIVATE HUMAN SOURCE")).not.toBeInTheDocument();
   });
 
+  it("keeps educational content in a dedicated Learning workspace", async () => {
+    const run = {
+      run_id: "forge-learning",
+      state: "completed",
+      settings: { symbols: ["MSFT"], initial_cash: 100000, benchmark: "SPY" },
+      baselines: [
+        { name: "Momentum Rank", family: "Traditional", state: "completed", summary: {} },
+      ],
+      human: { state: "completed", summary: {} },
+      candidates: [],
+      battle_analysis: {
+        education_summary: {
+          best_strategy_analysis: {
+            headline: "Why Human Strategy leads this round",
+            why_better: ["Higher risk-adjusted score."],
+            tradeoffs_and_boundaries: ["Historical evidence only."],
+          },
+          human_feedback: {
+            strengths: ["Controlled drawdown."],
+            improvements: ["Test a slower rebalance schedule."],
+          },
+          knowledge_card: {
+            title: "Return is not risk-adjusted return",
+            lesson: "Sharpe and drawdown describe the path.",
+            question: "Was the extra return worth the risk?",
+          },
+          risk_disclaimer: "Backtests do not guarantee future returns.",
+        },
+        baseline_classroom: {},
+      },
+    };
+    window.history.replaceState({}, "", "/?run_id=forge-learning");
+    installFetch(run);
+    render(<App />);
+    await screen.findByRole("heading", { name: "Strategy Results" });
+    fireEvent.click(screen.getByRole("button", { name: "Learning" }));
+
+    expect(await screen.findByRole("heading", { name: "Learning Review" })).toBeInTheDocument();
+    expect(screen.getByText("Why Human Strategy leads this round")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Metrics answer different questions" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Four reference ideas, four different trade-offs" })).toBeInTheDocument();
+  });
+
+  it("keeps robustness testing in an optional dedicated workspace", async () => {
+    const run = {
+      run_id: "forge-robustness",
+      state: "completed",
+      settings: {
+        symbols: ["MSFT", "AAPL", "NVDA", "GOOGL", "AMZN"],
+        initial_cash: 100000,
+        benchmark: "SPY",
+      },
+      baselines: [],
+      human: { state: "completed", summary: { cagr: 0.1 } },
+      candidates: [
+        {
+          track: "ML",
+          state: "accepted",
+          summary: { cagr: 0.12, sharpe_ratio: 1.0, maximum_drawdown: 0.2 },
+        },
+      ],
+      robustness: null,
+    };
+    window.history.replaceState({}, "", "/?run_id=forge-robustness");
+    installFetch(run);
+    render(<App />);
+    await screen.findByRole("heading", { name: "Strategy Results" });
+    fireEvent.click(screen.getByRole("button", { name: "Robustness" }));
+
+    expect(await screen.findByRole("heading", { name: "Robustness Lab" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Change assumptions, not strategy code" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Run Robustness Test/i })).toBeInTheDocument();
+  });
+
   it("renders a five-round Human versus AI arena with revision meaning", async () => {
     const rounds = [
       {
@@ -189,7 +263,7 @@ describe("AlphaForge Studio", () => {
                 report: {
                   decision: "accept",
                   checks: [],
-                  policy_version: "deterministic-acceptance-v1",
+                  policy_version: "deterministic-acceptance-v2",
                   decision_source: "backend_deterministic_policy",
                   agent_advisory_decision: "revise",
                 },

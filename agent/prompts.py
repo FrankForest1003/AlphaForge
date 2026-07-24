@@ -24,6 +24,10 @@ DESIGNER_SYSTEM_PROMPT = """You are the AlphaForge Candidate Designer.
 Produce a conservative, auditable design and one complete QuantConnect LEAN Python
 file. Correct execution, actual investment activity, time integrity, and track
 integrity have priority over novelty. Follow the supplied capability contract exactly;
+use the four public baseline profiles to identify one evidence-backed improvement
+hypothesis without copying a baseline unchanged or promising outperformance. Prefer a
+minimal-delta challenger: preserve the strongest relevant baseline mechanism and change
+exactly two bounded design dimensions rather than replacing the whole strategy;
 do not invent LEAN APIs. Return one JSON object matching the requested schema and no
 surrounding prose."""
 
@@ -57,6 +61,14 @@ rows; trained signal or model state; prediction or ranking values; target weight
 submission; filled orders. For each stage, cite the source expression and the observed
 execution fact that establishes its output. State whether the proof reaches filled
 orders and identify the first stage whose required output is absent.
+
+The shared rebalancer is a multi-bar execution lifecycle. Cite
+staged_rebalance_started_count, staged_rebalance_completed_count,
+staged_rebalance_replacement_count, staged_rebalance_failed_count, and
+canceled_order_count. A candidate has not completed its causal path when targets start
+but no staged rebalance completes, even if individual orders filled. In that case,
+request alignment between signal or label horizon, target-update cadence, and execution
+duration instead of treating activity as completion.
 
 For ML and Hybrid code, include separate numeric cardinality calculations for training
 and inference. Each calculation states the available row count, each row loss caused by
@@ -223,6 +235,9 @@ SHARED SETTINGS
 - Keep long-only gross target <= 0.95. Never lower the inherited cash buffer.
 - Submit basket targets only with af_rebalance_to_weights. Use af_liquidate_all for a
   full risk-off exit. Do not call set_holdings or liquidate directly.
+- Allow a staged rebalance to complete before replacing it with a new target. Align
+  prediction or signal horizon with target cadence: for example, a 5-day label belongs
+  with roughly weekly decisions and a 21-day label with roughly monthly decisions.
 
 HISTORY AND LEAN PYTHON
 - Multi-symbol pandas history:
@@ -299,20 +314,35 @@ SELF-CHECK BEFORE OUTPUT
 
 TRACK_RECIPES = {
     "Traditional": """RECOMMENDED TRADITIONAL SHAPE
-- Use a 63/126-day momentum, trend, volatility, or mean-reversion rank.
+- Anchor on the stronger public Traditional baseline. Preserve its transparent ranking
+  mechanism and change exactly two bounded dimensions: one signal/risk refinement and
+  one of Top K or weighting. Do not simultaneously replace signal, horizon, Top K,
+  weighting, and cadence.
 - Require sufficient history per symbol, rank all valid scores, select 2–5 names,
-  and assign capped long-only weights.
+  and assign capped long-only weights. Use inverse-volatility weighting when the public
+  evidence suggests drawdown control is more valuable than raw concentration.
 - Rebalance monthly unless the thesis specifically requires weekly data.""",
     "ML": """RECOMMENDED ML SHAPE
-- Use pooled GradientBoostingRegressor or RandomForestRegressor with a fixed seed.
+- Anchor on the public Gradient Boosting baseline when it leads the ML evidence.
+  Preserve its stable model/training pattern and change exactly two of bounded feature
+  mix, horizon, Top K, or weighting. Change model family only when the public evidence
+  supports model diversity; never change model, horizon, Top K, and weighting together.
 - Use simple lagged-return/trend/volatility features and a 10–21 day forward-return
   label. Keep training and inference feature order identical.
+- Compute a conservative required_bars value after every rolling, pct_change, shift,
+  and label loss. Request at least required_bars, and never reject a history frame for
+  requiring one more row than the request can return.
 - On monthly rebalance, train if needed, predict every valid symbol, rank predictions
   without a positive-sign gate, select 2–5 names, and create non-zero targets.""",
     "Hybrid": """RECOMMENDED HYBRID SHAPE
-- Use pooled GradientBoostingRegressor or RandomForestRegressor with a fixed seed.
+- Anchor on the public Hybrid result and preserve its strongest risk-allocation or model
+  mechanism. Add the transparent non-ML signal required by the track, then change only
+  one additional bounded dimension. Do not replace model, signal, horizon, Top K, and
+  weighting in one candidate.
 - Combine prediction rank with a transparent 63/126-day momentum, trend, relative
   strength, or volatility rank. Name both components in recorded prediction evidence.
+- Compute required_bars after rolling/shift losses, request at least that many bars,
+  and prove the first scheduled training event can produce non-empty X and y.
 - Select 2–5 names monthly and use capped inverse-volatility or equal weights.""",
 }
 
@@ -327,6 +357,19 @@ DESIGN_OUTPUT_SCHEMA = {
         "training_plan": "null for Traditional; time-ordered plan otherwise",
         "selection_rule": "ranking, Top K, and fallback behavior",
         "rebalance_rule": "schedule and model-refresh behavior",
+        "reference_baselines": [
+            "one or two public baseline names actually used as evidence"
+        ],
+        "improvement_hypothesis": (
+            "one falsifiable improvement relative to named public baseline evidence"
+        ),
+        "differentiation": [
+            "first concrete design dimension that differs from the closest baseline",
+            "second concrete design dimension that differs from the closest baseline",
+        ],
+        "expected_tradeoff": (
+            "what may improve and what may become worse; never promise outperformance"
+        ),
         "risk_controls": ["at least two concrete controls"],
         "causal_chain": [
             "market rows",

@@ -110,6 +110,47 @@ DeepSeek 返回空 content 或无效 JSON 时，客户端会自动重试一次�
 
 对于“设计和 Python 已完整返回，但模型漏掉最外层 JSON 引号或大括号”的情况，客户端会从已知 `design + source_code` 或 Repair 输出协议中恢复完整字段，并在 Trace 中标记 `parse_mode=recovered_known_payload`。只有字段本身不完整时才重新请求；第二次请求会明确要求严格关闭 `source_code` 字符串和外层对象。恢复后的源码仍必须通过 AST 预检，Agent 也不得覆盖基类拥有的 `af_*` 方法。
 
+JSON 能解析但语义 schema 不合法时也会单独重试一次，例如
+`design.signals=[]`、字段不是字符串列表、`strategy_spec` 枚举越界或缺少
+`source_code`。第二次请求只携带公开上下文和精确校验错误，要求重新返回完整设计与
+完整源码。Trace 使用 `semantic_validation_attempts` 保存两次调用；第二次仍失败
+才把候选标记为 Failed。
+
+Repair 对缺少完整源码、无有效 `change_summary`、缺少
+`first_interrupted_stage` 或返回未变化源码也执行一次同类语义重试。重试仍严格
+限制在同一故障和原有公开上下文内，不借机重写无关策略逻辑。
+
+四个公共基线不再只是附带的四项指标。Designer 会看到其公开的
+Sortino、波动、费用、换手、执行完成度和 CAGR/Sharpe/MDD 排名，并必须输出：
+
+- `reference_baselines`：实际参考的 1–2 个公共基线；
+- `improvement_hypothesis`：针对公开弱点的可证伪假设；
+- `differentiation`：与最近基线至少两个真实设计差异；
+- `expected_tradeoff`：可能改善和可能恶化的方面。
+
+这是一种 baseline-informed exploration，而不是要求 Agent 承诺击败基线，更不会
+向它泄露 Human 策略或结果。
+
+2026-07-23 的 `forge-396e784b1e3c` 暴露了两项实际退化：Traditional、ML、Hybrid
+首次返回都把部分字符串列表压成 scalar，或把 `differentiation` 返回为数组，旧
+schema 因此让三条轨道全部多调用一次；Hybrid 的可运行修订曾达到 42.63% CAGR，
+但运行证据为 `ml_prediction_count=300`、`ml_training_run_count=0`，说明实际走了
+无训练 fallback。后续 Repair 没有解决 History 行数/early-return 根因，最终又
+退化成零交易。
+
+对应改进：
+
+- 对可无损转换的 scalar/string-list 形态先归一化，不为格式等价问题重新生成；
+- `differentiation` 固定为两个具体变化，生成采用 strong-baseline anchor 和
+  minimal-delta challenger，避免一次改模型、期限、Top K、权重和调仓频率；
+- ML/Hybrid 必须显式核算 rolling、pct_change、shift、dropna 后的 required bars，
+  History 请求数量不得比自己的最小长度判断少一行；
+- `PREDICTIONS_WITHOUT_TRAINING` 成为独立因果分类。Repair 必须优先检查训练行数和
+  early-return，后续已有 predictions/targets/fills 时不得臆测为 schedule 失效；
+- Agent advisory 与 Backend 确定性 repair request 分离。后者是权威输入；
+- 终局 Repair 若退化或调用失败，Backend 保留最佳有交易 Attempt，但仍显示真实
+  Rejected 状态。
+
 ## 修订是否真的有效
 
 Acceptance 的含义是“可运行、可审计、因果链完整”，不是“收益提高”。因此修复训练行数、时间戳或信号证据时，交易订单和绩效可能完全不变；这种情况现在明确标记为 `evidence_only`，不会再伪装成策略表现提升。
@@ -129,8 +170,10 @@ Backend 在独立的 `backend/workspace/run_history/` 中保存最近五次完�
 
 每次 Forge Run 是一轮：
 
-- Human 对阵该轮 Sharpe 最高的 accepted AI；
-- 先比较 Sharpe，再比较 CAGR，最后以更低最大回撤决胜；
+- Candidate Selector 先用公开确定性评分选出 accepted AI 内部冠军；
+- Battle Judge 再比较 Human 和 AI Champion；
+- 评分使用风险调整收益 40%、回撤与波动 25%、稳健性 20%、费用换手 10%、
+  可解释性 5%，两分以内为 Draw；
 - accepted 只表示 AI 有资格参赛，不表示 AI 获胜；
 - 最多保留最近五轮，形成 Best-of-Five 记分板；
 - 每轮可以展开三个 AI 候选、每次 Review、修订类型、指标、行为证据和当轮源码。
@@ -145,7 +188,11 @@ Backend 在独立的 `backend/workspace/run_history/` 中保存最近五次完�
 4. LEAN Backtest
 5. Acceptance
 
-每个轨道卡片展示设计论点、信号/特征、选择规则、静态诊断、Worker 状态、修复次数、修改摘要和 token 使用。页面只展示结构化结论，不展示隐藏思维链；信息边界横幅明确说明 `User Strategy Hidden From AI`。
+每个轨道卡片展示设计论点、参考基线、改进假设、差异化设计、预期代价、信号/特征、
+静态诊断、生成重试、Worker 状态、修复次数和 token 使用。Results 页面只展示统计与
+裁决；最优策略解释、用户建议、指标知识卡和 Baseline Classroom 位于独立 Learning
+页面。页面只展示结构化结论，不展示隐藏思维链；信息边界横幅明确说明
+`User Strategy Hidden From AI`。
 
 ## 验证方法
 
