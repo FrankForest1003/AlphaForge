@@ -37,7 +37,10 @@ and its earlier iterations. Return one JSON object matching the requested critiq
 shape. Do not return code, a replacement strategy_spec, acceptance/rejection, or claims
 of future performance. Identify what to preserve and recommend at most three bounded
 parameter directions for the Designer. Prefer interpretable changes and explicitly
-warn about multiple-testing and overfitting risk."""
+warn about multiple-testing and overfitting risk. Use `computed_comparisons` as the
+authoritative arithmetic; do not recalculate metric gaps. Recommend only fields listed
+in `active_parameter_prefixes`. An execution counter explicitly described as expected
+for the assigned track is not a defect."""
 
 PARAMETER_RULES = [
     "Return exactly the keys shown by the assigned track example; no dotted keys.",
@@ -51,7 +54,10 @@ PARAMETER_RULES = [
     "Signal components contain exactly feature, direction, and weight; use 1-4.",
     (
         "Model algorithm is gradient_boosting, random_forest, extra_trees, or ridge; "
-        "use 2-12 unique feature objects and horizon_days 5-63."
+        "use 2-12 unique feature objects; horizon_days 5-63, "
+        "pooled_training_rows 80-600, retrain_every_rebalances 1-6, "
+        "n_estimators 40-400, learning_rate 0.01-0.30, max_depth 1-8, "
+        "min_samples_leaf 2-100, and ridge_alpha 0.01-100."
     ),
     "selection.top_k is 2-10 and cannot exceed the number of run symbols.",
     "selection.hybrid_model_weight is always a number 0.10-0.90, never null.",
@@ -60,14 +66,20 @@ PARAMETER_RULES = [
         "or blend_score_minimum_variance."
     ),
     (
-        "portfolio fields are numeric; minimum_variance_blend is always 0-1, never "
-        "null. Ensure top_k * max_position_weight >= gross_exposure."
+        "portfolio fields are numeric: gross_exposure 0.50-0.98, "
+        "max_position_weight 0.10-0.60, volatility_window 10-252, "
+        "minimum_variance_blend 0-1, and rebalance_threshold 0-0.10; never null. "
+        "Ensure top_k * max_position_weight >= gross_exposure."
     ),
+    "schedule.frequency is weekly or monthly; minutes_after_open is 5-120.",
     (
         "risk.market_sma_window is always integer 20-252 even when "
-        "market_trend_filter is false."
+        "market_trend_filter is false; cooldown_days is 5-90."
     ),
-    "Only risk.stop_loss and risk.maximum_drawdown may be null.",
+    (
+        "Only risk.stop_loss and risk.maximum_drawdown may be null; when set, "
+        "stop_loss is 0.05-0.30 and maximum_drawdown is 0.10-0.40."
+    ),
 ]
 
 TRACK_SPEC_EXAMPLES = {

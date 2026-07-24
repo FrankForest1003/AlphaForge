@@ -25,7 +25,7 @@ from app.services.strategy_template import (
     compile_strategy_source,
     validate_strategy_spec,
 )
-from app.services.worker_client import LeanWorkerClient
+from app.services.worker_client import LeanWorkerClient, WorkerClientError
 
 
 BASELINES = (
@@ -1883,8 +1883,20 @@ class ForgeService:
             state="queued",
             worker_run_id=worker_run_id,
         )
+        transient_unknown_run_attempts = 0
         while True:
-            record = self.worker.job(worker_run_id)
+            try:
+                record = self.worker.job(worker_run_id)
+            except WorkerClientError as exc:
+                # The Worker persists a newly submitted job atomically while its
+                # execution thread may update the same record. A very short 404
+                # immediately after POST is therefore retriable; other 404s and
+                # all other request failures remain terminal.
+                if not exc.is_unknown_run or transient_unknown_run_attempts >= 4:
+                    raise
+                time.sleep(0.25 * (2**transient_unknown_run_attempts))
+                transient_unknown_run_attempts += 1
+                continue
             state = record.get("state", "failed")
             self._change_item(run_id, collection, index, state=state)
             if state in TERMINAL_STATES:
@@ -2013,8 +2025,11 @@ class ForgeService:
         iterations: list[dict[str, Any]] = []
         critiques: list[dict[str, Any]] = []
         generation_retries = int(proposal.get("generation_retries", 0) or 0)
+        partial_completion_reason: str | None = None
+        attempted_iteration_count = 0
 
         for iteration_number in range(1, MAX_TEMPLATE_BACKTESTS + 1):
+            attempted_iteration_count = iteration_number
             self._change(
                 run_id,
                 stage=(
@@ -2059,6 +2074,7 @@ class ForgeService:
                 error=None,
             )
 
+            worker_run_id: str | None = None
             try:
                 submitted = self.worker.submit_custom(source, parameters)
                 worker_run_id = submitted["run_id"]
@@ -2079,6 +2095,20 @@ class ForgeService:
                     worker_run_id,
                 )
             except Exception as exc:
+                partial_completion_reason = str(exc)
+                if worker_run_id is not None:
+                    self._update_worker_attempt(
+                        run_id=run_id,
+                        worker_run_id=worker_run_id,
+                        finished_at=utc_now(),
+                        outcome="worker_polling_failed",
+                        error={
+                            "type": type(exc).__name__,
+                            "message": partial_completion_reason,
+                        },
+                    )
+                if iterations:
+                    break
                 self._change_item(
                     run_id,
                     "candidates",
@@ -2102,6 +2132,9 @@ class ForgeService:
                     outcome="template_runtime_defect",
                     error={"type": "template_runtime_defect", "message": message},
                 )
+                partial_completion_reason = message
+                if iterations:
+                    break
                 self._change_item(
                     run_id,
                     "candidates",
@@ -2194,6 +2227,9 @@ class ForgeService:
                         "iteration": iteration_number,
                         "worker_run_id": worker_run_id,
                         "report": copy.deepcopy(critique),
+                        "discarded_recommendations": copy.deepcopy(
+                            evaluated.get("discarded_recommendations") or []
+                        ),
                     }
                 )
             except Exception as exc:
@@ -2206,7 +2242,35 @@ class ForgeService:
                     error=exc,
                 )
                 iterations[-1]["critique_error"] = str(exc)
-                break
+                critique = {
+                    "iteration": iteration_number,
+                    "diagnosis": (
+                        "The backtest completed, but the model-generated critique was "
+                        "unavailable after structured-output retries."
+                    ),
+                    "strengths": [
+                        "This parameter set completed the fixed-template LEAN backtest."
+                    ],
+                    "weaknesses": [
+                        "No reliable model-generated interpretation is available."
+                    ],
+                    "preserve": [],
+                    "recommended_changes": [],
+                    "overfitting_warning": (
+                        "Make only one conservative active-parameter revision and "
+                        "treat all three trials as exploratory."
+                    ),
+                }
+                iterations[-1]["critique"] = critique
+                critiques.append(
+                    {
+                        "iteration": iteration_number,
+                        "worker_run_id": worker_run_id,
+                        "report": copy.deepcopy(critique),
+                        "fallback": True,
+                        "error": str(exc),
+                    }
+                )
 
             self._change_item(
                 run_id,
@@ -2291,6 +2355,9 @@ class ForgeService:
             best_iteration=best["iteration"],
             iterations=copy.deepcopy(iterations),
             critique_history=copy.deepcopy(critiques),
+            attempted_iteration_count=attempted_iteration_count,
+            partial_completion=attempted_iteration_count > len(iterations),
+            partial_completion_reason=partial_completion_reason,
             failure_classification=None,
             error=None,
         )

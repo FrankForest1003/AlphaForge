@@ -195,9 +195,9 @@ class DeepSeekJSONClient:
                             "role": "user",
                             "content": (
                                 "The previous response was not valid JSON. Return the "
-                                "same requested object again as strict JSON. Encode the "
-                                "complete Python source as the source_code JSON string; "
-                                "do not omit its closing quote or the outer braces."
+                                "same complete requested object again as strict JSON. "
+                                "Do not add markdown, commentary, code, or keys that "
+                                "were not present in the requested output shape."
                             ),
                         },
                     ]

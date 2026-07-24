@@ -13,7 +13,7 @@ from agent.prompts import (
     TRACK_BRIEFS,
     TRACK_SPEC_EXAMPLES,
 )
-from app.schemas import CandidateProposal, StrategyTemplateSpec
+from app.schemas import DesignRationale, StrategyTemplateSpec
 
 
 def _compact_baselines(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -56,16 +56,62 @@ class DeepSeekDesigner:
         symbol_count: int,
         previous_spec: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        if not isinstance(payload, dict):
+            raise ValueError("Designer output must be a JSON object")
         try:
-            proposal = CandidateProposal.model_validate(payload)
+            spec = StrategyTemplateSpec.model_validate(payload.get("strategy_spec"))
         except ValidationError as exc:
             raise ValueError(str(exc)) from exc
-        spec = proposal.strategy_spec
         if spec.track != track:
             raise ValueError(f"strategy_spec.track must be exactly {track}")
         if spec.selection.top_k > symbol_count:
             raise ValueError("selection.top_k cannot exceed the run symbol count")
-        normalized = proposal.model_dump(mode="json")
+
+        # The explanation is presentation metadata, not executable strategy input.
+        # Normalize harmless verbosity instead of throwing away a valid strategy
+        # specification and asking the model to regenerate financial parameters.
+        raw_design = payload.get("design")
+        if not isinstance(raw_design, dict):
+            raw_design = {}
+
+        def compact_strings(value: Any, limit: int) -> list[str]:
+            if isinstance(value, str):
+                value = [value]
+            if not isinstance(value, list):
+                return []
+            return [
+                str(item).strip()
+                for item in value
+                if isinstance(item, str) and item.strip()
+            ][:limit]
+
+        references = compact_strings(raw_design.get("reference_baselines"), 2)
+        differences = compact_strings(raw_design.get("differentiation"), 3)
+        hypothesis = str(raw_design.get("improvement_hypothesis") or "").strip()
+        tradeoff = str(raw_design.get("expected_tradeoff") or "").strip()
+        normalized_design = {
+            "reference_baselines": references or ["Public baseline set"],
+            "improvement_hypothesis": (
+                hypothesis
+                if len(hypothesis) >= 10
+                else spec.thesis
+            ),
+            "differentiation": differences
+            or ["Uses a distinct bounded template parameter configuration."],
+            "expected_tradeoff": (
+                tradeoff
+                if len(tradeoff) >= 10
+                else "Potential return improvement may come with higher estimation risk."
+            ),
+        }
+        try:
+            design = DesignRationale.model_validate(normalized_design)
+        except ValidationError as exc:
+            raise ValueError(str(exc)) from exc
+        normalized = {
+            "design": design.model_dump(mode="json"),
+            "strategy_spec": spec.model_dump(mode="json"),
+        }
         if previous_spec is not None:
             normalized_previous = StrategyTemplateSpec.model_validate(
                 previous_spec

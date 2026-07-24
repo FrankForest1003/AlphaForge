@@ -6,9 +6,11 @@ from types import SimpleNamespace
 import pytest
 
 from agent import DeepSeekCritic, DeepSeekDesigner
-from agent.prompts import TRACK_SPEC_EXAMPLES
+from agent.critic import build_metric_comparisons
+from agent.prompts import PARAMETER_RULES, TRACK_SPEC_EXAMPLES
 from app.schemas import CritiqueReport, RunSettings, StrategyTemplateSpec
 from app.services.baseline_service import ForgeService
+from app.services.worker_client import WorkerClientError
 
 
 def traditional_spec(window: int = 126) -> dict:
@@ -141,6 +143,22 @@ def test_designer_revision_must_change_parameters():
         )
 
 
+def test_designer_preserves_valid_spec_and_compacts_cosmetic_design_metadata():
+    payload = proposal()
+    payload["design"]["differentiation"] = ["one", "two", "three", "four"]
+
+    normalized = DeepSeekDesigner._validated_proposal(
+        payload,
+        "Traditional",
+        symbol_count=5,
+    )
+
+    assert normalized["strategy_spec"] == StrategyTemplateSpec.model_validate(
+        traditional_spec()
+    ).model_dump(mode="json")
+    assert normalized["design"]["differentiation"] == ["one", "two", "three"]
+
+
 def test_critic_returns_advice_not_replacement_parameters():
     payload = {
         "iteration": 1,
@@ -178,6 +196,81 @@ def test_critic_returns_advice_not_replacement_parameters():
     assert CritiqueReport.model_validate(result["report"])
     assert "strategy_spec" not in result["report"]
     assert "source_code" not in completions.request["messages"][1]["content"]
+
+
+def test_critic_discards_inactive_ml_fields_and_uses_precomputed_comparisons():
+    payload = {
+        "iteration": 1,
+        "diagnosis": "The completed ML trial trails the strongest public Sharpe ratio.",
+        "strengths": ["The model training path completed."],
+        "weaknesses": ["Risk adjusted return trails the public reference."],
+        "preserve": ["regularized model"],
+        "recommended_changes": [
+            {
+                "field": "strategy_spec.selection.hybrid_model_weight",
+                "direction": "increase",
+                "reason": "Increase the hybrid contribution.",
+            },
+            {
+                "field": "strategy_spec.model.ridge_alpha",
+                "direction": "increase",
+                "reason": "Test stronger regularization.",
+            },
+        ],
+        "overfitting_warning": "Do not select parameters from one favorable trial.",
+    }
+    ml = dict(TRACK_SPEC_EXAMPLES["ML"])
+    client, completions = client_for(payload)
+    critic = DeepSeekCritic(
+        api_key="test",
+        base_url="https://example.invalid",
+        model="test-model",
+        thinking_enabled=False,
+        client=client,
+    )
+
+    result = critic.evaluate(
+        track="ML",
+        iteration=1,
+        strategy_spec=ml,
+        iteration_result={"summary": {"sharpe_ratio": 0.8, "cagr": 0.1}},
+        baseline_results=[
+            {"name": "Gradient Boosting", "summary": {"sharpe_ratio": 1.0}}
+        ],
+        iteration_history=[],
+    )
+
+    assert [
+        change["field"] for change in result["report"]["recommended_changes"]
+    ] == ["model.ridge_alpha"]
+    assert result["discarded_recommendations"][0]["field"] == (
+        "selection.hybrid_model_weight"
+    )
+    prompt = completions.request["messages"][1]["content"]
+    assert '"computed_comparisons"' in prompt
+    assert "hybrid-decision counters should be zero" in prompt
+
+
+def test_metric_comparisons_use_lower_drawdown_as_best_public_value():
+    comparisons = build_metric_comparisons(
+        {"summary": {"maximum_drawdown": 0.25}},
+        [
+            {"name": "A", "summary": {"maximum_drawdown": 0.30}},
+            {"name": "B", "summary": {"maximum_drawdown": 0.20}},
+        ],
+        [{"summary": {"maximum_drawdown": 0.27}}],
+    )
+
+    drawdown = comparisons["maximum_drawdown"]
+    assert drawdown["best_public_baseline_name"] == "B"
+    assert drawdown["current_minus_best_public"] == pytest.approx(0.05)
+    assert drawdown["current_minus_previous"] == pytest.approx(-0.02)
+
+
+def test_parameter_rules_expose_previously_missed_numeric_bounds():
+    rules = " ".join(PARAMETER_RULES)
+    assert "ridge_alpha 0.01-100" in rules
+    assert "gross_exposure 0.50-0.98" in rules
 
 
 def test_forge_runs_three_parameter_iterations_and_retains_best():
@@ -293,4 +386,142 @@ def test_forge_runs_three_parameter_iterations_and_retains_best():
     assert candidate["summary"]["sharpe_ratio"] == 1.2
     assert len(candidate["critique_history"]) == 3
     assert all(item["strategy_spec"] for item in candidate["iterations"])
+    service._executor.shutdown(wait=True)
+
+
+def test_forge_preserves_best_completed_iteration_when_later_worker_poll_fails():
+    summaries = [
+        {"cagr": 0.10, "sharpe_ratio": 0.8, "maximum_drawdown": 0.20},
+        {"cagr": 0.12, "sharpe_ratio": 1.1, "maximum_drawdown": 0.18},
+    ]
+
+    class Worker:
+        def __init__(self):
+            self.count = 0
+
+        def submit_custom(self, source, parameters):
+            self.count += 1
+            return {"run_id": f"worker-{self.count}"}
+
+        def job(self, run_id):
+            if run_id == "worker-3":
+                raise RuntimeError("temporary worker index failure")
+            return {"state": "completed", "result_path": "result.json"}
+
+        def result(self, run_id):
+            index = int(run_id.rsplit("-", 1)[1]) - 1
+            return {"status": "completed", "summary": summaries[index], "errors": []}
+
+        def details(self, run_id):
+            raise RuntimeError("details omitted")
+
+    class Designer:
+        def __init__(self):
+            self.windows = iter((63, 252))
+
+        def generate(self, **kwargs):
+            return {**proposal(next(self.windows)), "usage": {}}
+
+    class Critic:
+        def evaluate(self, **kwargs):
+            iteration = kwargs["iteration"]
+            return {
+                "report": {
+                    "iteration": iteration,
+                    "diagnosis": "The completed result is available for comparison.",
+                    "strengths": ["The fixed template completed."],
+                    "weaknesses": [],
+                    "preserve": [],
+                    "recommended_changes": [],
+                    "overfitting_warning": "Treat the limited trials as exploratory.",
+                },
+                "usage": {},
+            }
+
+    run_settings = RunSettings(
+        symbols=["MSFT", "AAPL", "NVDA", "GOOGL", "AMZN"],
+        start_date="2020-01-02",
+        end_date="2024-12-31",
+        initial_cash=100_000,
+        benchmark="SPY",
+        transaction_cost_bps=10,
+        slippage_bps=5,
+    )
+    service = ForgeService(
+        worker=Worker(),
+        designer=Designer(),
+        critic=Critic(),
+        allowed_symbols=set(run_settings.symbols),
+        allowed_benchmarks={"SPY"},
+    )
+    service._runs["forge-partial"] = {
+        "settings": run_settings.model_dump(mode="json"),
+        "candidates": [{"track": "Traditional"}],
+        "updated_at": "",
+    }
+    service._traces["forge-partial"] = {
+        "agent_calls": [],
+        "worker_attempts": [],
+        "updated_at": "",
+    }
+
+    service._run_template_candidate(
+        run_id="forge-partial",
+        index=0,
+        track="Traditional",
+        settings=run_settings,
+        parameters=run_settings.worker_parameters(),
+        baseline_results=[],
+        initial_proposal={**proposal(126), "usage": {}},
+    )
+
+    candidate = service._runs["forge-partial"]["candidates"][0]
+    assert candidate["state"] == "accepted"
+    assert candidate["best_iteration"] == 2
+    assert candidate["attempted_iteration_count"] == 3
+    assert candidate["partial_completion"] is True
+    assert "temporary worker index failure" in candidate["partial_completion_reason"]
+    service._executor.shutdown(wait=True)
+
+
+def test_wait_for_worker_retries_only_transient_unknown_run(monkeypatch):
+    class Worker:
+        def __init__(self):
+            self.polls = 0
+
+        def job(self, run_id):
+            self.polls += 1
+            if self.polls < 3:
+                raise WorkerClientError(
+                    "unknown",
+                    status_code=404,
+                    response_text='{"detail":"Unknown run_id"}',
+                )
+            return {"state": "completed", "result_path": "result.json"}
+
+        def result(self, run_id):
+            return {"status": "completed", "summary": {}, "errors": []}
+
+        def details(self, run_id):
+            raise RuntimeError("details omitted")
+
+    worker = Worker()
+    service = ForgeService(
+        worker=worker,
+        designer=object(),
+        critic=object(),
+        allowed_symbols={"MSFT"},
+        allowed_benchmarks={"SPY"},
+    )
+    service._runs["retry"] = {
+        "settings": {"initial_cash": 100000},
+        "candidates": [{}],
+        "updated_at": "",
+    }
+    monkeypatch.setattr("app.services.baseline_service.time.sleep", lambda _: None)
+
+    result = service._wait_for_worker("retry", "candidates", 0, "worker-1")
+
+    assert result["status"] == "completed"
+    assert worker.polls == 3
     service._executor.shutdown(wait=True)

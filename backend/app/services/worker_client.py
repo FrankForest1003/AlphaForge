@@ -6,7 +6,20 @@ import requests
 
 
 class WorkerClientError(RuntimeError):
-    pass
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int | None = None,
+        response_text: str = "",
+    ) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.response_text = response_text
+
+    @property
+    def is_unknown_run(self) -> bool:
+        return self.status_code == 404 and "unknown run_id" in self.response_text.lower()
 
 
 class LeanWorkerClient:
@@ -29,9 +42,17 @@ class LeanWorkerClient:
             return response.json() if parse_json else response.text
         except requests.RequestException as exc:
             detail = ""
+            status_code = None
+            response_text = ""
             if getattr(exc, "response", None) is not None:
-                detail = f": {exc.response.text[:500]}"
-            raise WorkerClientError(f"LEAN Worker request failed{detail}") from exc
+                status_code = exc.response.status_code
+                response_text = exc.response.text[:500]
+                detail = f": {response_text}"
+            raise WorkerClientError(
+                f"LEAN Worker request failed{detail}",
+                status_code=status_code,
+                response_text=response_text,
+            ) from exc
 
     def health(self) -> dict[str, Any]:
         return self._request("GET", "/health")
