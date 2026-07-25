@@ -2218,6 +2218,55 @@ textarea:focus-visible {
   background: #fbfcfe;
 }
 
+.forge-coach-loop {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 12px;
+  padding: 13px 16px;
+  margin: -4px 0 18px;
+  color: #66778c;
+  border: 1px dashed #ccd8df;
+  border-radius: 12px;
+  background: #f7f9fa;
+}
+
+.forge-coach-loop > svg:first-child {
+  color: #8b99a8;
+}
+
+.forge-coach-loop > div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.forge-coach-loop strong {
+  color: #40536a;
+  font-size: 12px;
+}
+
+.forge-coach-loop span {
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.forge-coach-loop b {
+  white-space: nowrap;
+  font-size: 11px;
+}
+
+.forge-coach-loop.ready {
+  color: #397a70;
+  border-color: #9ccdc4;
+  background: #eff8f5;
+}
+
+.forge-coach-loop.ready > svg:first-child,
+.forge-coach-loop.ready strong {
+  color: #176e64;
+}
+
 .forge-tracks {
   padding: 24px;
   background: white;
@@ -5222,6 +5271,15 @@ td strong {
 }
 
 @media (max-width: 620px) {
+  .forge-coach-loop {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .forge-coach-loop > svg:last-of-type,
+  .forge-coach-loop > b {
+    display: none;
+  }
+
   .forge-track-header,
   .forge-section-heading,
   .reference-strip {

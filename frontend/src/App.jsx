@@ -1169,44 +1169,52 @@ function AIForgeWorkspace({ run, onBuild }) {
     run.baselines.every((item) => item.state === "completed");
   const designsReady =
     candidates.length === 3 && candidates.every((item) => Boolean(item.strategy_spec));
-  const templateReady =
+  const templateResolved =
     candidates.length === 3 &&
-    candidates.every((item) => Boolean(item.source_code));
-  const workerStarted = candidates.some((item) => Boolean(item.worker_run_id));
+    candidates.every((item) => Boolean(item.source_code) || item.state === "failed");
+  const trialLoopStarted = candidates.some(
+    (item) => Boolean(item.worker_run_id) || (item.iterations || []).length > 0,
+  );
   const reviewsFinished =
     candidates.length === 3 &&
     candidates.every((item) => ["accepted", "rejected", "failed"].includes(item.state));
+  const judgeFinished = Boolean(run.battle_analysis) && run.state === "completed";
+  const reusedBaselines = (run.baselines || []).some(
+    (item) => item.baseline_execution === "reused",
+  );
 
   const stages = [
     {
       number: "01",
       title: "Public Evidence",
-      copy: "Four baselines across isolated LEAN workers",
+      copy: reusedBaselines
+        ? "Reuse the frozen Round 1 baseline evidence"
+        : "Round 1 runs four baselines on isolated LEAN workers",
       state: stageState(baselinesReady, !baselinesReady),
     },
     {
       number: "02",
-      title: "Independent Design",
-      copy: "Traditional, ML, and Hybrid plans",
+      title: "Parallel Entrants",
+      copy: "Three Designers start while the hidden Human strategy runs independently",
       state: stageState(designsReady, baselinesReady),
     },
     {
       number: "03",
-      title: "Template Compile",
-      copy: "Validated parameters enter tested LEAN code",
-      state: stageState(templateReady, designsReady),
+      title: "Validate & Compile",
+      copy: "Every trial validates JSON parameters and compiles the fixed LEAN template",
+      state: stageState(templateResolved, designsReady),
     },
     {
       number: "04",
-      title: "Parallel LEAN Backtest",
-      copy: "Three track pipelines; each iterates in order",
-      state: stageState(workerStarted && reviewsFinished, workerStarted),
+      title: "Parallel Trial Loops",
+      copy: "Tracks run in parallel; within each: LEAN → Critic → Designer, up to 3 trials",
+      state: stageState(reviewsFinished, trialLoopStarted),
     },
     {
       number: "05",
-      title: "Critic & Selection",
-      copy: "A1–A5 evidence review",
-      state: stageState(reviewsFinished, workerStarted),
+      title: "Judge & Champion",
+      copy: "A1–A5 review, select each round best, then challenge its track incumbent",
+      state: stageState(judgeFinished, reviewsFinished),
     },
   ];
 
@@ -1243,6 +1251,18 @@ function AIForgeWorkspace({ run, onBuild }) {
           </div>
         ))}
       </section>
+      <div className={`forge-coach-loop ${judgeFinished ? "ready" : ""}`}>
+        <Lightbulb size={18} />
+        <div>
+          <strong>After the round: AI Coach closes the learning loop</strong>
+          <span>
+            It reads only public and AI evidence, then tells the next-round
+            Designer to refine parameters, rotate a mechanism, or rebuild the track.
+          </span>
+        </div>
+        <ArrowRight size={18} />
+        <b>Next round</b>
+      </div>
 
       <section className="forge-tracks">
         <div className="card-heading">
