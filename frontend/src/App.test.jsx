@@ -15,6 +15,17 @@ const catalog = {
   benchmarks: ["SPY"],
   default_symbols: ["MSFT", "AAPL", "NVDA", "GOOGL", "AMZN"],
 };
+const battle = {
+  id: "battle-test",
+  name: "Test Battle",
+  state: "active",
+  human_wins: 0,
+  ai_wins: 0,
+  round_count: 0,
+  next_round: 1,
+  can_start_round: true,
+  rounds: [],
+};
 
 function response(payload, ok = true) {
   return Promise.resolve({ ok, json: () => Promise.resolve(payload) });
@@ -24,6 +35,9 @@ function installFetch(run = null) {
   global.fetch = vi.fn((url) => {
     if (url.endsWith("/catalog/universe")) return response(catalog);
     if (url.endsWith("/health")) return response({ status: "ok" });
+    if (url.endsWith("/auth/me")) return response({ id: "user-test", username: "tester" });
+    if (url.endsWith("/battles")) return response([battle]);
+    if (url.endsWith("/battles/battle-test")) return response(battle);
     if (url.endsWith("/forge-history")) return response([]);
     if (url.includes("/forge-runs/") && run) return response(run);
     return response({ detail: "Not Found" }, false);
@@ -32,6 +46,7 @@ function installFetch(run = null) {
 
 beforeEach(() => {
   window.history.replaceState({}, "", "/");
+  window.localStorage.setItem("alphaforge_token", "test-token");
   global.ResizeObserver = class ResizeObserver {
     constructor(callback) { this.callback = callback; }
     observe(target) {
@@ -43,7 +58,18 @@ beforeEach(() => {
   installFetch();
 });
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  window.localStorage.clear();
+  vi.restoreAllMocks();
+});
+
+async function openBuilder() {
+  await screen.findByRole("heading", { name: "Your strategy match history" });
+  fireEvent.click(await screen.findByRole("button", { name: /^Test Battle/ }));
+  await screen.findByText("How a round works");
+  fireEvent.click(screen.getByRole("button", { name: "Prepare Round 1" }));
+  await screen.findByRole("heading", { name: "Test Battle" });
+}
 
 function parameterRun() {
   const spec = {
@@ -120,7 +146,7 @@ function parameterRun() {
 describe("AlphaForge Studio", () => {
   it("opens the builder and provides a complete Human code starter", async () => {
     render(<App />);
-    expect(await screen.findByRole("heading", { name: "Create a Backtest" })).toBeInTheDocument();
+    await openBuilder();
     fireEvent.click(screen.getByRole("button", { name: /Complete Python Code/i }));
     expect(screen.getByLabelText("Complete Strategy Source")).toHaveValue(HUMAN_CODE_STARTER);
     expect(document.querySelector(".python-editor .python-keyword")).toHaveTextContent("from");
@@ -128,7 +154,7 @@ describe("AlphaForge Studio", () => {
 
   it("offers a bounded advanced multi-factor Human template", async () => {
     render(<App />);
-    await screen.findByRole("heading", { name: "Create a Backtest" });
+    await openBuilder();
     fireEvent.click(screen.getByRole("button", { name: /Advanced Multi-factor/i }));
 
     expect(screen.getByText("Portfolio Weighting")).toBeInTheDocument();

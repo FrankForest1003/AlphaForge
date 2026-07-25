@@ -14,12 +14,18 @@ from app.schemas.agent_strategy import (
 )
 from app.schemas.strategy_template import StrategyTemplateSpec
 from app.schemas.education import EducationReview
+from app.schemas.coaching import CoachTrackLesson, RoundCoachMemory
+from app.schemas.game import BattleCreateRequest, CredentialsRequest
 
 __all__ = [
     "CandidateProposal",
     "CritiqueReport",
     "DesignRationale",
     "EducationReview",
+    "CoachTrackLesson",
+    "RoundCoachMemory",
+    "BattleCreateRequest",
+    "CredentialsRequest",
     "ParameterSuggestion",
     "compact_iteration_result",
     "ForgeRunRequest",

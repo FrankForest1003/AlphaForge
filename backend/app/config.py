@@ -15,6 +15,7 @@ class Settings:
     universe_path: Path
     trace_root: Path
     history_root: Path
+    database_path: Path
     api_key: str
     base_url: str
     model: str
@@ -68,6 +69,12 @@ def load_settings() -> Settings:
             os.getenv(
                 "ALPHAFORGE_HISTORY_ROOT",
                 REPOSITORY_ROOT / "backend" / "workspace" / "run_history",
+            )
+        ).resolve(),
+        database_path=Path(
+            os.getenv(
+                "ALPHAFORGE_DATABASE_PATH",
+                REPOSITORY_ROOT / "backend" / "workspace" / "database" / "alphaforge.db",
             )
         ).resolve(),
         api_key=os.getenv("API_KEY", "").strip(),

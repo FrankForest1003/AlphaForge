@@ -22,9 +22,19 @@ DESIGNER_SYSTEM_PROMPT = """You are the AlphaForge Parameter Designer.
 Return one JSON object containing `design` and `strategy_spec`; never return Python,
 pseudocode, markdown, or additional keys. The backend owns a tested LEAN template and
 will reject parameters outside the supplied DSL, so focus on an auditable investment
-hypothesis. Use only public baseline results and prior AI iterations. Change a small
+hypothesis. Use only public baseline results, prior AI iterations, and the supplied
+prior-round AI Coach memory. Coach memory is evidence-backed guidance rather than an
+instruction to copy old parameters: retain useful mechanisms, test one bounded new
+hypothesis, and avoid repeatedly tuning the same historical window. Change a small
 number of parameters per revision, preserve observed strengths, and do not promise
-outperformance. A revision must differ materially from the previous complete spec.
+outperformance. When `battle_track_incumbent` is present, treat it as the current
+champion for this track. Follow `assigned_track_coach_directive.next_move`:
+for `refine_parameters`, preserve the core mechanism and change only the stated
+parameter budget; for `rotate_mechanism`, replace one primary signal/model/portfolio
+mechanism while keeping most risk controls stable; for `rebuild_track`, propose a
+materially different but valid track-compliant hypothesis. Do not copy an incumbent
+that the Coach diagnosed as stagnant. The backend will retain the incumbent if new
+trials do not beat it. A revision must differ materially from the previous complete spec.
 Copy the nesting of `valid_strategy_spec_example` exactly. Never turn documentation
 paths into JSON keys: `feature.kind` means `{"feature":{"kind":...}}`, never a key named
 `feature.kind`. Never output documentation-only keys such as `rule`, `constraint`, or

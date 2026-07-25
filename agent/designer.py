@@ -132,9 +132,19 @@ class DeepSeekDesigner:
         previous_spec: dict[str, Any] | None = None,
         critique: dict[str, Any] | None = None,
         iteration_history: list[dict[str, Any]] | None = None,
+        battle_memory: dict[str, Any] | None = None,
+        incumbent: dict[str, Any] | None = None,
     ) -> list[dict[str, str]]:
         if track not in TRACK_BRIEFS:
             raise ValueError(f"unknown Designer track: {track}")
+        track_coach_directive = next(
+            (
+                lesson
+                for lesson in (battle_memory or {}).get("track_lessons", [])
+                if lesson.get("track") == track
+            ),
+            None,
+        )
         request = {
             "assigned_track": track,
             "iteration": iteration,
@@ -154,6 +164,17 @@ class DeepSeekDesigner:
             "previous_strategy_spec": previous_spec,
             "critic_report": critique,
             "prior_iteration_results": iteration_history or [],
+            "prior_round_ai_coach_memory": battle_memory,
+            "assigned_track_coach_directive": track_coach_directive,
+            "battle_track_incumbent": (
+                {
+                    "round_number": incumbent.get("_battle_round_number"),
+                    "strategy_spec": incumbent.get("strategy_spec"),
+                    "summary": incumbent.get("summary"),
+                }
+                if incumbent
+                else None
+            ),
             "parameter_rules": PARAMETER_RULES,
             "valid_strategy_spec_example": TRACK_SPEC_EXAMPLES[track],
             "output_shape": PROPOSAL_SHAPE,
@@ -176,6 +197,8 @@ class DeepSeekDesigner:
         previous_spec: dict[str, Any] | None = None,
         critique: dict[str, Any] | None = None,
         iteration_history: list[dict[str, Any]] | None = None,
+        battle_memory: dict[str, Any] | None = None,
+        incumbent: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         base_messages = self.messages(
             track=track,
@@ -185,6 +208,8 @@ class DeepSeekDesigner:
             previous_spec=previous_spec,
             critique=critique,
             iteration_history=iteration_history,
+            battle_memory=battle_memory,
+            incumbent=incumbent,
         )
         total_usage = {
             "prompt_tokens": 0,
@@ -222,6 +247,9 @@ class DeepSeekDesigner:
                             "template_dsl",
                             "prior_ai_iterations",
                             "critic_report",
+                            "prior_round_ai_coach_memory",
+                            "assigned_track_coach_directive",
+                            "battle_track_incumbent",
                         ],
                         "excludes": [
                             "human_source",

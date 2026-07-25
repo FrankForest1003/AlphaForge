@@ -114,6 +114,7 @@ class ForgeRunRequest(BaseModel):
 
     settings: RunSettings
     human_strategy: HumanStrategyRequest
+    battle_id: str | None = Field(default=None, min_length=1, max_length=80)
 
 
 class RobustnessRunRequest(BaseModel):

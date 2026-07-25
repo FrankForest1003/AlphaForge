@@ -17,6 +17,7 @@ frontend/node_modules/
 frontend/dist/
 backend/workspace/forge_traces/
 backend/workspace/run_history/
+backend/workspace/database/
 
 # IDE / OS
 .vscode/
@@ -41,6 +42,7 @@ lean_worker/workspace/service/*
 lean_worker/workspace/models/*
 lean_worker/workspace/locks/*
 lean_worker/workspace/backups/*
+lean_worker/workspace/slots/*
 !lean_worker/workspace/**/.gitkeep
 
 # END ALPHAFORGE GENERATED IGNORE RULES

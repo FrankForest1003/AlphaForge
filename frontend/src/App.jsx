@@ -182,8 +182,13 @@ const BASELINE_CLASSROOM = {
 };
 
 async function apiRequest(path, options = {}) {
+  const token = window.localStorage.getItem("alphaforge_token");
   const response = await fetch(`${API_ROOT}${path}`, {
-    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(options.headers || {}),
+    },
     ...options,
   });
   const payload = await response.json().catch(() => ({}));
@@ -241,6 +246,9 @@ function strategyRows(run) {
     scoreId: `baseline-${index}`,
     strategy: item.name,
     category: "Reference Strategy",
+    categoryLabel: item.baseline_execution === "reused"
+      ? "Reference · R1 reused"
+      : "Reference Strategy",
     revisions: null,
     scorecard: scorecards.get(`baseline-${index}`),
   }));
@@ -352,7 +360,7 @@ function BrandMark() {
   );
 }
 
-function Sidebar({ view, onView, runId, onOpenRun, serviceStatus }) {
+function Sidebar({ view, onView, runId, onOpenRun, serviceStatus, user, onLogout }) {
   const [lookup, setLookup] = useState(runId || "");
   useEffect(() => setLookup(runId || ""), [runId]);
 
@@ -372,6 +380,10 @@ function Sidebar({ view, onView, runId, onOpenRun, serviceStatus }) {
       </div>
 
       <nav className="nav-list" aria-label="Workspace">
+        <button className={view === "lobby" ? "active" : ""} onClick={() => onView("lobby")}>
+          <Trophy size={18} />
+          Battle Lobby
+        </button>
         <button className={view === "build" ? "active" : ""} onClick={() => onView("build")}>
           <Sparkles size={18} />
           Build
@@ -403,6 +415,11 @@ function Sidebar({ view, onView, runId, onOpenRun, serviceStatus }) {
       </nav>
 
       <div className="sidebar-spacer" />
+      <div className="signed-in-user">
+        <UserRound size={18} />
+        <span><small>Signed in as</small>{user?.username}</span>
+        <button type="button" onClick={onLogout} aria-label="Sign out">Sign out</button>
+      </div>
       <div className="run-lookup">
         <label htmlFor="run-lookup">Open A Run</label>
         <form onSubmit={submitLookup}>
@@ -449,41 +466,51 @@ function Field({ label, children, hint }) {
   );
 }
 
-function BuildWorkspace({ catalog, loadingCatalog, onCreated }) {
+function BuildWorkspace({
+  catalog,
+  loadingCatalog,
+  onCreated,
+  battle,
+  initialHumanStrategy,
+  recommendations = [],
+}) {
+  const seedGuided = initialHumanStrategy?.guided || {};
+  const frozenContract = battle?.contract || null;
+  const contractFrozen = Boolean(frozenContract && battle?.round_count > 0);
   const initialized = useRef(false);
-  const [symbols, setSymbols] = useState([]);
-  const [startDate, setStartDate] = useState("2020-01-02");
-  const [endDate, setEndDate] = useState("2024-12-31");
-  const [initialCash, setInitialCash] = useState(100000);
-  const [benchmark, setBenchmark] = useState("SPY");
-  const [transactionCost, setTransactionCost] = useState(10);
-  const [slippage, setSlippage] = useState(5);
-  const [humanMode, setHumanMode] = useState("guided");
-  const [guidedLevel, setGuidedLevel] = useState("basic");
-  const [signal, setSignal] = useState("momentum");
-  const [lookback, setLookback] = useState(60);
-  const [secondaryLookback, setSecondaryLookback] = useState(63);
-  const [primarySignalWeight, setPrimarySignalWeight] = useState(0.65);
-  const [rebalance, setRebalance] = useState("monthly");
-  const [holdings, setHoldings] = useState(3);
-  const [weighting, setWeighting] = useState("equal");
-  const [grossExposure, setGrossExposure] = useState(0.90);
-  const [maxPositionWeight, setMaxPositionWeight] = useState(0.45);
-  const [rebalanceThreshold, setRebalanceThreshold] = useState(0.02);
-  const [requirePositiveScore, setRequirePositiveScore] = useState(false);
-  const [marketTrendFilter, setMarketTrendFilter] = useState(false);
-  const [marketSmaWindow, setMarketSmaWindow] = useState(200);
-  const [sourceCode, setSourceCode] = useState(HUMAN_CODE_STARTER);
+  const [symbols, setSymbols] = useState(frozenContract?.symbols || []);
+  const [startDate, setStartDate] = useState(frozenContract?.start_date || "2020-01-02");
+  const [endDate, setEndDate] = useState(frozenContract?.end_date || "2024-12-31");
+  const [initialCash, setInitialCash] = useState(frozenContract?.initial_cash || 100000);
+  const [benchmark, setBenchmark] = useState(frozenContract?.benchmark || "SPY");
+  const [transactionCost, setTransactionCost] = useState(frozenContract?.transaction_cost_bps ?? 10);
+  const [slippage, setSlippage] = useState(frozenContract?.slippage_bps ?? 5);
+  const [humanMode, setHumanMode] = useState(initialHumanStrategy?.mode || "guided");
+  const [guidedLevel, setGuidedLevel] = useState(seedGuided.level || "basic");
+  const [signal, setSignal] = useState(seedGuided.signal || "momentum");
+  const [lookback, setLookback] = useState(seedGuided.lookback_days || 60);
+  const [secondaryLookback, setSecondaryLookback] = useState(seedGuided.secondary_lookback_days || 63);
+  const [primarySignalWeight, setPrimarySignalWeight] = useState(seedGuided.primary_signal_weight ?? 0.65);
+  const [rebalance, setRebalance] = useState(seedGuided.rebalance || "monthly");
+  const [holdings, setHoldings] = useState(seedGuided.holdings || 3);
+  const [weighting, setWeighting] = useState(seedGuided.weighting || "equal");
+  const [grossExposure, setGrossExposure] = useState(seedGuided.gross_exposure ?? 0.90);
+  const [maxPositionWeight, setMaxPositionWeight] = useState(seedGuided.max_position_weight ?? 0.45);
+  const [rebalanceThreshold, setRebalanceThreshold] = useState(seedGuided.rebalance_threshold ?? 0.02);
+  const [requirePositiveScore, setRequirePositiveScore] = useState(seedGuided.require_positive_score || false);
+  const [marketTrendFilter, setMarketTrendFilter] = useState(seedGuided.market_trend_filter || false);
+  const [marketSmaWindow, setMarketSmaWindow] = useState(seedGuided.market_sma_window || 200);
+  const [sourceCode, setSourceCode] = useState(initialHumanStrategy?.source_code || HUMAN_CODE_STARTER);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
 
   useEffect(() => {
     if (catalog && !initialized.current) {
       initialized.current = true;
-      setSymbols(catalog.default_symbols || []);
-      setBenchmark((catalog.benchmarks || ["SPY"])[0] || "SPY");
+      setSymbols(frozenContract?.symbols || catalog.default_symbols || []);
+      setBenchmark(frozenContract?.benchmark || (catalog.benchmarks || ["SPY"])[0] || "SPY");
     }
-  }, [catalog]);
+  }, [catalog, frozenContract]);
 
   const tradable = catalog?.tradable_symbols || [];
   const grouped = useMemo(() => {
@@ -553,6 +580,7 @@ function BuildWorkspace({ catalog, loadingCatalog, onCreated }) {
             slippage_bps: Number(slippage),
           },
           human_strategy: humanStrategy,
+          battle_id: battle?.id || null,
         }),
       });
       onCreated(created);
@@ -566,10 +594,21 @@ function BuildWorkspace({ catalog, loadingCatalog, onCreated }) {
   return (
     <>
       <PageHeader
-        eyebrow="New Experiment"
-        title="Create a Backtest"
-        description="Choose one market setup, add your own strategy, and compare every result on equal terms."
+        eyebrow={battle ? `Best of Five · Round ${battle.next_round} of 5` : "New Experiment"}
+        title={battle ? battle.name : "Create a Backtest"}
+        description={battle
+          ? `Current score: You ${battle.human_wins} — ${battle.ai_wins} AI. Adjust your strategy, then run the next fair round.`
+          : "Choose one market setup, add your own strategy, and compare every result on equal terms."}
       />
+      {battle?.rounds?.length ? (
+        <div className="round-adjustment-guide">
+          <Lightbulb size={22} />
+          <div>
+            <strong>Make one understandable change this round</strong>
+            <p>For lower drawdown, reduce gross exposure or position cap. For a steadier Sharpe ratio, try inverse-volatility weighting. For fewer trades, keep monthly rebalancing and raise the rebalance threshold. Change one or two controls so you can explain what caused the result.</p>
+          </div>
+        </div>
+      ) : null}
 
       <section className="step-card">
         <div className="step-heading">
@@ -580,6 +619,9 @@ function BuildWorkspace({ catalog, loadingCatalog, onCreated }) {
           </div>
           <div className="selection-count">{symbols.length} Selected</div>
         </div>
+        {contractFrozen ? (
+          <div className="contract-lock-note"><ShieldCheck size={19} /><span><strong>Battle contract locked after Round 1.</strong> Stocks, dates, cash, benchmark, fees, and slippage stay unchanged so every round remains comparable.</span></div>
+        ) : null}
 
         <div className="market-layout">
           <div className="universe-panel">
@@ -589,10 +631,10 @@ function BuildWorkspace({ catalog, loadingCatalog, onCreated }) {
                 <p>Select 5–30 stocks. Strategies may choose a subset during each rebalance.</p>
               </div>
               <div className="text-actions">
-                <button type="button" onClick={() => setSymbols(tradable.map((item) => item.display_ticker))}>
+                <button type="button" disabled={contractFrozen} onClick={() => setSymbols(tradable.map((item) => item.display_ticker))}>
                   Select All
                 </button>
-                <button type="button" onClick={() => setSymbols([])}>Clear</button>
+                <button type="button" disabled={contractFrozen} onClick={() => setSymbols([])}>Clear</button>
               </div>
             </div>
             {loadingCatalog ? (
@@ -610,6 +652,7 @@ function BuildWorkspace({ catalog, loadingCatalog, onCreated }) {
                             type="button"
                             key={item.display_ticker}
                             className={`ticker-option ${checked ? "selected" : ""}`}
+                            disabled={contractFrozen}
                             onClick={() => toggleSymbol(item.display_ticker)}
                             aria-pressed={checked}
                           >
@@ -628,14 +671,14 @@ function BuildWorkspace({ catalog, loadingCatalog, onCreated }) {
           <div className="settings-panel">
             <div className="panel-title"><Settings2 size={18} /><h3>Backtest Settings</h3></div>
             <div className="two-fields">
-              <Field label="Start Date"><input type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} /></Field>
-              <Field label="End Date"><input type="date" value={endDate} onChange={(event) => setEndDate(event.target.value)} /></Field>
+              <Field label="Start Date"><input type="date" disabled={contractFrozen} value={startDate} onChange={(event) => setStartDate(event.target.value)} /></Field>
+              <Field label="End Date"><input type="date" disabled={contractFrozen} value={endDate} onChange={(event) => setEndDate(event.target.value)} /></Field>
             </div>
-            <Field label="Initial Cash"><div className="input-prefix"><span>$</span><input type="number" min="1000" step="10000" value={initialCash} onChange={(event) => setInitialCash(event.target.value)} /></div></Field>
-            <Field label="Benchmark"><select value={benchmark} onChange={(event) => setBenchmark(event.target.value)}>{(catalog?.benchmarks || ["SPY"]).map((item) => <option key={item}>{item}</option>)}</select></Field>
+            <Field label="Initial Cash"><div className="input-prefix"><span>$</span><input type="number" disabled={contractFrozen} min="1000" step="10000" value={initialCash} onChange={(event) => setInitialCash(event.target.value)} /></div></Field>
+            <Field label="Benchmark"><select disabled={contractFrozen} value={benchmark} onChange={(event) => setBenchmark(event.target.value)}>{(catalog?.benchmarks || ["SPY"]).map((item) => <option key={item}>{item}</option>)}</select></Field>
             <div className="two-fields">
-              <Field label="Transaction Cost" hint="Basis Points"><input type="number" min="0" step="1" value={transactionCost} onChange={(event) => setTransactionCost(event.target.value)} /></Field>
-              <Field label="Slippage" hint="Basis Points"><input type="number" min="0" step="1" value={slippage} onChange={(event) => setSlippage(event.target.value)} /></Field>
+              <Field label="Transaction Cost" hint="Basis Points"><input type="number" disabled={contractFrozen} min="0" step="1" value={transactionCost} onChange={(event) => setTransactionCost(event.target.value)} /></Field>
+              <Field label="Slippage" hint="Basis Points"><input type="number" disabled={contractFrozen} min="0" step="1" value={slippage} onChange={(event) => setSlippage(event.target.value)} /></Field>
             </div>
           </div>
         </div>
@@ -649,6 +692,38 @@ function BuildWorkspace({ catalog, loadingCatalog, onCreated }) {
             <p>Use a guided setup or submit one complete QuantConnect Python strategy.</p>
           </div>
         </div>
+
+        {recommendations.length ? (
+          <div className="human-form-recommendations">
+            <div className="human-form-recommendation-heading">
+              <div><Lightbulb size={19} /><strong>Recommended settings from the previous round</strong></div>
+              <span>{recommendations.length} suggestion{recommendations.length === 1 ? "" : "s"}</span>
+            </div>
+            <p>The guided values below have been pre-filled. Review the reason for each change before starting this round.</p>
+            <div className="human-form-recommendation-grid">
+              {recommendations.map((item) => {
+                const guided = String(item.parameter_path || "").startsWith("guided.");
+                return (
+                  <article key={item.parameter_path}>
+                    <div>
+                      <strong>{item.label}</strong>
+                      <small>{item.target_metric || "Strategy quality"}</small>
+                    </div>
+                    <div className="recommended-value">
+                      <code>{String(item.current_value)}</code>
+                      <ArrowRight size={14} />
+                      <b>{String(item.recommended_value)}</b>
+                    </div>
+                    <p>{item.reason}</p>
+                    <span className={guided ? "recommendation-applied" : "recommendation-manual"}>
+                      {guided ? "Pre-filled" : "Manual code change"}
+                    </span>
+                  </article>
+                );
+              })}
+            </div>
+          </div>
+        ) : null}
 
         <div className="mode-tabs" role="tablist" aria-label="Human Strategy Input">
           <button className={humanMode === "guided" ? "active" : ""} onClick={() => setHumanMode("guided")}>
@@ -823,6 +898,44 @@ function EmptyRun({ onBuild }) {
 function stageState(done, active) {
   if (done) return "completed";
   return active ? "running" : "waiting";
+}
+
+function BattleRoundSwitcher({ battle, runId, onSwitch }) {
+  if (!battle?.rounds?.length) return null;
+  return (
+    <nav className="battle-round-switcher" aria-label="Battle rounds">
+      <div>
+        <span>Battle rounds</span>
+        <strong>{battle.name}</strong>
+      </div>
+      <div className="battle-round-buttons">
+        {[1, 2, 3, 4, 5].map((number) => {
+          const round = battle.rounds.find((item) => item.round_number === number);
+          const active = round?.forge_run_id === runId;
+          return (
+            <button
+              type="button"
+              key={number}
+              disabled={!round}
+              className={`${active ? "active" : ""} ${round?.winner ? `winner-${round.winner}` : ""}`}
+              onClick={() => round && onSwitch(round.forge_run_id)}
+              aria-current={active ? "page" : undefined}
+            >
+              <strong>R{number}</strong>
+              <small>
+                {!round
+                  ? "Not played"
+                  : round.state === "completed"
+                    ? `${round.winner === "human" ? "You" : "AI"} won`
+                    : statusLabel(round.state)}
+              </small>
+            </button>
+          );
+        })}
+      </div>
+      <span className="battle-round-score">You {battle.human_wins} · {battle.ai_wins} AI</span>
+    </nav>
+  );
 }
 
 const PARAMETER_LABELS = {
@@ -1157,7 +1270,13 @@ function AIForgeWorkspace({ run, onBuild }) {
                 <p className="forge-thesis">
                   {spec.thesis || "The structured candidate design will appear after generation."}
                 </p>
-                {candidate.best_iteration != null ? (
+                {candidate.selection_origin === "prior_round_incumbent" ? (
+                  <div className="retained-attempt-note incumbent">
+                    This round did not beat the track champion. The strategy from
+                    Round {candidate.retained_from_round} remains active; this
+                    round&apos;s strongest challenger is Trial {candidate.current_round_best_iteration}.
+                  </div>
+                ) : candidate.best_iteration != null ? (
                   <div className="retained-attempt-note">
                     Iteration {candidate.best_iteration} produced the strongest
                     Sharpe-first result and is retained for this track.
@@ -1535,18 +1654,24 @@ function RiskReturnTeachingChart({ analysis }) {
 function IterationLearningPath({ run, analysis }) {
   const track = analysis?.ai_champion?.track;
   const candidate = (run?.candidates || []).find((item) => item.track === track);
-  const iterations = candidate?.iterations || [];
+  const iterations = candidate?.champion_iterations?.length
+    ? candidate.champion_iterations
+    : candidate?.iterations || [];
+  const selectedIteration = candidate?.champion_best_iteration
+    || candidate?.best_iteration;
   if (!iterations.length) return null;
   return (
     <section className="iteration-learning-card">
       <div className="card-heading">
-        <div><span className="section-kicker">Three-Trial Evidence</span><h2>How the AI candidate evolved</h2></div>
-        <span>Selected trial: {candidate.best_iteration || "—"}</span>
+        <div><span className="section-kicker">Champion Lineage · {formatTrack(track)}</span><h2>How the best AI strategy evolved</h2></div>
+        <span>{candidate.selection_origin === "prior_round_incumbent"
+          ? `Showing the retained Round ${candidate.retained_from_round} champion`
+          : `Selected trial: ${selectedIteration || "—"}`}</span>
       </div>
       <div className="iteration-learning-track">
         {iterations.map((item, index) => (
-          <article className={item.iteration === candidate.best_iteration ? "selected" : ""} key={item.iteration}>
-            <div><span>Trial {item.iteration}</span>{item.iteration === candidate.best_iteration ? <strong>Selected</strong> : null}</div>
+          <article className={Number(item.iteration) === Number(selectedIteration) ? "selected" : ""} key={item.iteration}>
+            <div><span>Trial {item.iteration}</span>{Number(item.iteration) === Number(selectedIteration) ? <strong>Champion selected</strong> : null}</div>
             <dl>
               <div><dt>CAGR</dt><dd>{formatMetric(item.summary?.cagr, "percent")}</dd></div>
               <div><dt>Sharpe</dt><dd>{formatMetric(item.summary?.sharpe_ratio, "number")}</dd></div>
@@ -1621,6 +1746,14 @@ function LearningReview({ analysis }) {
           <div><span>Your next round</span><h3>Specific improvement ideas</h3></div>
           {feedback.strengths?.length ? <div className="strength-list"><strong>Worth preserving</strong>{feedback.strengths.map((item) => <p key={item}>✓ {item}</p>)}</div> : null}
           <ol>{(feedback.improvements || []).map((item) => <li key={item}>{item}</li>)}</ol>
+          {feedback.parameter_recommendations?.length ? (
+            <div className="learning-parameter-recommendations">
+              <strong>Suggested values</strong>
+              {feedback.parameter_recommendations.map((item) => (
+                <p key={item.parameter_path}><span>{item.label}</span><code>{String(item.current_value)}</code><ArrowRight size={13} /><b>{String(item.recommended_value)}</b></p>
+              ))}
+            </div>
+          ) : null}
         </article>
         <article className="knowledge-card">
           <BookOpen size={21} />
@@ -1852,7 +1985,7 @@ function ResultsTable({ rows }) {
             {rows.map((row) => (
               <tr key={row.id}>
                 <td><strong>{row.strategy}</strong></td>
-                <td><span className={`category-tag category-${row.category.split(" ")[0].toLowerCase()}`}>{row.category}</span></td>
+                <td><span className={`category-tag category-${row.category.split(" ")[0].toLowerCase()}`}>{row.categoryLabel || row.category}</span></td>
                 <td><StatusChip state={row.state} /></td>
                 <td>{row.scorecard?.eligible ? <strong>{formatNumber(row.scorecard.score)}</strong> : "—"}</td>
                 <td>{row.revisions === null ? "—" : row.revisions}</td>
@@ -1953,9 +2086,19 @@ function IterationHistory({ candidate, showCodeChanges = false }) {
   }
   return (
     <div className="review-history">
+      {candidate.selection_origin === "prior_round_incumbent" ? (
+        <div className="incumbent-retention-banner">
+          <ShieldCheck size={17} />
+          <span>
+            Round {candidate.retained_from_round} remains this track&apos;s champion.
+            The trials below are this round&apos;s challengers and were not selected.
+          </span>
+        </div>
+      ) : null}
       {iterations.map((entry, index) => {
         const critique = entry.critique || {};
-        const isBest = Number(candidate.best_iteration) === Number(entry.iteration);
+        const isBest = candidate.selection_origin !== "prior_round_incumbent"
+          && Number(candidate.best_iteration) === Number(entry.iteration);
         return (
           <details key={entry.worker_run_id || entry.iteration} open={isBest || index === iterations.length - 1}>
             <summary>
@@ -2050,7 +2193,12 @@ function DetailedGeneratedReviews({ candidates }) {
           <div className="candidate-review" key={candidate.track}>
             <div className="candidate-title">
               <div className="strategy-avatar"><ShieldCheck size={19} /></div>
-              <div><strong>{formatTrack(candidate.track)} Strategy</strong><span>{candidate.iteration_count || 0} Trials · best {candidate.best_iteration || "pending"}</span></div>
+              <div>
+                <strong>{formatTrack(candidate.track)} Strategy</strong>
+                <span>{candidate.iteration_count || 0} Trials · {candidate.selection_origin === "prior_round_incumbent"
+                  ? `Round ${candidate.retained_from_round} champion`
+                  : `best ${candidate.best_iteration || "pending"}`}</span>
+              </div>
               <StatusChip state={candidate.state} />
             </div>
             {candidate.error && ["failed", "rejected"].includes(candidate.state) ? <div className="inline-error">{candidate.error}</div> : null}
@@ -2072,16 +2220,23 @@ function GeneratedReviews({ candidates }) {
       </div>
       <div className="generated-review-summary-grid">
         {candidates.map((candidate) => {
-          const retained = (candidate.iterations || []).find(
-            (item) => Number(item.iteration) === Number(candidate.best_iteration),
+          const currentBest = (candidate.iterations || []).find(
+            (item) => Number(item.iteration) === Number(candidate.current_round_best_iteration || candidate.best_iteration),
           ) || (candidate.iterations || []).at(-1);
-          const summary = retained?.summary || candidate.summary || {};
-          const diagnosis = retained?.critique?.diagnosis;
+          const summary = candidate.summary || currentBest?.summary || {};
+          const diagnosis = currentBest?.critique?.diagnosis;
           return (
             <article className="generated-review-summary" key={candidate.track}>
               <div className="candidate-title">
                 <div className="strategy-avatar"><ShieldCheck size={19} /></div>
-                <div><strong>{formatTrack(candidate.track)} Strategy</strong><span>{candidate.iteration_count || 0} trials · retained {candidate.best_iteration || "pending"}</span></div>
+                <div>
+                  <strong>{formatTrack(candidate.track)} Strategy</strong>
+                  <span>
+                    {candidate.iteration_count || 0} trials · {candidate.selection_origin === "prior_round_incumbent"
+                      ? `Round ${candidate.retained_from_round} champion retained`
+                      : `Trial ${candidate.best_iteration || "pending"} retained`}
+                  </span>
+                </div>
                 <StatusChip state={candidate.state} />
               </div>
               <div className="generated-review-metrics">
@@ -2303,9 +2458,289 @@ function CodeWorkspace({ run, onBuild }) {
   );
 }
 
+function AuthWorkspace({ onAuthenticated }) {
+  const [mode, setMode] = useState("login");
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const submit = async (event) => {
+    event.preventDefault();
+    setBusy(true);
+    setError("");
+    try {
+      const result = await apiRequest(`/auth/${mode}`, {
+        method: "POST",
+        body: JSON.stringify({ username, password }),
+      });
+      window.localStorage.setItem("alphaforge_token", result.token);
+      onAuthenticated(result.user);
+    } catch (requestError) {
+      setError(requestError.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <main className="auth-page">
+      <section className="auth-card">
+        <BrandMark />
+        <p className="eyebrow">AlphaForge Arena</p>
+        <h1>Build, learn, and win a best-of-five strategy battle.</h1>
+        <p>Your account keeps every round, score, strategy revision, and learning review together.</p>
+        <div className="auth-tabs">
+          <button className={mode === "login" ? "active" : ""} onClick={() => setMode("login")}>Sign in</button>
+          <button className={mode === "register" ? "active" : ""} onClick={() => setMode("register")}>Create account</button>
+        </div>
+        <form onSubmit={submit}>
+          <Field label="Username">
+            <input value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="username" />
+          </Field>
+          <Field label="Password" hint="At least 8 characters">
+            <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete={mode === "login" ? "current-password" : "new-password"} />
+          </Field>
+          {error ? <div className="error-banner">{error}</div> : null}
+          <button className="primary-button" disabled={busy || username.trim().length < 3 || password.length < 8}>
+            {busy ? <RefreshCw className="spin" size={17} /> : <ArrowRight size={17} />}
+            {mode === "login" ? "Enter Battle Lobby" : "Create Account"}
+          </button>
+        </form>
+      </section>
+    </main>
+  );
+}
+
+function BattleLobby({
+  battles,
+  activeBattle,
+  loading,
+  error,
+  onCreate,
+  onOpen,
+  onStartRound,
+  onOpenRound,
+  onDelete,
+}) {
+  const [name, setName] = useState("My Alpha Battle");
+  const [creating, setCreating] = useState(false);
+
+  const create = async (event) => {
+    event.preventDefault();
+    setCreating(true);
+    try {
+      await onCreate(name);
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  return (
+    <>
+      <PageHeader
+        eyebrow="Battle Lobby"
+        title="Your strategy match history"
+        description="Each match is first to three wins, with at most five rounds. Every round uses the same transparent scoring policy."
+      />
+      <section className="battle-lobby-grid">
+        <div className="battle-list-panel">
+          <div className="panel-title"><History size={19} /><h2>Saved Battles</h2></div>
+          {loading ? <div className="loading-block"><RefreshCw className="spin" size={18} /> Loading battles</div> : null}
+          {error ? <div className="error-banner">{error}</div> : null}
+          {!loading && !battles.length ? <div className="empty-panel">No battles yet. Create your first match.</div> : null}
+          {battles.map((battle) => (
+            <div key={battle.id} className={`battle-list-item ${activeBattle?.id === battle.id ? "active" : ""}`}>
+              <button className="battle-open-button" onClick={() => onOpen(battle.id)}>
+                <span><strong>{battle.name}</strong><small>{battle.round_count}/5 rounds · {statusLabel(battle.state)}</small></span>
+                <b>{battle.human_wins} <em>—</em> {battle.ai_wins}</b>
+              </button>
+              <button className="battle-delete-button" aria-label={`Delete ${battle.name}`} onClick={() => onDelete(battle)}><XCircle size={18} /></button>
+            </div>
+          ))}
+          <form className="new-battle-form" onSubmit={create}>
+            <Field label="New battle name">
+              <input value={name} maxLength={80} onChange={(event) => setName(event.target.value)} />
+            </Field>
+            <button className="primary-button" disabled={creating || !name.trim()}>
+              {creating ? <RefreshCw className="spin" size={17} /> : <Play size={17} />}
+              Start New Battle
+            </button>
+          </form>
+        </div>
+
+        <div className="battle-detail-panel">
+          {!activeBattle ? (
+            <div className="empty-panel"><Trophy size={28} /> Select a battle to see its rounds.</div>
+          ) : (
+            <>
+              <div className="battle-scoreboard">
+                <div><small>You</small><strong>{activeBattle.human_wins}</strong></div>
+                <span>BEST OF FIVE<small>First to 3 wins</small></span>
+                <div><small>AI Forge</small><strong>{activeBattle.ai_wins}</strong></div>
+              </div>
+              <div className="round-timeline">
+                {[1, 2, 3, 4, 5].map((number) => {
+                  const round = activeBattle.rounds?.find((item) => item.round_number === number);
+                  return (
+                    <button key={number} disabled={!round} className={round ? `round-node winner-${round.winner || "pending"}` : "round-node empty"} onClick={() => round && onOpenRound(round.forge_run_id)}>
+                      <span>R{number}</span>
+                      <small>{round ? (round.state === "completed" ? `${round.winner === "human" ? "You" : "AI"} won` : statusLabel(round.state)) : "Not played"}</small>
+                    </button>
+                  );
+                })}
+              </div>
+              {activeBattle.rounds?.length ? (() => {
+                const latest = activeBattle.rounds[activeBattle.rounds.length - 1];
+                const memory = latest.coach_memory;
+                const recommendations = latest.education?.human_feedback?.parameter_recommendations || [];
+                return (
+                  <>
+                    {recommendations.length ? (
+                      <div className="human-recommendation-card">
+                        <div className="panel-title"><Settings2 size={19} /><h3>Recommended Human settings for Round {latest.round_number + 1}</h3></div>
+                        <p>These values respond to your last result. Apply them together or use them as a one-change experiment.</p>
+                        <div className="recommendation-list">
+                          {recommendations.map((item) => (
+                            <article key={item.parameter_path}>
+                              <span>{item.label}<small>{item.target_metric}</small></span>
+                              <div><code>{String(item.current_value)}</code><ArrowRight size={15} /><strong>{String(item.recommended_value)}</strong></div>
+                              <p>{item.reason}</p>
+                            </article>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
+                    <div className="coach-memory-card">
+                      <div className="panel-title"><Lightbulb size={19} /><h3>AI Coach learned after Round {latest.round_number}</h3></div>
+                      {memory ? (
+                        <>
+                          <p>{memory.round_summary}</p>
+                          <div className="coach-track-lessons">
+                            {(memory.track_lessons || []).map((lesson) => (
+                              <article key={lesson.track}>
+                                <div className="coach-lesson-heading">
+                                  <strong>{formatTrack(lesson.track)}</strong>
+                                  {lesson.next_move ? <span className={`coach-move coach-move-${lesson.next_move}`}>{readableEnum(lesson.next_move)}</span> : null}
+                                </div>
+                                <p>{lesson.evidence_summary}</p>
+                                {lesson.decision_reason ? <p className="coach-decision-reason">{lesson.decision_reason}</p> : null}
+                                <div className="coach-change-scope">
+                                  {lesson.change_scope ? <span>Change: <b>{readableEnum(lesson.change_scope)}</b></span> : null}
+                                  {lesson.parameter_change_budget ? <span>Budget: <b>{lesson.parameter_change_budget} parameters</b></span> : null}
+                                </div>
+                                <ul>
+                                  {(lesson.next_hypotheses || []).map((hypothesis, index) => <li key={index}>{hypothesis}</li>)}
+                                </ul>
+                              </article>
+                            ))}
+                          </div>
+                          <p className="overfit-note">{memory.overfitting_guard}</p>
+                        </>
+                      ) : <p>{latest.coach_state === "pending" ? "The Coach is converting this round's AI evidence into next-round guidance…" : "Coaching becomes available after a completed round."}</p>}
+                    </div>
+                  </>
+                );
+              })() : (
+                <div className="round-rules"><strong>How a round works</strong><p>You choose or edit a strategy. Four public baselines and three AI tracks run under the same contract. The eligible Human and best AI scorecards decide the round.</p></div>
+              )}
+              {activeBattle.state === "completed" ? (
+                <div className="battle-finished"><Trophy size={24} /><strong>{activeBattle.winner === "human" ? "You won the match!" : "AI Forge won this match."}</strong></div>
+              ) : (
+                <button className="primary-button battle-next-button" disabled={!activeBattle.can_start_round} onClick={() => onStartRound(activeBattle.rounds?.[activeBattle.rounds.length - 1]?.education?.human_feedback?.parameter_recommendations || [])}>
+                  <Play size={17} />
+                  {activeBattle.round_count
+                    ? `${activeBattle.rounds?.[activeBattle.rounds.length - 1]?.education?.human_feedback?.parameter_recommendations?.length ? "Apply Suggestions & " : ""}Prepare Round ${activeBattle.next_round}`
+                    : "Prepare Round 1"}
+                </button>
+              )}
+            </>
+          )}
+        </div>
+      </section>
+    </>
+  );
+}
+
+function BattleArenaWorkspace({ battle, onLobby, onOpenRound }) {
+  if (!battle) {
+    return (
+      <>
+        <PageHeader eyebrow="PK Arena" title="Five-round match details" description="Open a saved battle to review its complete head-to-head record." />
+        <div className="empty-state"><div className="empty-icon"><Trophy size={28} /></div><h2>No battle selected</h2><p>Select a battle from the lobby first.</p><button className="primary-button" onClick={onLobby}><ArrowRight size={17} /> Open Battle Lobby</button></div>
+      </>
+    );
+  }
+  return (
+    <>
+      <PageHeader
+        eyebrow="PK Arena · Best of Five"
+        title={battle.name}
+        description={`You ${battle.human_wins} — ${battle.ai_wins} AI · ${battle.round_count} of 5 rounds completed`}
+        actions={<button className="secondary-button" onClick={onLobby}><History size={17} /> Battle History</button>}
+      />
+      <section className="arena-contract-card">
+        <div><ShieldCheck size={21} /><span><strong>Frozen battle contract</strong><small>Every round uses exactly the same universe and backtest assumptions.</small></span></div>
+        {battle.contract ? (
+          <dl>
+            <div><dt>Stocks</dt><dd>{battle.contract.symbols?.join(", ")}</dd></div>
+            <div><dt>Window</dt><dd>{battle.contract.start_date} → {battle.contract.end_date}</dd></div>
+            <div><dt>Cash / Benchmark</dt><dd>{formatMetric(battle.contract.initial_cash, "currency")} · {battle.contract.benchmark}</dd></div>
+            <div><dt>Costs</dt><dd>{battle.contract.transaction_cost_bps} bps fee · {battle.contract.slippage_bps} bps slippage</dd></div>
+          </dl>
+        ) : <p>The contract will freeze when Round 1 starts.</p>}
+      </section>
+      <section className="five-round-detail">
+        {[1, 2, 3, 4, 5].map((number) => {
+          const round = battle.rounds?.find((item) => item.round_number === number);
+          if (!round) {
+            return <article className="arena-round-card future" key={number}><div className="arena-round-heading"><span>Round {number}</span><small>Not played</small></div></article>;
+          }
+          const human = round.result?.human || {};
+          const champion = round.result?.battle_analysis?.ai_champion || {};
+          const recommendations = round.education?.human_feedback?.parameter_recommendations || [];
+          return (
+            <article className={`arena-round-card winner-${round.winner || "pending"}`} key={number}>
+              <div className="arena-round-heading">
+                <div><span>Round {number}</span><h2>{round.state === "completed" ? `${round.winner === "human" ? "You" : "AI"} won this round` : statusLabel(round.state)}</h2></div>
+                <div className="round-score"><strong>{formatNumber(round.human_score)}</strong><small>Human</small><em>vs</em><strong>{formatNumber(round.ai_score)}</strong><small>AI</small></div>
+                <button className="secondary-button" onClick={() => onOpenRound(round.forge_run_id)}>Open full results <ArrowRight size={15} /></button>
+              </div>
+              {round.state === "completed" ? (
+                <>
+                  <div className="round-comparison-table">
+                    <div className="table-head"><span>Contestant</span><span>CAGR</span><span>Sharpe</span><span>Drawdown</span><span>Score</span></div>
+                    <div><strong>Your strategy</strong><span>{formatMetric(human.summary?.cagr, "percent")}</span><span>{formatMetric(human.summary?.sharpe_ratio, "number")}</span><span>{formatMetric(human.summary?.maximum_drawdown, "percent")}</span><span>{formatNumber(round.human_score)}</span></div>
+                    <div><strong>AI · {formatTrack(round.ai_champion_track)}</strong><span>{formatMetric(champion.summary?.cagr, "percent")}</span><span>{formatMetric(champion.summary?.sharpe_ratio, "number")}</span><span>{formatMetric(champion.summary?.maximum_drawdown, "percent")}</span><span>{formatNumber(round.ai_score)}</span></div>
+                  </div>
+                  {recommendations.length ? (
+                    <div className="arena-round-recommendations">
+                      <strong>Recommended before the next round</strong>
+                      {recommendations.map((item) => <p key={item.parameter_path}><span>{item.label}</span><code>{String(item.current_value)}</code><ArrowRight size={14} /><b>{String(item.recommended_value)}</b><small>{item.reason}</small></p>)}
+                    </div>
+                  ) : null}
+                  {round.coach_memory?.round_summary ? <p className="arena-coach-summary"><Lightbulb size={17} /> <span><strong>AI Coach:</strong> {round.coach_memory.round_summary}</span></p> : null}
+                </>
+              ) : null}
+            </article>
+          );
+        })}
+      </section>
+    </>
+  );
+}
+
 export default function App() {
   const initialRunId = new URLSearchParams(window.location.search).get("run_id") || "";
-  const [view, setView] = useState(initialRunId ? "results" : "build");
+  const [view, setView] = useState(initialRunId ? "results" : "lobby");
+  const [user, setUser] = useState(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [battles, setBattles] = useState([]);
+  const [activeBattle, setActiveBattle] = useState(null);
+  const [battleLoading, setBattleLoading] = useState(false);
+  const [battleError, setBattleError] = useState("");
+  const [roundSeed, setRoundSeed] = useState(null);
+  const [roundRecommendations, setRoundRecommendations] = useState([]);
   const [catalog, setCatalog] = useState(null);
   const [catalogLoading, setCatalogLoading] = useState(true);
   const [serviceStatus, setServiceStatus] = useState("loading");
@@ -2316,6 +2751,33 @@ export default function App() {
   const [historyRounds, setHistoryRounds] = useState([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState("");
+
+  const loadBattles = useCallback(async () => {
+    setBattleLoading(true);
+    setBattleError("");
+    try {
+      setBattles(await apiRequest("/battles"));
+    } catch (error) {
+      setBattleError(error.message);
+    } finally {
+      setBattleLoading(false);
+    }
+  }, []);
+
+  const loadBattle = useCallback(async (battleId) => {
+    if (!battleId) return null;
+    try {
+      const detail = await apiRequest(`/battles/${encodeURIComponent(battleId)}`);
+      setActiveBattle(detail);
+      setRoundSeed(null);
+      setRoundRecommendations([]);
+      setBattles((current) => [detail, ...current.filter((item) => item.id !== detail.id)]);
+      return detail;
+    } catch (error) {
+      setBattleError(error.message);
+      return null;
+    }
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -2334,6 +2796,22 @@ export default function App() {
     return () => { active = false; };
   }, []);
 
+  useEffect(() => {
+    const token = window.localStorage.getItem("alphaforge_token");
+    if (!token) {
+      setAuthLoading(false);
+      return;
+    }
+    apiRequest("/auth/me")
+      .then(setUser)
+      .catch(() => window.localStorage.removeItem("alphaforge_token"))
+      .finally(() => setAuthLoading(false));
+  }, []);
+
+  useEffect(() => {
+    if (user) loadBattles();
+  }, [user, loadBattles]);
+
   const loadRun = useCallback(async (id, { quiet = false } = {}) => {
     if (!id) return;
     if (!quiet) setRunLoading(true);
@@ -2343,13 +2821,16 @@ export default function App() {
       setRun(result);
       setRunId(id);
       setRunQuery(id);
+      if (result.battle_id && TERMINAL_RUN_STATES.has(result.state)) {
+        loadBattle(result.battle_id);
+      }
     } catch (error) {
       setRunError(error.message);
       if (!quiet) setRun(null);
     } finally {
       if (!quiet) setRunLoading(false);
     }
-  }, []);
+  }, [loadBattle]);
 
   const loadHistory = useCallback(async () => {
     setHistoryLoading(true);
@@ -2370,10 +2851,12 @@ export default function App() {
   useEffect(() => {
     const robustnessActive = ["queued", "running"].includes(run?.robustness?.state);
     const educationActive = run?.battle_analysis?.education_summary?.llm_state === "pending";
-    if (!runId || (run && TERMINAL_RUN_STATES.has(run.state) && !robustnessActive && !educationActive)) return undefined;
+    const latestRound = activeBattle?.rounds?.[activeBattle.rounds.length - 1];
+    const coachActive = latestRound?.forge_run_id === runId && latestRound?.coach_state === "pending";
+    if (!runId || (run && TERMINAL_RUN_STATES.has(run.state) && !robustnessActive && !educationActive && !coachActive)) return undefined;
     const timer = window.setInterval(() => loadRun(runId, { quiet: true }), 3000);
     return () => window.clearInterval(timer);
-  }, [runId, run, loadRun]);
+  }, [runId, run, activeBattle, loadRun]);
 
   useEffect(() => {
     if (view === "arena") loadHistory();
@@ -2385,10 +2868,78 @@ export default function App() {
   };
 
   const handleCreated = (created) => {
+    setRoundSeed(null);
+    setRoundRecommendations([]);
     setRun(created);
     setRunId(created.run_id);
     setRunQuery(created.run_id);
     setView("results");
+  };
+
+  const createBattle = async (name) => {
+    const battle = await apiRequest("/battles", {
+      method: "POST",
+      body: JSON.stringify({ name }),
+    });
+    setActiveBattle(battle);
+    setRoundSeed(null);
+    setRoundRecommendations([]);
+    setBattles((current) => [battle, ...current]);
+    setView("build");
+  };
+
+  const startNextRound = (recommendations = []) => {
+    const latest = activeBattle?.rounds?.[activeBattle.rounds.length - 1];
+    const strategy = latest?.human_strategy
+      ? JSON.parse(JSON.stringify(latest.human_strategy))
+      : null;
+    if (strategy?.mode === "guided") {
+      for (const recommendation of recommendations) {
+        const [scope, field] = String(recommendation.parameter_path || "").split(".");
+        if (scope === "guided" && field && strategy.guided) {
+          strategy.guided[field] = recommendation.recommended_value;
+        }
+      }
+    }
+    setRoundSeed(strategy);
+    setRoundRecommendations(recommendations);
+    setRun(null);
+    setRunId("");
+    setRunQuery("");
+    setView("build");
+  };
+
+  const deleteBattle = async (battle) => {
+    if (!window.confirm(`Delete "${battle.name}" and all of its rounds? This cannot be undone.`)) return;
+    try {
+      await apiRequest(`/battles/${encodeURIComponent(battle.id)}`, { method: "DELETE" });
+      setBattles((current) => current.filter((item) => item.id !== battle.id));
+      if (activeBattle?.id === battle.id) {
+        setActiveBattle(null);
+        setRun(null);
+        setRunId("");
+        setRunQuery("");
+        setRoundRecommendations([]);
+      }
+    } catch (error) {
+      setBattleError(error.message);
+    }
+  };
+
+  const logout = async () => {
+    try {
+      await apiRequest("/auth/logout", { method: "POST" });
+    } catch {
+      // Local logout remains valid when the backend is temporarily unavailable.
+    }
+    window.localStorage.removeItem("alphaforge_token");
+    setUser(null);
+    setBattles([]);
+    setActiveBattle(null);
+    setRun(null);
+    setRunId("");
+    setRunQuery("");
+    setRoundRecommendations([]);
   };
 
   const startRobustness = useCallback(async (target) => {
@@ -2401,16 +2952,39 @@ export default function App() {
     return result;
   }, [runId]);
 
+  if (authLoading) {
+    return <div className="app-loading"><RefreshCw className="spin" size={24} /> Loading AlphaForge</div>;
+  }
+  if (!user) {
+    return <AuthWorkspace onAuthenticated={(authenticated) => { setUser(authenticated); setView("lobby"); }} />;
+  }
+
+  const previousHumanStrategy = roundSeed || (activeBattle?.rounds?.length
+    ? activeBattle.rounds[activeBattle.rounds.length - 1].human_strategy
+    : null);
+
   return (
     <div className="app-shell">
-      <Sidebar view={view} onView={setView} runId={runId} onOpenRun={openRun} serviceStatus={serviceStatus} />
+      <Sidebar view={view} onView={setView} runId={runId} onOpenRun={openRun} serviceStatus={serviceStatus} user={user} onLogout={logout} />
       <main className="main-content">
-        {view === "build" ? <BuildWorkspace catalog={catalog} loadingCatalog={catalogLoading} onCreated={handleCreated} /> : null}
+        {!["lobby", "build", "arena"].includes(view) ? (
+          <BattleRoundSwitcher battle={activeBattle} runId={runId} onSwitch={loadRun} />
+        ) : null}
+        {view === "lobby" ? <BattleLobby battles={battles} activeBattle={activeBattle} loading={battleLoading} error={battleError} onCreate={createBattle} onOpen={loadBattle} onStartRound={startNextRound} onOpenRound={openRun} onDelete={deleteBattle} /> : null}
+        {view === "build" ? (
+          activeBattle?.state === "active"
+          && activeBattle?.can_start_round
+          && !(run?.battle_id === activeBattle.id && !TERMINAL_RUN_STATES.has(run.state)) ? (
+            <BuildWorkspace key={`${activeBattle.id}-${activeBattle.next_round}`} catalog={catalog} loadingCatalog={catalogLoading} onCreated={handleCreated} battle={activeBattle} initialHumanStrategy={previousHumanStrategy} recommendations={roundRecommendations} />
+          ) : (
+            <div className="empty-state"><div className="empty-icon"><Trophy size={28} /></div><h2>Open the Battle Lobby</h2><p>Create a battle, wait for the current round review, or choose an active match before preparing another round.</p><button className="primary-button" onClick={() => setView("lobby")}><ArrowRight size={17} /> Open Battle Lobby</button></div>
+          )
+        ) : null}
         {view === "results" ? <ResultsWorkspace run={run} loading={runLoading} error={runError} onRefresh={() => loadRun(runId)} onBuild={() => setView("build")} onLearning={() => setView("learning")} /> : null}
         {view === "forge" ? <AIForgeWorkspace run={run} onBuild={() => setView("build")} /> : null}
         {view === "robustness" ? <RobustnessWorkspace run={run} loading={runLoading} error={runError} onBuild={() => setView("build")} onStart={startRobustness} /> : null}
         {view === "learning" ? <LearningWorkspace run={run} loading={runLoading} error={runError} onResults={() => setView("results")} onBuild={() => setView("build")} /> : null}
-        {view === "arena" ? <ArenaWorkspace history={historyRounds} loading={historyLoading} error={historyError} onRefresh={loadHistory} /> : null}
+        {view === "arena" ? <BattleArenaWorkspace battle={activeBattle} onLobby={() => setView("lobby")} onOpenRound={openRun} /> : null}
         {view === "code" ? <CodeWorkspace run={run} onBuild={() => setView("build")} /> : null}
       </main>
     </div>

@@ -102,6 +102,60 @@ def test_score_v2_prioritizes_sharpe_and_cagr_over_secondary_components():
     assert analysis["judge"]["weights"]["cagr"] == 0.30
 
 
+def test_learning_review_recommends_bounded_values_from_human_settings():
+    human = _entry(
+        state="completed",
+        cagr=0.18,
+        sharpe=0.70,
+        drawdown=0.34,
+        volatility=0.31,
+        turnover=3.0,
+    )
+    human.update(
+        {
+            "mode": "guided",
+            "guided": {
+                "holdings": 3,
+                "weighting": "equal",
+                "gross_exposure": 0.90,
+                "max_position_weight": 0.45,
+                "rebalance_threshold": 0.02,
+            },
+        }
+    )
+    ai = _entry(
+        state="accepted",
+        cagr=0.22,
+        sharpe=1.10,
+        drawdown=0.22,
+        volatility=0.23,
+        turnover=1.0,
+    )
+    ai.update({"track": "Traditional", "design": {"thesis": "test"}})
+
+    analysis = build_battle_analysis(
+        {
+            "battle_id": "battle-test",
+            "settings": {"initial_cash": 100_000},
+            "baselines": [],
+            "human": human,
+            "candidates": [ai],
+        }
+    )
+    recommendations = {
+        item["parameter_path"]: item
+        for item in analysis["education_summary"]["human_feedback"][
+            "parameter_recommendations"
+        ]
+    }
+
+    assert recommendations["guided.weighting"]["recommended_value"] == (
+        "inverse_volatility"
+    )
+    assert recommendations["guided.max_position_weight"]["recommended_value"] == 0.40
+    assert recommendations["guided.rebalance_threshold"]["recommended_value"] == 0.03
+
+
 def test_robustness_v2_requires_every_scenario_and_controls_worst_case():
     primary = {
         "cagr": 0.20,

@@ -943,14 +943,24 @@ def build_battle_analysis(run: dict[str, Any]) -> dict[str, Any]:
         }
     else:
         gap = round(human_card["score"] - ai_champion["score"], 2)
-        if abs(gap) <= 2.0:
+        if abs(gap) <= 2.0 and not run.get("battle_id"):
             verdict = {
                 "side": "draw",
                 "label": "Draw",
                 "reason": "Composite scores are within the public two-point draw band.",
                 "score_gap": gap,
             }
-        elif gap > 0:
+        elif gap > 0 or (
+            math.isclose(gap, 0.0)
+            and (
+                _number(human_card["summary"].get("sharpe_ratio"), 0.0)
+                or 0.0
+            )
+            >= (
+                _number(ai_champion["summary"].get("sharpe_ratio"), 0.0)
+                or 0.0
+            )
+        ):
             verdict = {
                 "side": "human",
                 "label": "Human Wins",
@@ -1000,6 +1010,7 @@ def build_battle_analysis(run: dict[str, Any]) -> dict[str, Any]:
 
     strengths: list[str] = []
     improvements: list[str] = []
+    guided = (run.get("human") or {}).get("guided") or {}
     if human_card is None:
         improvements.extend(
             [
@@ -1021,38 +1032,241 @@ def build_battle_analysis(run: dict[str, Any]) -> dict[str, Any]:
         )
         if human_sharpe >= ai_sharpe:
             strengths.append(
-                "Risk-adjusted return is at least as strong as the AI champion."
+                f"Human Sharpe is {human_sharpe:.3f} versus AI {ai_sharpe:.3f}; "
+                "preserve the current signal/risk balance."
             )
         else:
-            improvements.append(
-                "Improve signal quality or volatility targeting; Human Sharpe trails the AI champion."
-            )
+            if guided:
+                current_weighting = guided.get("weighting", "equal")
+                improvements.append(
+                    f"Sharpe trails AI by {ai_sharpe - human_sharpe:.3f}. Change "
+                    f"Weighting from {current_weighting} to inverse_volatility, "
+                    "then check whether Sharpe rises without sacrificing CAGR."
+                )
+            else:
+                improvements.append(
+                    f"Sharpe trails AI by {ai_sharpe - human_sharpe:.3f}. "
+                    "Test volatility-scaled position weights as one isolated code change."
+                )
         if human_dd <= ai_dd:
             strengths.append(
                 "Drawdown control is at least as strong as the AI champion."
             )
         else:
-            improvements.append(
-                "Add a portfolio risk budget, defensive regime rule, or smaller position cap to reduce drawdown."
-            )
+            if guided:
+                current_cap = float(guided.get("max_position_weight", 0.45))
+                proposed_cap = max(0.10, round(current_cap - 0.05, 2))
+                improvements.append(
+                    f"Drawdown is {human_dd:.2%} versus AI {ai_dd:.2%}. Lower "
+                    f"Max position weight from {current_cap:.0%} to "
+                    f"{proposed_cap:.0%}; keep the signal unchanged to isolate sizing."
+                )
+            else:
+                improvements.append(
+                    f"Drawdown is {human_dd:.2%} versus AI {ai_dd:.2%}. "
+                    "Reduce the per-symbol cap by five percentage points and retest."
+                )
         if (
             human_turnover is not None
             and ai_turnover is not None
             and human_turnover > ai_turnover * 1.15
         ):
+            current_band = float(guided.get("rebalance_threshold", 0.02))
+            proposed_band = min(0.10, round(current_band + 0.01, 2))
             improvements.append(
-                "Reduce unnecessary turnover with a slower rebalance schedule or a no-trade band."
+                f"Annualized turnover is {human_turnover:.2f} versus AI "
+                f"{ai_turnover:.2f}. Raise the rebalance threshold from "
+                f"{current_band:.0%} to {proposed_band:.0%} before changing the signal."
             )
     else:
         strengths.append("The Human strategy is the only eligible contestant.")
     if len(improvements) < 2:
         improvements.append(
-            "Stress-test the lookback and holding count instead of optimizing one point estimate."
+            "Keep the best parameters fixed and run the delayed-start robustness scenario; "
+            "do not call an in-sample score increase a durable improvement."
         )
     if len(improvements) < 3:
         improvements.append(
-            "Reserve a later time window for a blind check before treating the next revision as an improvement."
+            "Change only one or two controls next round, record the hypothesis first, "
+            "and compare CAGR, Sharpe, drawdown, and turnover together."
         )
+
+    concept = {
+        "title": "One-change experiments reduce false lessons",
+        "lesson": (
+            "When signal, sizing, and trading frequency all change together, a better "
+            "score cannot identify which mechanism helped. Hold the other controls fixed "
+            "and change one decision at a time."
+        ),
+        "question": (
+            "Which single control will you change next round, and which metric should "
+            "improve if your hypothesis is correct?"
+        ),
+    }
+    if human_card is not None and ai_champion is not None:
+        human_dd = _number(human_card["summary"].get("maximum_drawdown"), 0.0) or 0.0
+        human_cagr = _number(human_card["summary"].get("cagr"), 0.0) or 0.0
+        if human_dd > 0.30 or human_dd > (
+            _number(ai_champion["summary"].get("maximum_drawdown"), 0.0) or 0.0
+        ):
+            concept = {
+                "title": "Position caps change the path, not the signal",
+                "lesson": (
+                    f"The Human result paired {human_cagr:.2%} CAGR with "
+                    f"{human_dd:.2%} drawdown. A smaller position cap can reduce "
+                    "concentration while leaving the stock ranking unchanged."
+                ),
+                "question": (
+                    "If the same stocks are selected at smaller weights, how much CAGR "
+                    "would you trade for a materially shallower drawdown?"
+                ),
+            }
+
+    parameter_recommendations: list[dict[str, Any]] = []
+    if human_card is not None:
+        human_sharpe = _number(
+            human_card["summary"].get("sharpe_ratio"),
+            0.0,
+        ) or 0.0
+        human_dd = _number(
+            human_card["summary"].get("maximum_drawdown"),
+            0.0,
+        ) or 0.0
+        human_turnover = _number(
+            human_card["analysis_statistics"].get("annualized_turnover")
+        )
+        ai_sharpe = (
+            _number(ai_champion["summary"].get("sharpe_ratio"), 0.0) or 0.0
+            if ai_champion
+            else None
+        )
+        ai_dd = (
+            _number(ai_champion["summary"].get("maximum_drawdown"), 0.0) or 0.0
+            if ai_champion
+            else None
+        )
+        ai_turnover = (
+            _number(
+                ai_champion["analysis_statistics"].get("annualized_turnover")
+            )
+            if ai_champion
+            else None
+        )
+        if guided:
+            current_weighting = str(guided.get("weighting", "equal"))
+            if (
+                ai_sharpe is not None
+                and human_sharpe < ai_sharpe
+                and current_weighting != "inverse_volatility"
+            ):
+                parameter_recommendations.append(
+                    {
+                        "parameter_path": "guided.weighting",
+                        "label": "Portfolio weighting",
+                        "current_value": current_weighting,
+                        "recommended_value": "inverse_volatility",
+                        "target_metric": "Sharpe ratio",
+                        "reason": (
+                            f"Human Sharpe {human_sharpe:.3f} trails AI "
+                            f"{ai_sharpe:.3f}; scale positions by estimated risk "
+                            "without changing the stock signal."
+                        ),
+                    }
+                )
+            if ai_dd is not None and human_dd > ai_dd:
+                current_cap = float(guided.get("max_position_weight", 0.45))
+                gross = float(guided.get("gross_exposure", 0.90))
+                holdings = int(guided.get("holdings", 3))
+                minimum_cap = gross / max(1, holdings)
+                proposed_cap = round(max(minimum_cap, current_cap - 0.05), 2)
+                if proposed_cap < current_cap:
+                    parameter_recommendations.append(
+                        {
+                            "parameter_path": "guided.max_position_weight",
+                            "label": "Maximum position weight",
+                            "current_value": current_cap,
+                            "recommended_value": proposed_cap,
+                            "target_metric": "Maximum drawdown",
+                            "reason": (
+                                f"Human drawdown {human_dd:.2%} exceeds AI "
+                                f"{ai_dd:.2%}; reduce concentration while keeping "
+                                "the signal and gross exposure fixed."
+                            ),
+                        }
+                    )
+                else:
+                    proposed_gross = round(max(0.50, gross - 0.05), 2)
+                    if proposed_gross < gross:
+                        parameter_recommendations.append(
+                            {
+                                "parameter_path": "guided.gross_exposure",
+                                "label": "Gross exposure",
+                                "current_value": gross,
+                                "recommended_value": proposed_gross,
+                                "target_metric": "Maximum drawdown",
+                                "reason": (
+                                    f"Human drawdown {human_dd:.2%} exceeds AI "
+                                    f"{ai_dd:.2%}; the position cap cannot fall "
+                                    "further without violating portfolio capacity."
+                                ),
+                            }
+                        )
+            if (
+                human_turnover is not None
+                and (
+                    human_turnover >= 2.0
+                    or (
+                        ai_turnover is not None
+                        and human_turnover > ai_turnover * 1.15
+                    )
+                )
+            ):
+                current_band = float(guided.get("rebalance_threshold", 0.02))
+                proposed_band = round(min(0.10, current_band + 0.01), 2)
+                if proposed_band > current_band:
+                    parameter_recommendations.append(
+                        {
+                            "parameter_path": "guided.rebalance_threshold",
+                            "label": "Rebalance threshold",
+                            "current_value": current_band,
+                            "recommended_value": proposed_band,
+                            "target_metric": "Turnover and fees",
+                            "reason": (
+                                f"Human annualized turnover is {human_turnover:.2f}; "
+                                "a wider no-trade band can suppress small orders."
+                            ),
+                        }
+                    )
+        else:
+            if ai_dd is not None and human_dd > ai_dd:
+                parameter_recommendations.append(
+                    {
+                        "parameter_path": "code.position_sizing",
+                        "label": "Position sizing in your code",
+                        "current_value": "current implementation",
+                        "recommended_value": "reduce each target weight by 5 percentage points",
+                        "target_metric": "Maximum drawdown",
+                        "reason": (
+                            f"Human drawdown {human_dd:.2%} exceeds AI "
+                            f"{ai_dd:.2%}. Keep signal logic unchanged."
+                        ),
+                    }
+                )
+            if ai_sharpe is not None and human_sharpe < ai_sharpe:
+                parameter_recommendations.append(
+                    {
+                        "parameter_path": "code.weighting",
+                        "label": "Risk scaling in your code",
+                        "current_value": "current implementation",
+                        "recommended_value": "divide raw weights by trailing volatility",
+                        "target_metric": "Sharpe ratio",
+                        "reason": (
+                            f"Human Sharpe {human_sharpe:.3f} trails AI "
+                            f"{ai_sharpe:.3f}; add one risk-scaling step and leave "
+                            "the alpha signal unchanged."
+                        ),
+                    }
+                )
 
     return {
         "schema_version": "1.0",
@@ -1067,7 +1281,7 @@ def build_battle_analysis(run: dict[str, Any]) -> dict[str, Any]:
                 "execution_evidence": 0.05,
                 "explainability": 0.05,
             },
-            "draw_band_points": 2.0,
+            "draw_band_points": 0.0 if run.get("battle_id") else 2.0,
             "scorecards": scorecards,
         },
         "ai_champion": copy.deepcopy(ai_champion),
@@ -1090,19 +1304,9 @@ def build_battle_analysis(run: dict[str, Any]) -> dict[str, Any]:
             "human_feedback": {
                 "strengths": strengths,
                 "improvements": improvements[:3],
+                "parameter_recommendations": parameter_recommendations[:3],
             },
-            "knowledge_card": {
-                "title": "Return is not the same as risk-adjusted return",
-                "lesson": (
-                    "CAGR measures growth, Sharpe relates excess return to volatility, "
-                    "and drawdown measures loss from a peak. A stronger strategy balances "
-                    "all three rather than maximizing one."
-                ),
-                "question": (
-                    "Would you still choose the highest-CAGR strategy if it required a "
-                    "materially larger drawdown and more trading?"
-                ),
-            },
+            "knowledge_card": concept,
             "risk_disclaimer": (
                 "Historical backtests are educational evidence, not a guarantee of future "
                 "returns. Repeated revisions on the same period increase overfitting risk."
@@ -1325,11 +1529,15 @@ class ForgeService:
         trace_root: Path | None = None,
         history_root: Path | None = None,
         educator: Any | None = None,
+        coach: Any | None = None,
+        game_repository: Any | None = None,
     ) -> None:
         self.worker = worker
         self.designer = designer
         self.critic = critic
         self.educator = educator
+        self.coach = coach
+        self.game_repository = game_repository
         self.allowed_symbols = {item.upper() for item in allowed_symbols}
         self.allowed_benchmarks = {item.upper() for item in allowed_benchmarks}
         self._runs: dict[str, dict[str, Any]] = {}
@@ -1350,6 +1558,11 @@ class ForgeService:
             if educator is not None
             else None
         )
+        self._coach_executor = (
+            ThreadPoolExecutor(max_workers=1, thread_name_prefix="round-coach")
+            if game_repository is not None
+            else None
+        )
 
     def _trace_path(self, run_id: str) -> Path:
         if self.trace_root is None:
@@ -1357,6 +1570,15 @@ class ForgeService:
         if not run_id.startswith("forge-") or not run_id[6:].isalnum():
             raise ValueError("invalid Forge run_id")
         return self.trace_root / f"{run_id}.json"
+
+    @staticmethod
+    def _public_run(run: dict[str, Any]) -> dict[str, Any]:
+        result = copy.deepcopy(run)
+        result.pop("_battle_memory", None)
+        result.pop("_battle_baselines", None)
+        result.pop("_ai_incumbents", None)
+        result.pop("user_id", None)
+        return result
 
     def _history_path(self, run_id: str) -> Path:
         if self.history_root is None:
@@ -1377,7 +1599,95 @@ class ForgeService:
             -metric("maximum_drawdown", float("inf")),
         )
 
+    @classmethod
+    def _battle_evidence(
+        cls,
+        completed_rounds: list[dict[str, Any]],
+    ) -> tuple[list[dict[str, Any]] | None, dict[str, dict[str, Any]]]:
+        """Extract reusable Round-1 baselines and each track's all-time champion."""
+
+        baselines = None
+        if completed_rounds and completed_rounds[0].get("round_number") == 1:
+            first_result = completed_rounds[0].get("result") or {}
+            first_baselines = first_result.get("baselines") or []
+            if (
+                len(first_baselines) == len(BASELINES)
+                and all(
+                    item.get("state") == "completed"
+                    and item.get("summary")
+                    and not item.get("restored_with_data_gaps")
+                    for item in first_baselines
+                )
+            ):
+                baselines = copy.deepcopy(first_baselines)
+                for item in baselines:
+                    item["reused_from_round"] = 1
+                    item["reused_from_run_id"] = completed_rounds[0].get(
+                        "forge_run_id"
+                    )
+
+        incumbents: dict[str, dict[str, Any]] = {}
+        for completed_round in completed_rounds:
+            for candidate in (completed_round.get("result") or {}).get(
+                "candidates",
+                [],
+            ):
+                track = candidate.get("track")
+                if (
+                    track not in DESIGNER_TRACKS
+                    or candidate.get("state") != "accepted"
+                    or not candidate.get("summary")
+                    or not candidate.get("strategy_spec")
+                    or not candidate.get("source_code")
+                ):
+                    continue
+                contender = copy.deepcopy(candidate)
+                contender["_battle_round_number"] = completed_round.get(
+                    "round_number"
+                )
+                contender["_forge_run_id"] = completed_round.get("forge_run_id")
+                current = incumbents.get(track)
+                if current is None or cls._entry_score(
+                    contender["summary"]
+                ) > cls._entry_score(current["summary"]):
+                    incumbents[track] = contender
+        return baselines, incumbents
+
+    @staticmethod
+    def _baseline_evidence(
+        baseline: dict[str, Any],
+    ) -> dict[str, Any]:
+        return {
+            "name": baseline.get("name"),
+            "family": baseline.get("family"),
+            "summary": copy.deepcopy(baseline.get("summary") or {}),
+            "performance_profile": copy.deepcopy(
+                (baseline.get("analysis") or {}).get("statistics") or {}
+            ),
+            "execution_profile": {
+                key: (baseline.get("behavior_evidence") or {}).get(key)
+                for key in (
+                    "filled_order_count",
+                    "max_gross_exposure",
+                    "staged_rebalance_completed_count",
+                    "staged_rebalance_replacement_count",
+                )
+            },
+            "public_lesson": copy.deepcopy(
+                BASELINE_LESSONS.get(baseline.get("name"), {})
+            ),
+        }
+
     def _history_record(self, run: dict[str, Any]) -> dict[str, Any]:
+        snapshot = self._public_run(run)
+        snapshot["schema_version"] = "3.0"
+        snapshot["persistence"] = {
+            "kind": "complete_forge_snapshot",
+            "saved_at": utc_now(),
+        }
+        return snapshot
+
+        # Legacy v2 summary builder retained below only as migration documentation.
         human = run["human"]
         candidates = run["candidates"]
         accepted = [
@@ -1491,27 +1801,9 @@ class ForgeService:
                 encoding="utf-8",
             )
             temporary.replace(path)
+            # Completed Forge runs are user history. Do not prune them by match size.
 
-            def created_at(history_path: Path) -> str:
-                try:
-                    return str(
-                        json.loads(history_path.read_text(encoding="utf-8")).get(
-                            "created_at",
-                            "",
-                        )
-                    )
-                except (OSError, json.JSONDecodeError):
-                    return ""
-
-            history_files = sorted(
-                self.history_root.glob("forge-*.json"),
-                key=created_at,
-                reverse=True,
-            )
-            for stale_path in history_files[MAX_MATCH_ROUNDS:]:
-                stale_path.unlink(missing_ok=True)
-
-    def list_history(self, limit: int = MAX_MATCH_ROUNDS) -> list[dict[str, Any]]:
+    def list_history(self, limit: int = 100) -> list[dict[str, Any]]:
         if self.history_root is None:
             return []
         records: list[dict[str, Any]] = []
@@ -1522,7 +1814,7 @@ class ForgeService:
                 except (OSError, json.JSONDecodeError):
                     continue
         records.sort(key=lambda item: item.get("created_at", ""), reverse=True)
-        return records[: max(0, min(limit, MAX_MATCH_ROUNDS))]
+        return records[: max(0, min(limit, 500))]
 
     def get_history(self, run_id: str) -> dict[str, Any] | None:
         if self.history_root is None:
@@ -1535,6 +1827,73 @@ class ForgeService:
             if not path.is_file():
                 return None
             return json.loads(path.read_text(encoding="utf-8"))
+
+    @staticmethod
+    def _restore_legacy_history(record: dict[str, Any]) -> dict[str, Any]:
+        restored = copy.deepcopy(record)
+        analysis = restored.get("battle_analysis") or {}
+        if "baselines" not in restored:
+            cards = (analysis.get("judge") or {}).get("scorecards") or []
+            restored["baselines"] = [
+                {
+                    "name": card.get("label"),
+                    "family": card.get("track") or "Reference",
+                    "state": (
+                        "completed" if card.get("eligible") else "failed"
+                    ),
+                    "worker_run_id": None,
+                    "summary": card.get("summary") or {},
+                    "analysis": {
+                        "statistics": card.get("analysis_statistics") or {}
+                    },
+                    "behavior_evidence": {},
+                    "error": None,
+                    "restored_with_data_gaps": True,
+                }
+                for card in cards
+                if card.get("owner") == "baseline"
+            ]
+        restored.setdefault("error", None)
+        restored.setdefault("robustness", None)
+        restored["restored"] = True
+        restored["restored_with_data_gaps"] = True
+        return restored
+
+    def _restore_run(self, run_id: str) -> dict[str, Any] | None:
+        record = self.get_history(run_id)
+        sqlite_record = (
+            self.game_repository.restore_run(run_id)
+            if self.game_repository is not None
+            else None
+        )
+        if record is not None and record.get("schema_version") == "3.0":
+            restored = copy.deepcopy(record)
+            restored["restored"] = True
+            if sqlite_record is not None:
+                restored["battle_id"] = sqlite_record.get("battle_id")
+                restored["round_number"] = sqlite_record.get("round_number")
+                restored["user_id"] = sqlite_record.get("user_id")
+                sqlite_candidates = {
+                    item.get("track"): item
+                    for item in sqlite_record.get("candidates") or []
+                }
+                for candidate in restored.get("candidates") or []:
+                    durable = sqlite_candidates.get(candidate.get("track")) or {}
+                    if not candidate.get("champion_iterations") and durable.get(
+                        "champion_iterations"
+                    ):
+                        candidate["champion_iterations"] = copy.deepcopy(
+                            durable["champion_iterations"]
+                        )
+                        candidate["champion_best_iteration"] = durable.get(
+                            "champion_best_iteration"
+                        )
+            return restored
+        if sqlite_record is not None:
+            return sqlite_record
+        if record is not None:
+            return self._restore_legacy_history(record)
+        return None
 
     def _persist_trace_locked(self, run_id: str) -> None:
         if self.trace_root is None:
@@ -1701,6 +2060,9 @@ class ForgeService:
         self,
         settings: RunSettings,
         human_strategy: HumanStrategyRequest,
+        *,
+        battle_id: str | None = None,
+        user_id: str | None = None,
     ) -> dict[str, Any]:
         unknown = sorted(set(settings.symbols).difference(self.allowed_symbols))
         if unknown:
@@ -1711,6 +2073,24 @@ class ForgeService:
             )
 
         run_id = f"forge-{uuid.uuid4().hex[:12]}"
+        battle_memory = None
+        battle_baselines = None
+        ai_incumbents: dict[str, dict[str, Any]] = {}
+        round_number = None
+        if battle_id is not None:
+            if self.game_repository is None or user_id is None:
+                raise ValueError("authenticated battle context is required")
+            round_number = self.game_repository.validate_round_start(
+                user_id,
+                battle_id,
+            )
+            battle_memory = self.game_repository.latest_coach_memory(battle_id)
+            completed_rounds = self.game_repository.completed_round_results(
+                battle_id
+            )
+            battle_baselines, ai_incumbents = self._battle_evidence(
+                completed_rounds
+            )
         human_source = (
             human_strategy.source_code.strip()
             if human_strategy.mode == "code"
@@ -1767,6 +2147,13 @@ class ForgeService:
                     "generation_retries": 0,
                     "iteration_count": 0,
                     "best_iteration": None,
+                    "current_round_best_iteration": None,
+                    "current_round_best_summary": {},
+                    "selection_origin": None,
+                    "retained_from_round": None,
+                    "retained_from_run_id": None,
+                    "champion_iterations": [],
+                    "champion_best_iteration": None,
                     "iterations": [],
                     "critique_history": [],
                     "failure_classification": None,
@@ -1778,17 +2165,37 @@ class ForgeService:
             "error": None,
             "battle_analysis": None,
             "robustness": None,
+            "battle_id": battle_id,
+            "round_number": round_number,
+            "user_id": user_id,
+            "_battle_memory": battle_memory,
+            "_battle_baselines": battle_baselines,
+            "_ai_incumbents": ai_incumbents,
         }
+        if battle_id is not None:
+            self.game_repository.attach_round(
+                user_id=user_id,
+                battle_id=battle_id,
+                forge_run_id=run_id,
+                settings=settings.model_dump(mode="json"),
+                human_strategy=human_strategy.model_dump(mode="json"),
+            )
         self._initialize_trace(run_id=run_id, settings=settings)
         with self._lock:
             self._runs[run_id] = run
         self._executor.submit(self._execute, run_id, settings, human_source)
-        return copy.deepcopy(run)
+        return self._public_run(run)
 
     def get(self, run_id: str) -> dict[str, Any] | None:
         with self._lock:
             run = self._runs.get(run_id)
-            result = copy.deepcopy(run) if run is not None else None
+        if run is None:
+            restored = self._restore_run(run_id)
+            if restored is not None:
+                with self._lock:
+                    existing = self._runs.setdefault(run_id, restored)
+                    run = existing
+        result = self._public_run(run) if run is not None else None
         if (
             result is not None
             and result.get("state") in {"completed", "failed"}
@@ -2255,6 +2662,8 @@ class ForgeService:
         parameters: dict[str, str],
         baseline_results: list[dict[str, Any]],
         initial_proposal: dict[str, Any],
+        battle_memory: dict[str, Any] | None = None,
+        incumbent: dict[str, Any] | None = None,
     ) -> None:
         """Run up to three parameter trials and retain the best completed result."""
 
@@ -2541,6 +2950,8 @@ class ForgeService:
                         )
                         for item in iterations
                     ],
+                    battle_memory=battle_memory,
+                    incumbent=incumbent,
                 )
                 self._record_agent_call(
                     run_id=run_id,
@@ -2576,13 +2987,25 @@ class ForgeService:
             )
             return
 
-        best = max(iterations, key=lambda item: tuple(item["selection_key"]))
+        current_best = max(
+            iterations,
+            key=lambda item: tuple(item["selection_key"]),
+        )
+        retained_incumbent = bool(
+            incumbent
+            and incumbent.get("summary")
+            and incumbent.get("source_code")
+            and incumbent.get("strategy_spec")
+            and self._entry_score(incumbent["summary"])
+            >= self._entry_score(current_best["summary"])
+        )
+        best = incumbent if retained_incumbent else current_best
         self._change_item(
             run_id,
             "candidates",
             index,
             state="accepted",
-            worker_run_id=best["worker_run_id"],
+            worker_run_id=best.get("worker_run_id"),
             source_code=best["source_code"],
             design=best["design"],
             strategy_spec=best["strategy_spec"],
@@ -2593,7 +3016,11 @@ class ForgeService:
             usage=usage,
             generation_retries=generation_retries,
             iteration_count=len(iterations),
-            best_iteration=best["iteration"],
+            best_iteration=(
+                best.get("best_iteration")
+                if retained_incumbent
+                else current_best["iteration"]
+            ),
             iterations=copy.deepcopy(iterations),
             critique_history=copy.deepcopy(critiques),
             attempted_iteration_count=attempted_iteration_count,
@@ -2601,6 +3028,40 @@ class ForgeService:
             partial_completion_reason=partial_completion_reason,
             failure_classification=None,
             error=None,
+            selection_origin=(
+                "prior_round_incumbent"
+                if retained_incumbent
+                else "current_round"
+            ),
+            current_round_best_iteration=current_best["iteration"],
+            current_round_best_summary=copy.deepcopy(current_best["summary"]),
+            retained_from_round=(
+                incumbent.get("_battle_round_number")
+                if retained_incumbent
+                else None
+            ),
+            retained_from_run_id=(
+                incumbent.get("_forge_run_id")
+                if retained_incumbent
+                else None
+            ),
+            champion_iterations=copy.deepcopy(
+                (
+                    incumbent.get("champion_iterations")
+                    or incumbent.get("iterations")
+                    or []
+                )
+                if retained_incumbent
+                else iterations
+            ),
+            champion_best_iteration=(
+                (
+                    incumbent.get("champion_best_iteration")
+                    or incumbent.get("best_iteration")
+                )
+                if retained_incumbent
+                else current_best["iteration"]
+            ),
         )
 
     def _run_public_baseline(
@@ -2645,6 +3106,301 @@ class ForgeService:
                 BASELINE_LESSONS.get(baseline["name"], {})
             ),
         }
+
+    @staticmethod
+    def _coach_evidence(run: dict[str, Any]) -> dict[str, Any]:
+        """Build the cross-round context without any Human-private evidence."""
+
+        public_baselines = [
+            {
+                "name": item.get("name"),
+                "family": item.get("family"),
+                "summary": copy.deepcopy(item.get("summary") or {}),
+            }
+            for item in run.get("baselines", [])
+        ]
+        strongest_baseline = max(
+            public_baselines,
+            key=lambda item: ForgeService._entry_score(item["summary"]),
+            default=None,
+        )
+        ai_candidates = [
+            {
+                "track": item.get("track"),
+                "state": item.get("state"),
+                "best_iteration": item.get("best_iteration"),
+                "selection_origin": item.get("selection_origin"),
+                "retained_from_round": item.get("retained_from_round"),
+                "current_round_best_iteration": item.get(
+                    "current_round_best_iteration"
+                ),
+                "current_round_best_summary": copy.deepcopy(
+                    item.get("current_round_best_summary") or {}
+                ),
+                "strategy_spec": copy.deepcopy(item.get("strategy_spec")),
+                "summary": copy.deepcopy(item.get("summary") or {}),
+                "iterations": [
+                    {
+                        "iteration": iteration.get("iteration"),
+                        "summary": copy.deepcopy(
+                            iteration.get("summary") or {}
+                        ),
+                        "strategy_spec": copy.deepcopy(
+                            iteration.get("strategy_spec")
+                        ),
+                        "critique": copy.deepcopy(
+                            iteration.get("critique") or {}
+                        ),
+                    }
+                    for iteration in item.get("iterations", [])
+                ],
+            }
+            for item in run.get("candidates", [])
+        ]
+        diagnostics = [
+            ForgeService._coach_track_diagnostic(
+                candidate,
+                strongest_baseline,
+            )
+            for candidate in ai_candidates
+        ]
+        return {
+            "run_id": run.get("run_id"),
+            "public_baselines": public_baselines,
+            "ai_candidates": ai_candidates,
+            "computed_track_diagnostics": diagnostics,
+        }
+
+    @staticmethod
+    def _coach_track_diagnostic(
+        candidate: dict[str, Any],
+        strongest_baseline: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        iterations = candidate.get("iterations") or []
+        completed = [
+            item for item in iterations if item.get("summary")
+        ]
+        initial = (completed[0].get("summary") or {}) if completed else {}
+        current_best = (
+            max(
+                completed,
+                key=lambda item: ForgeService._entry_score(item["summary"]),
+            ).get("summary")
+            if completed
+            else candidate.get("current_round_best_summary") or {}
+        )
+
+        def metric(summary: dict[str, Any], key: str) -> float:
+            return _number(summary.get(key), 0.0)
+
+        sharpe_gain = metric(current_best, "sharpe_ratio") - metric(
+            initial,
+            "sharpe_ratio",
+        )
+        cagr_gain = metric(current_best, "cagr") - metric(initial, "cagr")
+        drawdown_reduction = metric(initial, "maximum_drawdown") - metric(
+            current_best,
+            "maximum_drawdown",
+        )
+        meaningful_gain = (
+            sharpe_gain >= 0.05
+            or cagr_gain >= 0.02
+            or drawdown_reduction >= 0.02
+        )
+        retained = (
+            candidate.get("selection_origin") == "prior_round_incumbent"
+        )
+        baseline_summary = (
+            strongest_baseline.get("summary") or {}
+            if strongest_baseline
+            else {}
+        )
+        materially_behind = bool(
+            strongest_baseline
+            and metric(current_best, "sharpe_ratio") + 0.25
+            < metric(baseline_summary, "sharpe_ratio")
+            and metric(current_best, "cagr")
+            <= metric(baseline_summary, "cagr")
+        )
+        if materially_behind and not meaningful_gain:
+            next_move = "rebuild_track"
+        elif retained or (len(completed) >= 2 and not meaningful_gain):
+            next_move = "rotate_mechanism"
+        else:
+            next_move = "refine_parameters"
+        track = candidate.get("track")
+        scope = {
+            "Traditional": "signal",
+            "ML": "model",
+            "Hybrid": "multi_component",
+        }.get(track, "portfolio")
+        return {
+            "track": track,
+            "completed_trials": len(completed),
+            "historical_champion_retained": retained,
+            "retained_from_round": candidate.get("retained_from_round"),
+            "sharpe_gain_vs_first_trial": round(sharpe_gain, 6),
+            "cagr_gain_vs_first_trial": round(cagr_gain, 6),
+            "drawdown_reduction_vs_first_trial": round(
+                drawdown_reduction,
+                6,
+            ),
+            "meaningful_trial_improvement": meaningful_gain,
+            "strongest_public_baseline": (
+                strongest_baseline.get("name")
+                if strongest_baseline
+                else None
+            ),
+            "materially_behind_public_reference": materially_behind,
+            "recommended_next_move": next_move,
+            "recommended_change_scope": scope,
+            "recommended_parameter_change_budget": {
+                "refine_parameters": 2,
+                "rotate_mechanism": 2,
+                "rebuild_track": 4,
+            }[next_move],
+        }
+
+    @staticmethod
+    def _fallback_coach_memory(
+        round_number: int,
+        evidence: dict[str, Any],
+    ) -> dict[str, Any]:
+        lessons = []
+        diagnostics = {
+            item.get("track"): item
+            for item in evidence.get("computed_track_diagnostics", [])
+        }
+        for candidate in evidence.get("ai_candidates", []):
+            track = candidate.get("track")
+            summary = candidate.get("summary") or {}
+            sharpe = _number(summary.get("sharpe_ratio"), 0.0)
+            cagr = _number(summary.get("cagr"), 0.0)
+            drawdown = _number(summary.get("maximum_drawdown"), 0.0)
+            iterations = candidate.get("iterations") or []
+            latest_critique = (
+                (iterations[-1].get("critique") or {}) if iterations else {}
+            )
+            diagnostic = diagnostics.get(track) or {}
+            next_move = diagnostic.get(
+                "recommended_next_move",
+                "refine_parameters",
+            )
+            scope = diagnostic.get(
+                "recommended_change_scope",
+                "multi_component",
+            )
+            hypotheses = {
+                "Traditional": {
+                    "refine_parameters": "Refine one signal window or component weight while preserving the current feature family.",
+                    "rotate_mechanism": "Replace the primary feature family, for example return momentum with relative return, RSI, or volatility, while keeping risk controls stable.",
+                    "rebuild_track": "Build a distinct transparent multi-factor rank with a new signal family and conservative portfolio controls.",
+                },
+                "ML": {
+                    "refine_parameters": "Refine one model regularization or training-window control without changing the fitted-model mechanism.",
+                    "rotate_mechanism": "Change the model algorithm or its core feature set while preserving portfolio and risk controls.",
+                    "rebuild_track": "Test a materially different supported model and feature hypothesis with simpler bounded complexity.",
+                },
+                "Hybrid": {
+                    "refine_parameters": "Refine the model-versus-signal blend or one component weight while preserving both causal paths.",
+                    "rotate_mechanism": "Replace either the transparent signal family or ML feature/model mechanism, but not both in one trial.",
+                    "rebuild_track": "Rebuild the Hybrid interaction with a distinct signal, fitted model, and conservative blend.",
+                },
+            }.get(track, {})
+            lessons.append(
+                {
+                    "track": track,
+                    "evidence_summary": (
+                        f"Round {round_number}: CAGR {cagr:.2%}, Sharpe "
+                        f"{sharpe:.3f}, maximum drawdown {drawdown:.2%}."
+                    ),
+                    "preserve": (
+                        latest_critique.get("preserve")
+                        or ["Retain the best completed template configuration."]
+                    )[:3],
+                    "avoid": (
+                        latest_critique.get("weaknesses")
+                        or ["Avoid increasing complexity without measured benefit."]
+                    )[:3],
+                    "next_hypotheses": [
+                        hypotheses.get(
+                            next_move,
+                            "Test one bounded active-parameter change and compare all risk metrics.",
+                        )
+                    ],
+                    "next_move": next_move,
+                    "change_scope": scope,
+                    "decision_reason": (
+                        "The historical champion was retained, so further small "
+                        "adjustments should give way to a different mechanism."
+                        if diagnostic.get("historical_champion_retained")
+                        else "The decision follows measured trial improvement and the gap to the strongest public reference."
+                    ),
+                    "parameter_change_budget": int(
+                        diagnostic.get(
+                            "recommended_parameter_change_budget",
+                            2,
+                        )
+                    ),
+                }
+            )
+        return {
+            "round_number": round_number,
+            "round_summary": (
+                "Deterministic fallback memory was built from completed AI and "
+                "public backtests because the model-generated coaching was unavailable."
+            ),
+            "track_lessons": lessons,
+            "overfitting_guard": (
+                "Change one mechanism at a time and use robustness evidence before "
+                "treating an in-sample gain as an improvement."
+            ),
+        }
+
+    def _generate_round_coaching(
+        self,
+        run_id: str,
+        round_number: int,
+        previous_memory: dict[str, Any] | None,
+    ) -> None:
+        if self.game_repository is None:
+            return
+        with self._lock:
+            run = copy.deepcopy(self._runs[run_id])
+        evidence = self._coach_evidence(run)
+        state = "completed"
+        try:
+            if self.coach is None:
+                raise RuntimeError("AI Coach is not configured")
+            result = self.coach.reflect(
+                round_number=round_number,
+                evidence=evidence,
+                previous_memory=previous_memory,
+            )
+            memory = result["memory"]
+            self._record_agent_call(
+                run_id=run_id,
+                track="AI Coach",
+                stage="cross_round_reflection",
+                attempt=1,
+                trace=result.get("trace"),
+            )
+        except Exception as exc:
+            state = "fallback"
+            memory = self._fallback_coach_memory(round_number, evidence)
+            self._record_agent_call(
+                run_id=run_id,
+                track="AI Coach",
+                stage="cross_round_reflection",
+                attempt=1,
+                trace=getattr(exc, "trace", None),
+                error=exc,
+            )
+        self.game_repository.save_coach_memory(
+            run_id,
+            memory,
+            state=state,
+        )
 
     @staticmethod
     def _education_evidence(run: dict[str, Any]) -> dict[str, Any]:
@@ -2758,7 +3514,13 @@ class ForgeService:
                     }
                 )
                 self._runs[run_id]["updated_at"] = utc_now()
+                education_snapshot = copy.deepcopy(education)
             self._persist_history(run_id)
+            if self.game_repository is not None:
+                self.game_repository.update_round_education(
+                    run_id,
+                    education_snapshot,
+                )
         except Exception as exc:
             failed_trace = getattr(exc, "trace", None)
             self._record_agent_call(
@@ -2780,7 +3542,13 @@ class ForgeService:
                     }
                 )
                 self._runs[run_id]["updated_at"] = utc_now()
+                education_snapshot = copy.deepcopy(education)
             self._persist_history(run_id)
+            if self.game_repository is not None:
+                self.game_repository.update_round_education(
+                    run_id,
+                    education_snapshot,
+                )
 
     def _execute(
         self,
@@ -2789,50 +3557,81 @@ class ForgeService:
         human_source: str,
     ) -> None:
         parameters = settings.worker_parameters()
-        try:
-            self._change(
-                run_id,
-                state="running",
-                stage="Running four public baselines in parallel",
+        with self._lock:
+            battle_memory = copy.deepcopy(
+                self._runs[run_id].get("_battle_memory")
             )
-            evidence_by_index: dict[int, dict[str, Any]] = {}
-            baseline_errors: dict[int, Exception] = {}
-            with ThreadPoolExecutor(
-                max_workers=len(BASELINES),
-                thread_name_prefix="baseline",
-            ) as baseline_executor:
-                baseline_futures = {
-                    baseline_executor.submit(
-                        self._run_public_baseline,
-                        run_id=run_id,
-                        index=index,
-                        parameters=parameters,
-                    ): index
-                    for index in range(len(BASELINES))
-                }
-                for future in as_completed(baseline_futures):
-                    index = baseline_futures[future]
-                    try:
-                        evidence_by_index[index] = future.result()
-                    except Exception as exc:
-                        baseline_errors[index] = exc
-                        self._change_item(
-                            run_id,
-                            "baselines",
-                            index,
-                            state="failed",
-                            error=str(exc),
-                        )
-            if baseline_errors:
-                failures = "; ".join(
-                    f"{BASELINES[index]['name']}: {error}"
-                    for index, error in sorted(baseline_errors.items())
+            battle_baselines = copy.deepcopy(
+                self._runs[run_id].get("_battle_baselines")
+            )
+            ai_incumbents = copy.deepcopy(
+                self._runs[run_id].get("_ai_incumbents") or {}
+            )
+        try:
+            if battle_baselines:
+                self._change(
+                    run_id,
+                    state="running",
+                    stage="Reusing frozen Round 1 baseline evidence",
+                    baselines=[
+                        {
+                            **item,
+                            "reused_from_round": 1,
+                            "baseline_execution": "reused",
+                        }
+                        for item in battle_baselines
+                    ],
                 )
-                raise RuntimeError(f"Public baseline batch failed: {failures}")
-            evidence = [
-                evidence_by_index[index]
-                for index in range(len(BASELINES))
-            ]
+                evidence = [
+                    self._baseline_evidence(item)
+                    for item in battle_baselines
+                ]
+            else:
+                self._change(
+                    run_id,
+                    state="running",
+                    stage="Running four public baselines in parallel",
+                )
+                evidence_by_index: dict[int, dict[str, Any]] = {}
+                baseline_errors: dict[int, Exception] = {}
+                with ThreadPoolExecutor(
+                    max_workers=len(BASELINES),
+                    thread_name_prefix="baseline",
+                ) as baseline_executor:
+                    baseline_futures = {
+                        baseline_executor.submit(
+                            self._run_public_baseline,
+                            run_id=run_id,
+                            index=index,
+                            parameters=parameters,
+                        ): index
+                        for index in range(len(BASELINES))
+                    }
+                    for future in as_completed(baseline_futures):
+                        index = baseline_futures[future]
+                        try:
+                            evidence_by_index[index] = future.result()
+                        except Exception as exc:
+                            baseline_errors[index] = exc
+                            self._change_item(
+                                run_id,
+                                "baselines",
+                                index,
+                                state="failed",
+                                error=str(exc),
+                            )
+                if baseline_errors:
+                    failures = "; ".join(
+                        f"{BASELINES[index]['name']}: {error}"
+                        for index, error in sorted(baseline_errors.items())
+                    )
+                    raise RuntimeError(
+                        f"Public baseline batch failed: {failures}"
+                    )
+                evidence = [
+                    evidence_by_index[index]
+                    for index in range(len(BASELINES))
+                ]
 
             for metric, lower_is_better in (
                 ("sharpe_ratio", False),
@@ -2875,6 +3674,8 @@ class ForgeService:
                         track=track,
                         run_settings=settings.model_dump(mode="json"),
                         baseline_results=evidence,
+                        battle_memory=battle_memory,
+                        incumbent=ai_incumbents.get(track),
                     )
                     futures[future] = (index, track)
 
@@ -2963,6 +3764,8 @@ class ForgeService:
                         parameters=parameters,
                         baseline_results=evidence,
                         initial_proposal=generated,
+                        battle_memory=battle_memory,
+                        incumbent=ai_incumbents.get(track),
                     )
                     candidate_futures[future] = (index, track)
 
@@ -2993,6 +3796,20 @@ class ForgeService:
                 battle_analysis=battle_analysis,
             )
             self._trace_change(run_id, state="completed", error=None)
+            with self._lock:
+                completed_run = copy.deepcopy(self._runs[run_id])
+            round_result = (
+                self.game_repository.complete_round(completed_run)
+                if self.game_repository is not None
+                else None
+            )
+            if round_result is not None and self._coach_executor is not None:
+                self._coach_executor.submit(
+                    self._generate_round_coaching,
+                    run_id,
+                    int(round_result["round_number"]),
+                    battle_memory,
+                )
             if self._education_executor is not None:
                 self._education_executor.submit(
                     self._generate_education_review,
@@ -3001,5 +3818,7 @@ class ForgeService:
         except Exception as exc:
             self._change(run_id, state="failed", stage="Stopped", error=str(exc))
             self._trace_change(run_id, state="failed", error=str(exc))
+            if self.game_repository is not None:
+                self.game_repository.fail_round(run_id, str(exc))
         finally:
             self._persist_history(run_id)
