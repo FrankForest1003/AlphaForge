@@ -1,6 +1,6 @@
 # AlphaForge LEAN Worker
 
-Worker 在 Docker 中运行真实 QuantConnect LEAN Python 回测。它提供四个公共基线任务和任意 Python 源码任务，所有任务串行执行。
+Worker 在 Docker 中运行真实 QuantConnect LEAN Python 回测。它提供四个公共基线任务和任意 Python 源码任务。每个 Worker 槽位内部保持串行，以隔离 LEAN Launcher 配置；Compose 默认启动三个独立槽位，由 Backend Worker Pool 路由任务，从而安全地并行不同策略。
 
 ## 接口
 

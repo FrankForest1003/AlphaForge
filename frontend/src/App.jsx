@@ -9,6 +9,7 @@ import {
   ChevronDown,
   CircleDollarSign,
   Code2,
+  Copy,
   FlaskConical,
   Gauge,
   History,
@@ -35,9 +36,12 @@ import {
   Line,
   LineChart,
   ResponsiveContainer,
+  Scatter,
+  ScatterChart,
   Tooltip,
   XAxis,
   YAxis,
+  ZAxis,
 } from "recharts";
 
 const API_ROOT = "/api/v1";
@@ -455,10 +459,20 @@ function BuildWorkspace({ catalog, loadingCatalog, onCreated }) {
   const [transactionCost, setTransactionCost] = useState(10);
   const [slippage, setSlippage] = useState(5);
   const [humanMode, setHumanMode] = useState("guided");
+  const [guidedLevel, setGuidedLevel] = useState("basic");
   const [signal, setSignal] = useState("momentum");
   const [lookback, setLookback] = useState(60);
+  const [secondaryLookback, setSecondaryLookback] = useState(63);
+  const [primarySignalWeight, setPrimarySignalWeight] = useState(0.65);
   const [rebalance, setRebalance] = useState("monthly");
-  const [holdings, setHoldings] = useState(2);
+  const [holdings, setHoldings] = useState(3);
+  const [weighting, setWeighting] = useState("equal");
+  const [grossExposure, setGrossExposure] = useState(0.90);
+  const [maxPositionWeight, setMaxPositionWeight] = useState(0.45);
+  const [rebalanceThreshold, setRebalanceThreshold] = useState(0.02);
+  const [requirePositiveScore, setRequirePositiveScore] = useState(false);
+  const [marketTrendFilter, setMarketTrendFilter] = useState(false);
+  const [marketSmaWindow, setMarketSmaWindow] = useState(200);
   const [sourceCode, setSourceCode] = useState(HUMAN_CODE_STARTER);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
@@ -496,6 +510,7 @@ function BuildWorkspace({ catalog, loadingCatalog, onCreated }) {
     symbols.length >= MIN_STOCKS &&
     symbols.length <= MAX_STOCKS &&
     startDate < endDate &&
+    Number(holdings) * Number(maxPositionWeight) >= Number(grossExposure) &&
     (humanMode === "guided" || sourceCode.trim().length > 0);
 
   const submit = async () => {
@@ -507,10 +522,20 @@ function BuildWorkspace({ catalog, loadingCatalog, onCreated }) {
         ? {
             mode: "guided",
             guided: {
+              level: guidedLevel,
               signal,
               lookback_days: Number(lookback),
+              secondary_lookback_days: Number(secondaryLookback),
+              primary_signal_weight: Number(primarySignalWeight),
               rebalance,
               holdings: Number(holdings),
+              weighting,
+              gross_exposure: Number(grossExposure),
+              max_position_weight: Number(maxPositionWeight),
+              rebalance_threshold: Number(rebalanceThreshold),
+              require_positive_score: requirePositiveScore,
+              market_trend_filter: marketTrendFilter,
+              market_sma_window: Number(marketSmaWindow),
             },
           }
         : { mode: "code", source_code: sourceCode };
@@ -636,17 +661,31 @@ function BuildWorkspace({ catalog, loadingCatalog, onCreated }) {
 
         {humanMode === "guided" ? (
           <div className="guided-layout">
-            <div className="guided-fields">
+            <div className="guided-builder">
+              <div className="guided-level-tabs">
+                <button type="button" className={guidedLevel === "basic" ? "active" : ""} onClick={() => setGuidedLevel("basic")}>
+                  Basic Template
+                </button>
+                <button type="button" className={guidedLevel === "advanced" ? "active" : ""} onClick={() => setGuidedLevel("advanced")}>
+                  Advanced Multi-factor
+                </button>
+              </div>
+              <div className="guided-fields">
               <Field label="Signal">
                 <select value={signal} onChange={(event) => setSignal(event.target.value)}>
                   <option value="momentum">Momentum</option>
                   <option value="mean_reversion">Mean Reversion</option>
+                  <option value="low_volatility">Low Volatility</option>
+                  <option value="momentum_low_volatility">Momentum + Low Volatility</option>
+                  <option value="trend_quality">Relative Trend Quality</option>
                 </select>
               </Field>
               <Field label="Lookback Period">
-                <select value={lookback} onChange={(event) => setLookback(event.target.value)}>
-                  <option value="20">20 Days</option><option value="60">60 Days</option><option value="120">120 Days</option>
-                </select>
+                {guidedLevel === "basic" ? (
+                  <select value={lookback} onChange={(event) => setLookback(event.target.value)}>
+                    <option value="20">20 Days</option><option value="60">60 Days</option><option value="120">120 Days</option>
+                  </select>
+                ) : <input type="number" min="10" max="252" value={lookback} onChange={(event) => setLookback(event.target.value)} />}
               </Field>
               <Field label="Rebalance Schedule">
                 <select value={rebalance} onChange={(event) => setRebalance(event.target.value)}>
@@ -654,19 +693,70 @@ function BuildWorkspace({ catalog, loadingCatalog, onCreated }) {
                 </select>
               </Field>
               <Field label="Number Of Holdings">
-                <select value={holdings} onChange={(event) => setHoldings(event.target.value)}>
-                  <option value="1">1 Stock</option><option value="2">2 Stocks</option><option value="3">3 Stocks</option>
-                </select>
+                {guidedLevel === "basic" ? (
+                  <select value={holdings} onChange={(event) => setHoldings(event.target.value)}>
+                    <option value="2">2 Stocks</option><option value="3">3 Stocks</option><option value="5">5 Stocks</option>
+                  </select>
+                ) : <input type="number" min="2" max="10" value={holdings} onChange={(event) => setHoldings(event.target.value)} />}
               </Field>
+              {guidedLevel === "advanced" ? (
+                <>
+                  <Field label="Risk Lookback" hint="Used by volatility and secondary factors">
+                    <input type="number" min="10" max="252" value={secondaryLookback} onChange={(event) => setSecondaryLookback(event.target.value)} />
+                  </Field>
+                  <Field label="Primary Factor Weight">
+                    <input type="number" min="0.2" max="0.9" step="0.05" value={primarySignalWeight} onChange={(event) => setPrimarySignalWeight(event.target.value)} />
+                  </Field>
+                  <Field label="Portfolio Weighting">
+                    <select value={weighting} onChange={(event) => setWeighting(event.target.value)}>
+                      <option value="equal">Equal Weight</option>
+                      <option value="inverse_volatility">Inverse Volatility</option>
+                      <option value="score">Signal Score</option>
+                    </select>
+                  </Field>
+                  <Field label="Gross Exposure">
+                    <input type="number" min="0.5" max="0.95" step="0.05" value={grossExposure} onChange={(event) => setGrossExposure(event.target.value)} />
+                  </Field>
+                  <Field label="Maximum Position">
+                    <input type="number" min="0.1" max="0.6" step="0.05" value={maxPositionWeight} onChange={(event) => setMaxPositionWeight(event.target.value)} />
+                  </Field>
+                  <Field label="No-trade Threshold">
+                    <input type="number" min="0" max="0.1" step="0.01" value={rebalanceThreshold} onChange={(event) => setRebalanceThreshold(event.target.value)} />
+                  </Field>
+                  <Field label="Signal Filter">
+                    <select value={String(requirePositiveScore)} onChange={(event) => setRequirePositiveScore(event.target.value === "true")}>
+                      <option value="false">Always rank Top-K</option>
+                      <option value="true">Require positive score</option>
+                    </select>
+                  </Field>
+                  <Field label="Market Regime Filter">
+                    <select value={String(marketTrendFilter)} onChange={(event) => setMarketTrendFilter(event.target.value === "true")}>
+                      <option value="false">Disabled</option>
+                      <option value="true">Benchmark above SMA</option>
+                    </select>
+                  </Field>
+                  {marketTrendFilter ? (
+                    <Field label="Market SMA Window">
+                      <input type="number" min="20" max="252" value={marketSmaWindow} onChange={(event) => setMarketSmaWindow(event.target.value)} />
+                    </Field>
+                  ) : null}
+                </>
+              ) : null}
+              </div>
+              {Number(holdings) * Number(maxPositionWeight) < Number(grossExposure) ? (
+                <p className="guided-validation">Increase holdings or maximum position weight so the portfolio can reach its target exposure.</p>
+              ) : null}
             </div>
             <div className="strategy-summary">
               <div className="summary-icon"><Sparkles size={20} /></div>
               <div>
                 <span>Strategy Preview</span>
-                <strong>{signal === "momentum" ? "Momentum" : "Mean Reversion"} Ranking</strong>
+                <strong>{readableEnum(signal)} Strategy</strong>
                 <p>
-                  Rank the selected pool using a {lookback}-day signal, hold {holdings} {Number(holdings) === 1 ? "stock" : "stocks"}, and rebalance {rebalance} at 90% gross exposure.
+                  Rank the selected pool using a {lookback}-day signal, hold {holdings} stocks,
+                  rebalance {rebalance}, and target {Math.round(Number(grossExposure) * 100)}% gross exposure.
                 </p>
+                <small>{guidedLevel === "advanced" ? `${readableEnum(weighting)} allocation with configurable risk controls.` : "Safe defaults compiled through the fixed LEAN template."}</small>
               </div>
             </div>
           </div>
@@ -681,7 +771,11 @@ function BuildWorkspace({ catalog, loadingCatalog, onCreated }) {
                 <RefreshCw size={15} /> Restore Base Template
               </button>
             </div>
-            <textarea aria-label="Complete Strategy Source" spellCheck="false" value={sourceCode} onChange={(event) => setSourceCode(event.target.value)} />
+            <PythonCodeEditor
+              ariaLabel="Complete Strategy Source"
+              value={sourceCode}
+              onChange={(event) => setSourceCode(event.target.value)}
+            />
           </div>
         )}
       </section>
@@ -731,6 +825,217 @@ function stageState(done, active) {
   return active ? "running" : "waiting";
 }
 
+const PARAMETER_LABELS = {
+  algorithm: "Model",
+  target: "Prediction target",
+  horizon_days: "Forecast horizon",
+  pooled_training_rows: "Training rows",
+  retrain_every_rebalances: "Retrain interval",
+  n_estimators: "Estimators",
+  learning_rate: "Learning rate",
+  max_depth: "Maximum depth",
+  min_samples_leaf: "Minimum leaf samples",
+  ridge_alpha: "Ridge alpha",
+  top_k: "Holdings",
+  require_positive_score: "Positive scores only",
+  hybrid_model_weight: "ML contribution",
+  weighting: "Allocation method",
+  gross_exposure: "Target exposure",
+  max_position_weight: "Single-stock limit",
+  volatility_window: "Risk lookback",
+  minimum_variance_blend: "Minimum-variance blend",
+  rebalance_threshold: "No-trade threshold",
+  frequency: "Rebalance frequency",
+  minutes_after_open: "Execution after open",
+  market_trend_filter: "Market trend filter",
+  market_sma_window: "Market trend lookback",
+  stop_loss: "Stop loss",
+  maximum_drawdown: "Portfolio drawdown guard",
+  cooldown_days: "Risk cooldown",
+};
+
+const PERCENT_PARAMETERS = new Set([
+  "hybrid_model_weight",
+  "gross_exposure",
+  "max_position_weight",
+  "minimum_variance_blend",
+  "rebalance_threshold",
+  "stop_loss",
+  "maximum_drawdown",
+]);
+
+const PYTHON_KEYWORDS = new Set([
+  "and", "as", "assert", "async", "await", "break", "class", "continue",
+  "def", "del", "elif", "else", "except", "finally", "for", "from",
+  "global", "if", "import", "in", "is", "lambda", "nonlocal", "not",
+  "or", "pass", "raise", "return", "try", "while", "with", "yield",
+]);
+
+const PYTHON_TOKEN_PATTERN = /("""[\s\S]*?"""|'''[\s\S]*?'''|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|#[^\n]*|@[A-Za-z_]\w*|\b[A-Za-z_]\w*\b|\b\d+(?:\.\d+)?\b)/g;
+
+function pythonTokenClass(token) {
+  if (token.startsWith("#")) return "python-comment";
+  if (token.startsWith("\"") || token.startsWith("'")) return "python-string";
+  if (token.startsWith("@")) return "python-decorator";
+  if (PYTHON_KEYWORDS.has(token)) return "python-keyword";
+  if (["True", "False", "None"].includes(token)) return "python-constant";
+  if (/^\d/.test(token)) return "python-number";
+  if (["self", "super"].includes(token)) return "python-builtin";
+  return "";
+}
+
+function PythonHighlight({ source }) {
+  const fragments = [];
+  let cursor = 0;
+  for (const match of String(source || "").matchAll(PYTHON_TOKEN_PATTERN)) {
+    if (match.index > cursor) fragments.push(String(source).slice(cursor, match.index));
+    const token = match[0];
+    const className = pythonTokenClass(token);
+    fragments.push(className
+      ? <span className={className} key={`${match.index}-${token}`}>{token}</span>
+      : token);
+    cursor = match.index + token.length;
+  }
+  if (cursor < String(source || "").length) fragments.push(String(source).slice(cursor));
+  return <code>{fragments}</code>;
+}
+
+function PythonCodeEditor({ value, onChange, ariaLabel }) {
+  const highlightRef = useRef(null);
+  const syncScroll = (event) => {
+    if (!highlightRef.current) return;
+    highlightRef.current.scrollTop = event.currentTarget.scrollTop;
+    highlightRef.current.scrollLeft = event.currentTarget.scrollLeft;
+  };
+  return (
+    <div className="python-editor">
+      <pre ref={highlightRef} aria-hidden="true"><PythonHighlight source={value} /></pre>
+      <textarea
+        aria-label={ariaLabel}
+        spellCheck="false"
+        value={value}
+        onChange={onChange}
+        onScroll={syncScroll}
+      />
+    </div>
+  );
+}
+
+function PythonCodeBlock({ source }) {
+  return <pre className="python-code-block"><PythonHighlight source={source} /></pre>;
+}
+
+function readableEnum(value) {
+  return String(value)
+    .replaceAll("_", " ")
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function parameterValue(key, value) {
+  if (value === null || value === undefined) return "Not enabled";
+  if (typeof value === "boolean") return value ? "Enabled" : "Disabled";
+  if (PERCENT_PARAMETERS.has(key) && typeof value === "number") {
+    const percentage = value * 100;
+    return `${percentage.toFixed(percentage % 1 ? 1 : 0)}%`;
+  }
+  if (key === "horizon_days") return `${value} trading days`;
+  if (key === "retrain_every_rebalances") {
+    return `Every ${value} rebalance${value === 1 ? "" : "s"}`;
+  }
+  if (key === "volatility_window" || key === "market_sma_window") return `${value} days`;
+  if (key === "minutes_after_open") return `${value} minutes`;
+  if (key === "cooldown_days") return `${value} days`;
+  return typeof value === "string" ? readableEnum(value) : formatNumber(value);
+}
+
+function ParameterGrid({ values, omit = [] }) {
+  if (!values) return null;
+  const entries = Object.entries(values).filter(
+    ([key, value]) => !omit.includes(key) && value !== undefined,
+  );
+  return (
+    <dl className="parameter-grid">
+      {entries.map(([key, value]) => (
+        <div key={key} className={value === null ? "parameter-muted" : ""}>
+          <dt>{PARAMETER_LABELS[key] || readableEnum(key)}</dt>
+          <dd>{parameterValue(key, value)}</dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
+function FeatureList({ title, features, components }) {
+  const rows = components || (features || []).map((feature) => ({ feature }));
+  if (!rows.length) return null;
+  return (
+    <div className="feature-list">
+      <span className="parameter-subtitle">{title}</span>
+      {rows.map((row, index) => (
+        <div className="feature-row" key={`${row.feature?.kind}-${row.feature?.window}-${index}`}>
+          <strong>{readableEnum(row.feature?.kind || "Feature")}</strong>
+          <span>{row.feature?.window}-day lookback</span>
+          {row.direction ? <span>{readableEnum(row.direction)} ranks better</span> : null}
+          {row.weight != null ? <b>{Math.round(row.weight * 100)}% blend</b> : null}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function StrategyParameters({ spec }) {
+  if (!spec) return null;
+  const modelLabel = spec.model
+    ? readableEnum(spec.model.algorithm)
+    : `${spec.signal?.components?.length || 0}-factor transparent rank`;
+  return (
+    <section className="strategy-parameters" aria-label="Strategy configuration">
+      <div className="parameter-overview">
+        <div><span>Decision engine</span><strong>{modelLabel}</strong></div>
+        <div><span>Portfolio</span><strong>Top {spec.selection?.top_k || "—"} holdings</strong></div>
+        <div><span>Allocation</span><strong>{readableEnum(spec.portfolio?.weighting || "Not set")}</strong></div>
+        <div><span>Exposure</span><strong>{parameterValue("gross_exposure", spec.portfolio?.gross_exposure)}</strong></div>
+        <div><span>Rebalance</span><strong>{readableEnum(spec.schedule?.frequency || "—")}</strong></div>
+      </div>
+
+      <details className="strategy-parameter-details">
+        <summary>
+          <span>
+            <strong>Full strategy configuration</strong>
+            <small>Every parameter sent to the fixed LEAN template, grouped by purpose</small>
+          </span>
+          <ChevronDown size={17} />
+        </summary>
+        <div className="parameter-section-grid">
+          {spec.signal ? (
+            <section className="parameter-section">
+              <h4>Transparent signal</h4>
+              <FeatureList title="Ranking factors" components={spec.signal.components || []} />
+            </section>
+          ) : null}
+          {spec.model ? (
+            <section className="parameter-section">
+              <h4>Machine-learning model</h4>
+              <FeatureList title="Model features" features={spec.model.features || []} />
+              <ParameterGrid values={spec.model} omit={["features"]} />
+            </section>
+          ) : null}
+          <section className="parameter-section">
+            <h4>Selection and allocation</h4>
+            <ParameterGrid values={spec.selection} />
+            <ParameterGrid values={spec.portfolio} />
+          </section>
+          <section className="parameter-section">
+            <h4>Schedule and risk controls</h4>
+            <ParameterGrid values={spec.schedule} />
+            <ParameterGrid values={spec.risk} />
+          </section>
+        </div>
+      </details>
+    </section>
+  );
+}
+
 function AIForgeWorkspace({ run, onBuild }) {
   if (!run) {
     return (
@@ -763,7 +1068,7 @@ function AIForgeWorkspace({ run, onBuild }) {
     {
       number: "01",
       title: "Public Evidence",
-      copy: "Four baselines under the frozen contract",
+      copy: "Four baselines across isolated LEAN workers",
       state: stageState(baselinesReady, !baselinesReady),
     },
     {
@@ -780,8 +1085,8 @@ function AIForgeWorkspace({ run, onBuild }) {
     },
     {
       number: "04",
-      title: "LEAN Backtest",
-      copy: "Up to three real trials per AI track",
+      title: "Parallel LEAN Backtest",
+      copy: "Three track pipelines; each iterates in order",
       state: stageState(workerStarted && reviewsFinished, workerStarted),
     },
     {
@@ -861,10 +1166,37 @@ function AIForgeWorkspace({ run, onBuild }) {
 
                 {design.reference_baselines?.length ? (
                   <div className="baseline-improvement-plan">
-                    <div><span>Public references</span><strong>{design.reference_baselines.join(" · ")}</strong></div>
-                    <p><b>Hypothesis</b>{design.improvement_hypothesis}</p>
-                    <p><b>What changes</b>{Array.isArray(design.differentiation) ? design.differentiation.join(" · ") : design.differentiation}</p>
-                    <p><b>Expected trade-off</b>{design.expected_tradeoff}</p>
+                    <div className="reference-strip">
+                      <span>Compared with</span>
+                      <div>
+                        {design.reference_baselines.map((name) => (
+                          <strong key={name}>{name}</strong>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="candidate-design-grid">
+                      <div>
+                        <span>Improvement hypothesis</span>
+                        <p>{design.improvement_hypothesis}</p>
+                      </div>
+                      <div>
+                        <span>Expected trade-off</span>
+                        <p>{design.expected_tradeoff}</p>
+                      </div>
+                    </div>
+                    {design.differentiation ? (
+                      <div className="design-differences">
+                        <span>What this candidate changes</span>
+                        <ul>
+                          {(Array.isArray(design.differentiation)
+                            ? design.differentiation
+                            : [design.differentiation]
+                          ).map((item, index) => (
+                            <li key={`${item}-${index}`}>{item}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    ) : null}
                   </div>
                 ) : null}
 
@@ -892,20 +1224,7 @@ function AIForgeWorkspace({ run, onBuild }) {
                 </div>
 
                 {candidate.strategy_spec ? (
-                  <div className="design-block">
-                    <span>Template Parameters</span>
-                    <div className="design-tags">
-                      {Object.entries(candidate.strategy_spec)
-                        .filter(([, value]) => value !== null && value !== undefined)
-                        .map(([key, value]) => (
-                          <i key={key}>
-                            {key.replaceAll("_", " ")}: {
-                              typeof value === "object" ? JSON.stringify(value) : String(value)
-                            }
-                          </i>
-                        ))}
-                    </div>
-                  </div>
+                  <StrategyParameters spec={candidate.strategy_spec} />
                 ) : null}
 
                 {candidate.source_code ? (
@@ -915,21 +1234,17 @@ function AIForgeWorkspace({ run, onBuild }) {
                   </div>
                 ) : null}
 
-                {candidate.critique_history?.length ? (
-                  <details className="repair-lineage">
-                    <summary>
-                      Critic feedback · {candidate.critique_history.length}
-                      <ChevronDown size={16} />
-                    </summary>
-                    <div>
-                      {candidate.critique_history.map((item) => (
-                        <p key={item.iteration}>
-                          <strong>Iteration {item.iteration}</strong>
-                          <span>{item.report?.diagnosis}</span>
-                        </p>
-                      ))}
+                {candidate.iterations?.length ? (
+                  <div className="forge-iteration-section">
+                    <div className="forge-section-heading">
+                      <span>Backtest evolution</span>
+                      <strong>
+                        {candidate.iterations.length} completed trial
+                        {candidate.iterations.length === 1 ? "" : "s"}
+                      </strong>
                     </div>
-                  </details>
+                    <IterationHistory candidate={candidate} showCodeChanges />
+                  </div>
                 ) : null}
 
                 {candidate.error ? <div className="inline-error">{candidate.error}</div> : null}
@@ -1128,17 +1443,157 @@ function JudgeBreakdown({ analysis }) {
             <div><strong>{card.label}</strong><span>{card.eligible ? `${formatNumber(card.score)} points` : "Ineligible"}</span></div>
             {card.eligible ? (
               <dl>
-                <div><dt>Risk-adjusted</dt><dd>{formatNumber(card.components.risk_adjusted_return)}</dd></div>
-                <div><dt>Drawdown</dt><dd>{formatNumber(card.components.drawdown_and_volatility)}</dd></div>
-                <div><dt>Robustness</dt><dd>{formatNumber(card.components.robustness)}</dd></div>
-                <div><dt>Cost</dt><dd>{formatNumber(card.components.cost_and_turnover)}</dd></div>
+                <div><dt>Sharpe</dt><dd>{formatNumber(card.components.sharpe_ratio)}</dd></div>
+                <div><dt>CAGR</dt><dd>{formatNumber(card.components.cagr)}</dd></div>
+                <div><dt>Drawdown</dt><dd>{formatNumber(card.components.drawdown_control)}</dd></div>
+                <div><dt>Volatility</dt><dd>{formatNumber(card.components.volatility_control)}</dd></div>
+                <div><dt>Cost</dt><dd>{formatNumber(card.components.cost_efficiency)}</dd></div>
+                <div><dt>Execution</dt><dd>{formatNumber(card.components.execution_evidence)}</dd></div>
                 <div><dt>Explainability</dt><dd>{formatNumber(card.components.explainability)}</dd></div>
               </dl>
             ) : <p>{card.eligibility_reasons?.join(" · ")}</p>}
           </article>
         ))}
       </div>
-      <p className="judge-method">Public weights: 40% risk-adjusted return · 25% drawdown/volatility · 20% robustness · 10% cost/turnover · 5% explainability. Scores within two points are a draw.</p>
+      <p className="judge-method">Public weights: 35% Sharpe · 30% CAGR · 15% drawdown · 5% volatility · 5% cost · 5% execution evidence · 5% explainability. Scores within two points are a draw. Optional robustness results are reported separately because only the selected strategy is stress-tested.</p>
+    </section>
+  );
+}
+
+function ChampionStrategyFlow({ run, analysis }) {
+  const champion = analysis?.overall_best || analysis?.ai_champion;
+  if (!champion) return null;
+  const candidate = (run?.candidates || []).find((item) => item.track === champion.track);
+  const spec = candidate?.strategy_spec;
+  const guided = champion.id === "human" ? run?.human?.guided : null;
+  if (!spec && !guided) return null;
+  const features = spec?.signal?.components?.map((item) => readableEnum(item.feature?.kind)).join(" + ")
+    || spec?.model?.features?.slice(0, 3).map((item) => readableEnum(item.kind)).join(" + ")
+    || readableEnum(guided?.signal || "Market data");
+  const nodes = [
+    ["Evidence", features],
+    ["Decision", spec?.model ? readableEnum(spec.model.algorithm) : "Transparent rank"],
+    ["Selection", `Top ${spec?.selection?.top_k || guided?.holdings || "—"} stocks`],
+    ["Allocation", readableEnum(spec?.portfolio?.weighting || guided?.weighting || "equal")],
+    ["Risk", (spec?.risk?.market_trend_filter || guided?.market_trend_filter) ? "Market trend filter" : "Exposure and position caps"],
+  ];
+  return (
+    <section className="teaching-flow-card">
+      <div className="card-heading"><div><span className="section-kicker">Strategy DNA</span><h2>How the champion turns data into positions</h2></div></div>
+      <div className="strategy-flow">
+        {nodes.map(([label, value], index) => (
+          <div className="strategy-flow-step" key={label}>
+            <div><span>{String(index + 1).padStart(2, "0")}</span><small>{label}</small><strong>{value}</strong></div>
+            {index < nodes.length - 1 ? <ArrowRight size={18} /> : null}
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function RiskReturnTeachingChart({ analysis }) {
+  const rows = (analysis?.judge?.scorecards || [])
+    .filter((item) => item.eligible && item.summary?.maximum_drawdown != null && item.summary?.sharpe_ratio != null)
+    .map((item) => ({
+      name: item.label,
+      drawdown: Number(item.summary.maximum_drawdown) * 100,
+      sharpe: Number(item.summary.sharpe_ratio),
+      cagr: Math.max(4, Math.abs(Number(item.summary.cagr || 0)) * 100),
+      owner: item.owner,
+    }));
+  if (!rows.length) return null;
+  const groups = [["baseline", "#718096"], ["human", "#c58b39"], ["ai", "#238b7b"]];
+  return (
+    <section className="teaching-chart-card">
+      <div className="card-heading">
+        <div><span className="section-kicker">Risk–Return Map</span><h2>Higher and further left is generally stronger</h2></div>
+        <p>Bubble size represents CAGR.</p>
+      </div>
+      <div className="risk-map-legend" aria-label="Strategy category legend">
+        {groups.map(([owner, color]) => (
+          <span key={owner}><i style={{ backgroundColor: color }} />{readableEnum(owner)}</span>
+        ))}
+      </div>
+      <div className="teaching-chart">
+        <ResponsiveContainer width="100%" height={360}>
+          <ScatterChart margin={{ top: 16, right: 24, bottom: 52, left: 18 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#e3e9ec" />
+            <XAxis type="number" dataKey="drawdown" name="Maximum Drawdown" unit="%" tick={{ fontSize: 12 }} label={{ value: "Maximum Drawdown (%) →", position: "bottom", offset: 20 }} />
+            <YAxis type="number" dataKey="sharpe" name="Sharpe Ratio" tick={{ fontSize: 12 }} label={{ value: "Sharpe Ratio", angle: -90, position: "insideLeft" }} />
+            <ZAxis type="number" dataKey="cagr" range={[70, 340]} name="CAGR" unit="%" />
+            <Tooltip cursor={{ strokeDasharray: "3 3" }} />
+            {groups.map(([owner, color]) => <Scatter key={owner} name={readableEnum(owner)} data={rows.filter((item) => item.owner === owner)} fill={color} />)}
+          </ScatterChart>
+        </ResponsiveContainer>
+      </div>
+      <div className="chart-labels">{rows.map((item) => <span key={item.name}>{item.name}</span>)}</div>
+    </section>
+  );
+}
+
+function IterationLearningPath({ run, analysis }) {
+  const track = analysis?.ai_champion?.track;
+  const candidate = (run?.candidates || []).find((item) => item.track === track);
+  const iterations = candidate?.iterations || [];
+  if (!iterations.length) return null;
+  return (
+    <section className="iteration-learning-card">
+      <div className="card-heading">
+        <div><span className="section-kicker">Three-Trial Evidence</span><h2>How the AI candidate evolved</h2></div>
+        <span>Selected trial: {candidate.best_iteration || "—"}</span>
+      </div>
+      <div className="iteration-learning-track">
+        {iterations.map((item, index) => (
+          <article className={item.iteration === candidate.best_iteration ? "selected" : ""} key={item.iteration}>
+            <div><span>Trial {item.iteration}</span>{item.iteration === candidate.best_iteration ? <strong>Selected</strong> : null}</div>
+            <dl>
+              <div><dt>CAGR</dt><dd>{formatMetric(item.summary?.cagr, "percent")}</dd></div>
+              <div><dt>Sharpe</dt><dd>{formatMetric(item.summary?.sharpe_ratio, "number")}</dd></div>
+              <div><dt>Drawdown</dt><dd>{formatMetric(item.summary?.maximum_drawdown, "percent")}</dd></div>
+            </dl>
+            <p>{item.critique?.diagnosis || "Completed fixed-template backtest."}</p>
+            {index < iterations.length - 1 ? <ArrowRight size={18} /> : null}
+          </article>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function LLMTeachingReview({ education }) {
+  const review = education?.llm_review;
+  if (!review) {
+    return education?.llm_state === "pending" ? (
+      <section className="learning-pending"><RefreshCw className="spin" size={20} /><div><strong>Generating the evidence-grounded teaching review</strong><p>The completed results remain available while the explainer works.</p></div></section>
+    ) : null;
+  }
+  const explanation = review.strategy_explanation || {};
+  const concept = review.quant_concept || {};
+  return (
+    <section className="llm-teaching-review">
+      <div className="card-heading"><div><span className="section-kicker">Teaching Explainer</span><h2>{explanation.thesis}</h2></div><span className="education-state">Grounded in this run</span></div>
+      <div className="teaching-explanation-grid">
+        <article><strong>How it works</strong><ol>{(explanation.mechanics || []).map((item) => <li key={item}>{item}</li>)}</ol></article>
+        <article><strong>Why it led</strong><ul>{(explanation.why_it_led || []).map((item) => <li key={item}>{item}</li>)}</ul></article>
+        <article><strong>Where it may fail</strong><ul>{(explanation.failure_modes || []).map((item) => <li key={item}>{item}</li>)}</ul></article>
+      </div>
+      <div className="next-round-lab">
+        <div><span className="section-kicker">Next-Round Lab</span><h3>Change one variable, then test the hypothesis</h3></div>
+        <div className="next-round-grid">
+          {(review.next_round_actions || []).map((action) => (
+            <article key={`${action.parameter_path}-${action.proposed_value}`}>
+              <div><strong>{action.title}</strong><span>{action.expected_metric}</span></div>
+              <p>{action.hypothesis}</p>
+              <div className="parameter-change"><code>{action.parameter_path}</code><b>{action.current_value}</b><ArrowRight size={15} /><b>{action.proposed_value}</b></div>
+              <small><b>Trade-off:</b> {action.tradeoff}</small>
+              <small><b>Validate:</b> {action.validation}</small>
+            </article>
+          ))}
+        </div>
+      </div>
+      <div className="dynamic-quant-concept"><BookOpen size={22} /><div><span>{readableEnum(concept.chart_hint || "Quant concept")}</span><h3>{concept.title}</h3><p>{concept.explanation}</p><strong>{concept.takeaway}</strong></div></div>
+      <div className="overfitting-watch"><strong>Overfitting watch</strong>{(review.overfitting_watch || []).map((item) => <p key={item}>{item}</p>)}</div>
     </section>
   );
 }
@@ -1252,6 +1707,10 @@ function LearningWorkspace({ run, loading, error, onResults, onBuild }) {
         </section>
       ) : null}
       <LearningReview analysis={analysis} />
+      <LLMTeachingReview education={analysis?.education_summary} />
+      <ChampionStrategyFlow run={run} analysis={analysis} />
+      <RiskReturnTeachingChart analysis={analysis} />
+      <IterationLearningPath run={run} analysis={analysis} />
       <MetricGuide />
       <BaselineClassroom
         baselines={run.baselines}
@@ -1301,7 +1760,7 @@ function RobustnessWorkspace({ run, loading, error, onBuild, onStart }) {
       />
       <section className="robustness-intro">
         <div>
-          <span className="section-kicker">Protocol v1</span>
+          <span className="section-kicker">Protocol v2</span>
           <h2>Change assumptions, not strategy code</h2>
           <p>The exact frozen source is rerun with a recent-regime slice, a delayed start, double friction, and—when more than five stocks are available—a deterministic universe dropout.</p>
         </div>
@@ -1328,22 +1787,33 @@ function RobustnessWorkspace({ run, loading, error, onBuild, onStart }) {
               <span>{robustness.target_label}</span>
               <h2>{verdict ? `${formatNumber(verdict.score)} / 100 · ${statusLabel(verdict.grade)}` : statusLabel(robustness.state)}</h2>
               <p>{verdict?.conclusion || "LEAN is running the frozen strategy through each stress scenario."}</p>
+              {verdict?.worst_scenario_score != null ? <small>Weakest scenario: {formatNumber(verdict.worst_scenario_score)} / 100</small> : null}
             </div>
           </section>
           <section className="robustness-table-card">
             <div className="table-scroll">
               <table className="comparison-table robustness-table">
-                <thead><tr><th>Scenario</th><th>Status</th><th>CAGR</th><th>Sharpe</th><th>Drawdown</th><th>Return retained</th><th>Checks</th></tr></thead>
+                <thead><tr><th>Scenario</th><th>Status</th><th>Stress score</th><th>CAGR</th><th>Sharpe</th><th>Drawdown</th><th>Sharpe retained</th><th>CAGR retained</th><th>Checks</th></tr></thead>
                 <tbody>
                   {(robustness.scenarios || []).map((scenario) => {
                     const passed = (scenario.checks || []).filter((check) => check.passed).length;
                     return (
                       <tr key={scenario.id}>
-                        <td><strong>{scenario.label}</strong><small>{scenario.purpose}</small></td>
+                        <td>
+                          <strong>{scenario.label}</strong>
+                          <small>{scenario.purpose}</small>
+                          {scenario.thresholds ? (
+                            <small className="scenario-thresholds">
+                              Required: CAGR {formatMetric(scenario.thresholds.cagr_retention, "percent")} retained · Sharpe {formatMetric(scenario.thresholds.sharpe_retention, "percent")} retained · drawdown ≤ {formatMetric(scenario.thresholds.maximum_drawdown, "percent")}
+                            </small>
+                          ) : null}
+                        </td>
                         <td><StatusChip state={scenario.state} /></td>
+                        <td>{scenario.score == null ? "—" : `${formatNumber(scenario.score)} / 100`}</td>
                         <td>{formatMetric(scenario.summary?.cagr, "percent")}</td>
                         <td>{formatMetric(scenario.summary?.sharpe_ratio, "number")}</td>
                         <td>{formatMetric(scenario.summary?.maximum_drawdown, "percent")}</td>
+                        <td>{scenario.sharpe_retention == null ? "—" : formatMetric(scenario.sharpe_retention, "percent")}</td>
                         <td>{scenario.cagr_retention == null ? "—" : formatMetric(scenario.cagr_retention, "percent")}</td>
                         <td>{scenario.checks?.length ? `${passed}/${scenario.checks.length}` : "—"}</td>
                       </tr>
@@ -1416,7 +1886,67 @@ function BehaviorGrid({ evidence }) {
   );
 }
 
-function IterationHistory({ candidate }) {
+function flattenStrategySpec(value, prefix = "", result = {}) {
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => flattenStrategySpec(item, `${prefix}[${index}]`, result));
+    return result;
+  }
+  if (value && typeof value === "object") {
+    Object.entries(value).forEach(([key, item]) => {
+      flattenStrategySpec(item, prefix ? `${prefix}.${key}` : key, result);
+    });
+    return result;
+  }
+  result[prefix] = value;
+  return result;
+}
+
+function diffDisplayValue(path, value) {
+  const key = path.split(".").at(-1)?.replace(/\[\d+\]/g, "") || path;
+  return parameterValue(key, value);
+}
+
+function StrategyChangeSummary({ previousSpec, currentSpec, iteration }) {
+  if (!currentSpec) return null;
+  if (!previousSpec) {
+    return (
+      <div className="compiled-change-summary initial">
+        <Code2 size={17} />
+        <div><strong>Initial compiled strategy</strong><p>Trial {iteration} establishes the first validated parameter set injected into the fixed Python template.</p></div>
+      </div>
+    );
+  }
+  const before = flattenStrategySpec(previousSpec);
+  const after = flattenStrategySpec(currentSpec);
+  const ignored = new Set(["schema_version", "strategy_name", "thesis"]);
+  const changes = [...new Set([...Object.keys(before), ...Object.keys(after)])]
+    .filter((path) => !ignored.has(path) && before[path] !== after[path])
+    .map((path) => ({ path, before: before[path], after: after[path] }));
+  return (
+    <div className="compiled-change-panel">
+      <div className="compiled-change-heading">
+        <div><Code2 size={17} /><span><strong>Compiled code delta</strong><small>Trial {iteration - 1} → Trial {iteration}</small></span></div>
+        <b>{changes.length} parameter change{changes.length === 1 ? "" : "s"}</b>
+      </div>
+      {changes.length ? (
+        <div className="compiled-change-list">
+          {changes.slice(0, 10).map((change) => (
+            <div key={change.path}>
+              <code>{change.path}</code>
+              <span>{diffDisplayValue(change.path, change.before)}</span>
+              <ArrowRight size={14} />
+              <strong>{diffDisplayValue(change.path, change.after)}</strong>
+            </div>
+          ))}
+          {changes.length > 10 ? <small>+ {changes.length - 10} additional injected parameter changes</small> : null}
+        </div>
+      ) : <p>No executable parameter changed; this trial reused the same compiled strategy configuration.</p>}
+      <p className="compiled-change-note">The Python engine template is fixed. These JSON parameter changes are the exact executable differences between compiled trials.</p>
+    </div>
+  );
+}
+
+function IterationHistory({ candidate, showCodeChanges = false }) {
   const iterations = candidate?.iterations || [];
   if (!iterations.length) {
     return <p className="muted-copy">Iteration results will appear after the first template backtest.</p>;
@@ -1442,6 +1972,19 @@ function IterationHistory({ candidate }) {
                 <span>Drawdown <strong>{formatMetric(entry.summary?.maximum_drawdown, "percent")}</strong></span>
                 <span>Equity <strong>{formatMetric(entry.summary?.end_equity, "currency")}</strong></span>
               </div>
+              {showCodeChanges ? (
+                <StrategyChangeSummary
+                  previousSpec={iterations[index - 1]?.strategy_spec}
+                  currentSpec={entry.strategy_spec}
+                  iteration={Number(entry.iteration)}
+                />
+              ) : null}
+              {entry.strategy_spec ? (
+                <div className="iteration-configuration">
+                  <span className="parameter-subtitle">Parameters tested in this trial</span>
+                  <StrategyParameters spec={entry.strategy_spec} />
+                </div>
+              ) : null}
               <BehaviorGrid evidence={entry.behavior_evidence} />
               {critique.diagnosis ? (
                 <div className="review-authority">
@@ -1449,16 +1992,43 @@ function IterationHistory({ candidate }) {
                   <div><strong>Performance Critic</strong><span>{critique.diagnosis}</span></div>
                 </div>
               ) : null}
+              {critique.strengths?.length || critique.weaknesses?.length ? (
+                <div className="critic-observation-grid">
+                  <div className="critic-strengths">
+                    <strong>What worked</strong>
+                    <ul>{(critique.strengths || []).map((item, itemIndex) => <li key={itemIndex}>{item}</li>)}</ul>
+                  </div>
+                  <div className="critic-weaknesses">
+                    <strong>What needs attention</strong>
+                    <ul>{(critique.weaknesses || []).map((item, itemIndex) => <li key={itemIndex}>{item}</li>)}</ul>
+                  </div>
+                </div>
+              ) : null}
+              {critique.preserve?.length ? (
+                <div className="preserve-row">
+                  <strong>Preserve next round</strong>
+                  <div>{critique.preserve.map((item, itemIndex) => <span key={itemIndex}>{item}</span>)}</div>
+                </div>
+              ) : null}
               {critique.recommended_changes?.length ? (
                 <div className="repair-request">
                   <strong>Suggestions returned to Designer</strong>
-                  <ul>
+                  <div className="change-list">
                     {critique.recommended_changes.map((change, changeIndex) => (
-                      <li key={`${change.field}-${changeIndex}`}>
-                        <code>{change.field}</code> · {change.direction}: {change.reason}
-                      </li>
+                      <div className="change-card" key={`${change.field}-${changeIndex}`}>
+                        <div>
+                          <code>{readableEnum(change.field.replaceAll(".", " / "))}</code>
+                          <span>{readableEnum(change.direction)}</span>
+                        </div>
+                        <p>{change.reason}</p>
+                      </div>
                     ))}
-                  </ul>
+                  </div>
+                </div>
+              ) : null}
+              {critique.overfitting_warning ? (
+                <div className="overfitting-note">
+                  <strong>Overfitting watch</strong>
                   <p>{critique.overfitting_warning}</p>
                 </div>
               ) : null}
@@ -1470,7 +2040,7 @@ function IterationHistory({ candidate }) {
   );
 }
 
-function GeneratedReviews({ candidates }) {
+function DetailedGeneratedReviews({ candidates }) {
   if (!candidates?.length) return null;
   return (
     <section className="review-card">
@@ -1487,6 +2057,44 @@ function GeneratedReviews({ candidates }) {
             <IterationHistory candidate={candidate} />
           </div>
         ))}
+      </div>
+    </section>
+  );
+}
+
+function GeneratedReviews({ candidates }) {
+  if (!candidates?.length) return null;
+  return (
+    <section className="review-card">
+      <div className="card-heading">
+        <div><span className="section-kicker">Quality Snapshot</span><h2>Generated Strategy Reviews</h2></div>
+        <p>Concise outcomes only. Open AI Forge for parameters, Critic feedback, and compiled changes.</p>
+      </div>
+      <div className="generated-review-summary-grid">
+        {candidates.map((candidate) => {
+          const retained = (candidate.iterations || []).find(
+            (item) => Number(item.iteration) === Number(candidate.best_iteration),
+          ) || (candidate.iterations || []).at(-1);
+          const summary = retained?.summary || candidate.summary || {};
+          const diagnosis = retained?.critique?.diagnosis;
+          return (
+            <article className="generated-review-summary" key={candidate.track}>
+              <div className="candidate-title">
+                <div className="strategy-avatar"><ShieldCheck size={19} /></div>
+                <div><strong>{formatTrack(candidate.track)} Strategy</strong><span>{candidate.iteration_count || 0} trials · retained {candidate.best_iteration || "pending"}</span></div>
+                <StatusChip state={candidate.state} />
+              </div>
+              <div className="generated-review-metrics">
+                <span>CAGR<strong>{formatMetric(summary.cagr, "percent")}</strong></span>
+                <span>Sharpe<strong>{formatMetric(summary.sharpe_ratio, "number")}</strong></span>
+                <span>Drawdown<strong>{formatMetric(summary.maximum_drawdown, "percent")}</strong></span>
+              </div>
+              {diagnosis ? <p>{diagnosis}</p> : null}
+              {candidate.error && ["failed", "rejected"].includes(candidate.state) ? <div className="inline-error">{candidate.error}</div> : null}
+              <small className="forge-detail-hint">Full iteration lineage is available in AI Forge.</small>
+            </article>
+          );
+        })}
       </div>
     </section>
   );
@@ -1565,7 +2173,7 @@ function ArenaWorkspace({ history, loading, error, onRefresh }) {
       <PageHeader
         eyebrow="Best of Five"
         title="Human vs AI · PK Arena"
-        description="Each completed Forge Run is one round. The deterministic Judge balances risk-adjusted return, drawdown, robustness, trading cost, and explainability."
+        description="Each completed Forge Run is one round. The deterministic Judge prioritizes Sharpe and CAGR, then checks drawdown, volatility, cost, execution evidence, and explainability."
         actions={<button className="secondary-button" onClick={onRefresh} disabled={loading}><RefreshCw className={loading ? "spin" : ""} size={16} /> Refresh rounds</button>}
       />
       <section className="arena-scoreboard">
@@ -1641,6 +2249,28 @@ function CodeWorkspace({ run, onBuild }) {
     if (sources.length && !sources.some((item) => item.id === selected)) setSelected(sources[0].id);
   }, [sources, selected]);
   const current = sources.find((item) => item.id === selected);
+  const [copied, setCopied] = useState("");
+  const copyCurrent = async () => {
+    if (!current?.source) return;
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(current.source);
+      } else {
+        const fallback = document.createElement("textarea");
+        fallback.value = current.source;
+        fallback.style.position = "fixed";
+        fallback.style.opacity = "0";
+        document.body.appendChild(fallback);
+        fallback.select();
+        document.execCommand("copy");
+        fallback.remove();
+      }
+      setCopied(current.id);
+      window.setTimeout(() => setCopied(""), 1800);
+    } catch {
+      setCopied("");
+    }
+  };
 
   return (
     <>
@@ -1651,7 +2281,21 @@ function CodeWorkspace({ run, onBuild }) {
             {sources.map((item) => <button key={item.id} className={selected === item.id ? "active" : ""} onClick={() => setSelected(item.id)}><Code2 size={16} /><span>{item.label}<small>{item.category}</small></span></button>)}
           </div>
           <div className="source-viewer">
-            {current ? <><div className="source-header"><div><span>{current.category}</span><h2>{current.label}</h2></div><StatusChip state={current.state} /></div><pre><code>{current.source}</code></pre></> : <div className="chart-empty"><Code2 size={22} /><span>Source code is not available yet.</span></div>}
+            {current ? (
+              <>
+                <div className="source-header">
+                  <div><span>{current.category}</span><h2>{current.label}</h2></div>
+                  <div className="source-header-actions">
+                    <StatusChip state={current.state} />
+                    <button type="button" className={`copy-code-button ${copied === current.id ? "copied" : ""}`} onClick={copyCurrent}>
+                      {copied === current.id ? <Check size={16} /> : <Copy size={16} />}
+                      {copied === current.id ? "Copied" : "Copy code"}
+                    </button>
+                  </div>
+                </div>
+                <PythonCodeBlock source={current.source} />
+              </>
+            ) : <div className="chart-empty"><Code2 size={22} /><span>Source code is not available yet.</span></div>}
           </div>
         </section>
       )}
@@ -1725,7 +2369,8 @@ export default function App() {
 
   useEffect(() => {
     const robustnessActive = ["queued", "running"].includes(run?.robustness?.state);
-    if (!runId || (run && TERMINAL_RUN_STATES.has(run.state) && !robustnessActive)) return undefined;
+    const educationActive = run?.battle_analysis?.education_summary?.llm_state === "pending";
+    if (!runId || (run && TERMINAL_RUN_STATES.has(run.state) && !robustnessActive && !educationActive)) return undefined;
     const timer = window.setInterval(() => loadRun(runId, { quiet: true }), 3000);
     return () => window.clearInterval(timer);
   }, [runId, run, loadRun]);

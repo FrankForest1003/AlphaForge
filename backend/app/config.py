@@ -10,7 +10,7 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 
 @dataclass(frozen=True)
 class Settings:
-    worker_base_url: str
+    worker_urls: tuple[str, ...]
     worker_token: str
     universe_path: Path
     trace_root: Path
@@ -34,10 +34,20 @@ def _env_bool(name: str, default: bool) -> bool:
 
 
 def load_settings() -> Settings:
+    configured_urls = os.getenv("ALPHAFORGE_WORKER_URLS", "").strip()
+    worker_urls = tuple(
+        item.strip().rstrip("/")
+        for item in configured_urls.split(",")
+        if item.strip()
+    )
+    if not worker_urls:
+        worker_urls = (
+            os.getenv(
+                "ALPHAFORGE_WORKER_URL", "http://127.0.0.1:18081"
+            ).rstrip("/"),
+        )
     return Settings(
-        worker_base_url=os.getenv(
-            "ALPHAFORGE_WORKER_URL", "http://127.0.0.1:18081"
-        ).rstrip("/"),
+        worker_urls=worker_urls,
         worker_token=os.getenv("ALPHAFORGE_WORKER_TOKEN", ""),
         universe_path=Path(
             os.getenv(

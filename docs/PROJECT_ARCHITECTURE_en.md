@@ -11,10 +11,11 @@ three AI tracks.
 
 - React, Vite, and Recharts for workflow and result visualization;
 - FastAPI and Pydantic for orchestration, APIs, and structured contracts;
-- DeepSeek JSON API for a Parameter Designer and Performance Critic;
+- DeepSeek JSON API for a Parameter Designer, Performance Critic, and asynchronous Teaching Explainer;
 - QuantConnect LEAN as the sole backtest engine;
 - pandas, NumPy, and scikit-learn inside a fixed strategy template;
-- Docker Compose for the frontend, backend, and LEAN Worker.
+- Docker Compose for the frontend, backend, and four isolated LEAN Worker slots.
+- A sticky Worker Pool routes by current load. Market data is shared read-only, while launcher configuration, locks, jobs, models, and result directories remain isolated.
 
 ## AI workflow
 
@@ -59,10 +60,21 @@ The UI shows all three trials, parameter changes, Critic feedback, returns,
 drawdowns, turnover, costs, equity curves, and the retained trial. This turns the
 optimization loop into an observable lesson about risk-return trade-offs.
 
+The deterministic Judge uses 35% Sharpe, 30% CAGR, 15% drawdown control, and 5%
+each for volatility, cost, execution evidence, and explainability. The Teaching
+Explainer runs after completion and may only translate frozen evidence into a
+strategy explanation, one-variable next-round experiments, and a relevant quant
+concept. Its failure never changes the winner or blocks the completed run.
+
+Guided Human strategies offer basic presets and an advanced multi-factor form.
+Both compile through the same validated fixed template; complete custom
+QuantConnect Python remains available as a separate checked input.
+
 Selecting the best of three still creates multiple-testing bias. The retained
 trial is an in-sample development result, not evidence of future profit.
-Robustness scenarios communicate sensitivity to periods, costs, and execution
-assumptions.
+Robustness protocol v2 applies scenario-specific CAGR/Sharpe retention and
+drawdown thresholds, weights regime, start-date, friction, and universe stresses,
+and requires every planned run plus an acceptable worst-case scenario.
 
 ## Information boundary
 

@@ -1,16 +1,18 @@
 from __future__ import annotations
 
 import json
+import threading
 from types import SimpleNamespace
 
 import pytest
 
+import app.services.baseline_service as service_module
 from agent import DeepSeekCritic, DeepSeekDesigner
 from agent.critic import build_metric_comparisons
 from agent.prompts import PARAMETER_RULES, TRACK_SPEC_EXAMPLES
 from app.schemas import CritiqueReport, RunSettings, StrategyTemplateSpec
 from app.services.baseline_service import ForgeService
-from app.services.worker_client import WorkerClientError
+from app.services.worker_client import LeanWorkerPoolClient, WorkerClientError
 
 
 def traditional_spec(window: int = 126) -> dict:
@@ -524,4 +526,179 @@ def test_wait_for_worker_retries_only_transient_unknown_run(monkeypatch):
 
     assert result["status"] == "completed"
     assert worker.polls == 3
+    service._executor.shutdown(wait=True)
+
+
+def test_worker_pool_routes_every_job_back_to_its_original_slot():
+    class Worker:
+        def __init__(self, name):
+            self.name = name
+            self.submitted = []
+            self.polled = []
+
+        def submit(self, strategy_id, parameters):
+            run_id = f"{self.name}-{len(self.submitted) + 1}"
+            self.submitted.append(run_id)
+            return {"run_id": run_id, "state": "queued"}
+
+        def job(self, run_id):
+            self.polled.append(run_id)
+            return {"state": "completed", "result_path": "result.json"}
+
+        def result(self, run_id):
+            return {"status": "completed", "run_id": run_id}
+
+        def health(self):
+            return {"status": "ok"}
+
+    first = Worker("first")
+    second = Worker("second")
+    pool = LeanWorkerPoolClient([first, second])
+
+    a = pool.submit("a", {})
+    b = pool.submit("b", {})
+    c = pool.submit("c", {})
+    assert a["run_id"].startswith("worker-1::first-")
+    assert b["run_id"].startswith("worker-2::second-")
+    assert c["run_id"].startswith("worker-1::first-")
+
+    pool.job(b["run_id"])
+    d = pool.submit("d", {})
+    assert d["run_id"].startswith("worker-2::second-")
+    assert pool.result(a["run_id"])["run_id"] == "first-1"
+    assert first.polled == []
+    assert second.polled == ["second-1"]
+
+    health = pool.health()
+    assert health["status"] == "ok"
+    assert health["worker_count"] == 2
+    assert health["ready_workers"] == 2
+
+
+def test_execute_parallelizes_baselines_and_candidate_tracks(monkeypatch):
+    baseline_barrier = threading.Barrier(4)
+    candidate_barrier = threading.Barrier(3)
+
+    class Designer:
+        def generate(self, **kwargs):
+            track = kwargs["track"]
+            return {
+                "design": {
+                    "reference_baselines": ["Momentum Rank"],
+                    "improvement_hypothesis": "A bounded alternative may improve results.",
+                    "differentiation": ["Uses a distinct parameter set."],
+                    "expected_tradeoff": "Improvement may increase estimation risk.",
+                },
+                "strategy_spec": TRACK_SPEC_EXAMPLES[track],
+                "usage": {},
+                "trace": {},
+            }
+
+    run_settings = RunSettings(
+        symbols=["MSFT", "AAPL", "NVDA", "GOOGL", "AMZN"],
+        start_date="2020-01-02",
+        end_date="2024-12-31",
+        initial_cash=100_000,
+        benchmark="SPY",
+        transaction_cost_bps=10,
+        slippage_bps=5,
+    )
+    service = ForgeService(
+        worker=object(),
+        designer=Designer(),
+        critic=object(),
+        allowed_symbols=set(run_settings.symbols),
+        allowed_benchmarks={"SPY"},
+    )
+    run_id = "forge-parallel"
+    service._runs[run_id] = {
+        "run_id": run_id,
+        "state": "queued",
+        "stage": "",
+        "settings": run_settings.model_dump(mode="json"),
+        "baselines": [
+            {
+                "name": item["name"],
+                "family": item["family"],
+                "state": "waiting",
+                "summary": {},
+                "analysis": {},
+                "behavior_evidence": {},
+            }
+            for item in service_module.BASELINES
+        ],
+        "human": {
+            "state": "waiting",
+            "summary": {},
+            "analysis": {},
+            "behavior_evidence": {},
+        },
+        "candidates": [
+            {
+                "track": track,
+                "state": "waiting",
+                "summary": {},
+                "analysis": {},
+                "behavior_evidence": {},
+                "iterations": [],
+            }
+            for track in ("Traditional", "ML", "Hybrid")
+        ],
+        "updated_at": "",
+        "battle_analysis": None,
+    }
+    service._traces[run_id] = {
+        "agent_calls": [],
+        "worker_attempts": [],
+        "updated_at": "",
+    }
+
+    def fake_baseline(*, run_id, index, parameters):
+        baseline_barrier.wait(timeout=2)
+        item = service_module.BASELINES[index]
+        return {
+            "name": item["name"],
+            "family": item["family"],
+            "summary": {
+                "sharpe_ratio": 0.5 + index / 10,
+                "cagr": 0.1 + index / 100,
+                "maximum_drawdown": 0.2 + index / 100,
+            },
+            "performance_profile": {},
+            "execution_profile": {},
+            "public_lesson": {},
+        }
+
+    def fake_human(**kwargs):
+        service._change_human(run_id, state="completed")
+
+    def fake_candidate(*, index, track, **kwargs):
+        candidate_barrier.wait(timeout=2)
+        service._change_item(
+            run_id,
+            "candidates",
+            index,
+            state="accepted",
+            summary={"sharpe_ratio": 1.0, "cagr": 0.2, "maximum_drawdown": 0.15},
+        )
+
+    monkeypatch.setattr(service, "_run_public_baseline", fake_baseline)
+    monkeypatch.setattr(service, "_run_human", fake_human)
+    monkeypatch.setattr(service, "_run_template_candidate", fake_candidate)
+    monkeypatch.setattr(service, "_persist_history", lambda _: None)
+    monkeypatch.setattr(
+        service_module,
+        "build_battle_analysis",
+        lambda run: {"parallel_test": True},
+    )
+
+    service._execute(run_id, run_settings, "ignored")
+
+    run = service._runs[run_id]
+    assert run["state"] == "completed"
+    assert [item["name"] for item in service._traces[run_id]["baseline_results"]] == [
+        item["name"] for item in service_module.BASELINES
+    ]
+    assert all(item["state"] == "accepted" for item in run["candidates"])
+    assert run["battle_analysis"] == {"parallel_test": True}
     service._executor.shutdown(wait=True)

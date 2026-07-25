@@ -1,31 +1,40 @@
 name: alphaforge
 
+x-lean-worker-common: &lean-worker-common
+  build:
+    context: ./lean_worker
+    dockerfile: Dockerfile
+    args:
+      LEAN_REF: ${LEAN_REF:-0269115d3cfbf691c7a0b7cfcc9ed412cafb91f6}
+      RUNTIME_VERSION: ${RUNTIME_VERSION:-1.2.0}
+  image: alphaforge/local-lean-runtime:${RUNTIME_VERSION:-1.2.0}
+  platform: linux/amd64
+  restart: unless-stopped
+  environment: &lean-worker-environment
+    ALPHAFORGE_API_TOKEN: ${ALPHAFORGE_API_TOKEN:-local-dev-token}
+    ALPHAFORGE_WORKER_CONFIG: /app/config/worker.json
+    ALPHAFORGE_UNIVERSE_CONFIG: /app/config/universe_whitelist_v1.0.json
+    TIINGO_API_TOKEN: ${TIINGO_API_TOKEN:-}
+    TIINGO_START_DATE: ${TIINGO_START_DATE:-2014-01-01}
+    ALPHAFORGE_AUTO_GENERATE_SAMPLE_DATA: ${ALPHAFORGE_AUTO_GENERATE_SAMPLE_DATA:-false}
+    ALPHAFORGE_RUNTIME_VERSION: ${RUNTIME_VERSION:-1.2.0}
+    PYTHONHASHSEED: "0"
+    OMP_NUM_THREADS: "1"
+    OPENBLAS_NUM_THREADS: "1"
+    MKL_NUM_THREADS: "1"
+    NUMEXPR_NUM_THREADS: "1"
+  healthcheck:
+    test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8081/health"]
+    interval: 15s
+    timeout: 5s
+    retries: 20
+    start_period: 60s
+
 services:
   lean-worker:
-    build:
-      context: ./lean_worker
-      dockerfile: Dockerfile
-      args:
-        LEAN_REF: ${LEAN_REF:-0269115d3cfbf691c7a0b7cfcc9ed412cafb91f6}
-        RUNTIME_VERSION: ${RUNTIME_VERSION:-1.2.0}
-    image: alphaforge/local-lean-runtime:${RUNTIME_VERSION:-1.2.0}
-    platform: linux/amd64
-    restart: unless-stopped
+    <<: *lean-worker-common
     ports:
       - "127.0.0.1:${ALPHAFORGE_WORKER_PORT:-18081}:8081"
-    environment:
-      ALPHAFORGE_API_TOKEN: ${ALPHAFORGE_API_TOKEN:-local-dev-token}
-      ALPHAFORGE_WORKER_CONFIG: /app/config/worker.json
-      ALPHAFORGE_UNIVERSE_CONFIG: /app/config/universe_whitelist_v1.0.json
-      TIINGO_API_TOKEN: ${TIINGO_API_TOKEN:-}
-      TIINGO_START_DATE: ${TIINGO_START_DATE:-2014-01-01}
-      ALPHAFORGE_AUTO_GENERATE_SAMPLE_DATA: ${ALPHAFORGE_AUTO_GENERATE_SAMPLE_DATA:-false}
-      ALPHAFORGE_RUNTIME_VERSION: ${RUNTIME_VERSION:-1.2.0}
-      PYTHONHASHSEED: "0"
-      OMP_NUM_THREADS: "1"
-      OPENBLAS_NUM_THREADS: "1"
-      MKL_NUM_THREADS: "1"
-      NUMEXPR_NUM_THREADS: "1"
     volumes:
       - ./lean_worker/workspace/data:/data
       - ./lean_worker/workspace/results:/runtime/results
@@ -34,12 +43,39 @@ services:
       - ./lean_worker/workspace/models:/runtime/models
       - ./lean_worker/workspace/locks:/runtime/locks
       - ./lean_worker/strategies:/strategies:ro
-    healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8081/health"]
-      interval: 15s
-      timeout: 5s
-      retries: 20
-      start_period: 60s
+
+  lean-worker-2:
+    <<: *lean-worker-common
+    volumes:
+      - ./lean_worker/workspace/data:/data:ro
+      - ./lean_worker/workspace/slots/worker-2/results:/runtime/results
+      - ./lean_worker/workspace/slots/worker-2/jobs:/runtime/jobs
+      - ./lean_worker/workspace/slots/worker-2/service:/runtime/service
+      - ./lean_worker/workspace/slots/worker-2/models:/runtime/models
+      - ./lean_worker/workspace/slots/worker-2/locks:/runtime/locks
+      - ./lean_worker/strategies:/strategies:ro
+
+  lean-worker-3:
+    <<: *lean-worker-common
+    volumes:
+      - ./lean_worker/workspace/data:/data:ro
+      - ./lean_worker/workspace/slots/worker-3/results:/runtime/results
+      - ./lean_worker/workspace/slots/worker-3/jobs:/runtime/jobs
+      - ./lean_worker/workspace/slots/worker-3/service:/runtime/service
+      - ./lean_worker/workspace/slots/worker-3/models:/runtime/models
+      - ./lean_worker/workspace/slots/worker-3/locks:/runtime/locks
+      - ./lean_worker/strategies:/strategies:ro
+
+  lean-worker-4:
+    <<: *lean-worker-common
+    volumes:
+      - ./lean_worker/workspace/data:/data:ro
+      - ./lean_worker/workspace/slots/worker-4/results:/runtime/results
+      - ./lean_worker/workspace/slots/worker-4/jobs:/runtime/jobs
+      - ./lean_worker/workspace/slots/worker-4/service:/runtime/service
+      - ./lean_worker/workspace/slots/worker-4/models:/runtime/models
+      - ./lean_worker/workspace/slots/worker-4/locks:/runtime/locks
+      - ./lean_worker/strategies:/strategies:ro
 
   backend:
     build:
@@ -49,7 +85,7 @@ services:
     ports:
       - "127.0.0.1:${ALPHAFORGE_BACKEND_PORT:-8000}:8000"
     environment:
-      ALPHAFORGE_WORKER_URL: http://lean-worker:8081
+      ALPHAFORGE_WORKER_URLS: http://lean-worker:8081,http://lean-worker-2:8081,http://lean-worker-3:8081,http://lean-worker-4:8081
       ALPHAFORGE_WORKER_TOKEN: ${ALPHAFORGE_API_TOKEN:-local-dev-token}
       ALPHAFORGE_UNIVERSE_CONFIG: /app/configs/universe_whitelist_v1.0.json
       ALPHAFORGE_TRACE_ROOT: /runtime/forge-traces
@@ -63,6 +99,12 @@ services:
       - ./backend/workspace/run_history:/runtime/run-history
     depends_on:
       lean-worker:
+        condition: service_healthy
+      lean-worker-2:
+        condition: service_healthy
+      lean-worker-3:
+        condition: service_healthy
+      lean-worker-4:
         condition: service_healthy
 
   frontend:

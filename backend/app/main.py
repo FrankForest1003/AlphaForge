@@ -9,13 +9,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from agent import (
     DeepSeekCritic,
     DeepSeekDesigner,
+    DeepSeekEducator,
 )
 from app.config import load_settings
 from app.schemas import ForgeRunRequest, RobustnessRunRequest
 from app.services import (
     BASELINES,
     ForgeService,
-    LeanWorkerClient,
+    LeanWorkerPoolClient,
     WorkerClientError,
 )
 
@@ -31,7 +32,10 @@ benchmarks = {
     for item in universe.get("analysis_dependencies", [])
     if item.get("role") == "benchmark"
 }
-worker = LeanWorkerClient(settings.worker_base_url, settings.worker_token)
+worker = LeanWorkerPoolClient.from_urls(
+    settings.worker_urls,
+    settings.worker_token,
+)
 agent_options = {
     "api_key": settings.api_key,
     "base_url": settings.base_url,
@@ -40,10 +44,12 @@ agent_options = {
 }
 designer = DeepSeekDesigner(**agent_options)
 critic = DeepSeekCritic(**agent_options)
+educator = DeepSeekEducator(**agent_options)
 forge = ForgeService(
     worker=worker,
     designer=designer,
     critic=critic,
+    educator=educator,
     allowed_symbols=tradable_symbols,
     allowed_benchmarks=benchmarks,
     trace_root=settings.trace_root,
@@ -79,6 +85,7 @@ def health() -> dict[str, Any]:
         "worker": worker_health,
         "designer": designer.health(),
         "critic": critic.health(),
+        "educator": educator.health(),
     }
 
 

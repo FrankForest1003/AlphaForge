@@ -39,7 +39,7 @@ docker compose up -d --force-recreate backend
 ```powershell
 docker compose up -d --build
 docker compose ps
-docker compose logs -f backend lean-worker frontend
+docker compose logs -f backend lean-worker lean-worker-2 lean-worker-3 lean-worker-4 frontend
 ```
 
 打开 `http://localhost:8501`。先在 Build 页面确认至少 5 只白名单股票和

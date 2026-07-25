@@ -14,7 +14,8 @@ AlphaForge 是一个面向金融教育的本地策略实验平台。用户在冻
 - DeepSeek JSON API：Parameter Designer 与 Performance Critic；
 - QuantConnect LEAN：唯一回测执行引擎；
 - pandas、NumPy、scikit-learn：固定模板内的数据和模型流水线；
-- Docker Compose：Frontend、Backend、LEAN Worker 本地编排。
+- Docker Compose：Frontend、Backend 和三个隔离的 LEAN Worker 槽位本地编排。
+- Worker Pool：按当前负载把任务固定路由到一个 Worker；共享只读行情数据，但隔离配置、锁、任务、模型和结果目录。
 
 ## 系统流程
 

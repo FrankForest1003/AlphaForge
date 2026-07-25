@@ -57,10 +57,34 @@ class RunSettings(BaseModel):
 class GuidedHumanStrategy(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    signal: Literal["momentum", "mean_reversion"] = "momentum"
-    lookback_days: Literal[20, 60, 120] = 60
+    level: Literal["basic", "advanced"] = "basic"
+    signal: Literal[
+        "momentum",
+        "mean_reversion",
+        "low_volatility",
+        "momentum_low_volatility",
+        "trend_quality",
+    ] = "momentum"
+    lookback_days: int = Field(default=60, ge=10, le=252)
+    secondary_lookback_days: int = Field(default=63, ge=10, le=252)
+    primary_signal_weight: float = Field(default=0.65, ge=0.20, le=0.90)
     rebalance: Literal["weekly", "monthly"] = "monthly"
-    holdings: int = Field(default=2, ge=1, le=3)
+    holdings: int = Field(default=3, ge=2, le=10)
+    weighting: Literal["equal", "inverse_volatility", "score"] = "equal"
+    gross_exposure: float = Field(default=0.90, ge=0.50, le=0.95)
+    max_position_weight: float = Field(default=0.45, ge=0.10, le=0.60)
+    rebalance_threshold: float = Field(default=0.02, ge=0.0, le=0.10)
+    require_positive_score: bool = False
+    market_trend_filter: bool = False
+    market_sma_window: int = Field(default=200, ge=20, le=252)
+
+    @model_validator(mode="after")
+    def validate_capacity(self):
+        if self.holdings * self.max_position_weight + 1e-12 < self.gross_exposure:
+            raise ValueError(
+                "holdings * max_position_weight must cover gross_exposure"
+            )
+        return self
 
 
 class HumanStrategyRequest(BaseModel):

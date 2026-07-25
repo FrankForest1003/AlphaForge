@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom/vitest";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import App, { HUMAN_CODE_STARTER } from "./App";
@@ -92,7 +92,7 @@ function parameterRun() {
       state: "completed",
       summary: {},
     })),
-    human: { state: "completed", source_code: "PRIVATE HUMAN SOURCE", summary: {} },
+    human: { state: "completed", source_code: "class UserStrategy: pass  # PRIVATE HUMAN SOURCE", summary: {} },
     candidates: [
       {
         track: "Traditional",
@@ -123,6 +123,18 @@ describe("AlphaForge Studio", () => {
     expect(await screen.findByRole("heading", { name: "Create a Backtest" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /Complete Python Code/i }));
     expect(screen.getByLabelText("Complete Strategy Source")).toHaveValue(HUMAN_CODE_STARTER);
+    expect(document.querySelector(".python-editor .python-keyword")).toHaveTextContent("from");
+  });
+
+  it("offers a bounded advanced multi-factor Human template", async () => {
+    render(<App />);
+    await screen.findByRole("heading", { name: "Create a Backtest" });
+    fireEvent.click(screen.getByRole("button", { name: /Advanced Multi-factor/i }));
+
+    expect(screen.getByText("Portfolio Weighting")).toBeInTheDocument();
+    expect(screen.getByText("Gross Exposure")).toBeInTheDocument();
+    expect(screen.getByText("Market Regime Filter")).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "Momentum + Low Volatility" })).toBeInTheDocument();
   });
 
   it("shows the parameter-template AI workflow without Human leakage", async () => {
@@ -145,10 +157,30 @@ describe("AlphaForge Studio", () => {
     installFetch(run);
     render(<App />);
     await screen.findByRole("heading", { name: "Strategy Results" });
+    fireEvent.click(screen.getByRole("button", { name: /AI Forge/i }));
 
     expect(screen.getAllByText("Iteration 1").length).toBeGreaterThan(0);
     expect(screen.getByText("Best retained")).toBeInTheDocument();
     expect(screen.getByText("Performance Critic")).toBeInTheDocument();
-    expect(screen.getByText(/portfolio.gross_exposure/)).toBeInTheDocument();
+    expect(screen.getByText(/Portfolio \/ Gross Exposure/)).toBeInTheDocument();
+  });
+
+  it("highlights and copies complete strategy source", async () => {
+    const run = parameterRun();
+    window.history.replaceState({}, "", "/?run_id=forge-test");
+    installFetch(run);
+    const writeText = vi.fn(() => Promise.resolve());
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    render(<App />);
+    await screen.findByRole("heading", { name: "Strategy Results" });
+    fireEvent.click(screen.getByRole("button", { name: /Strategy Code/i }));
+
+    expect(document.querySelector(".source-viewer .python-keyword")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Copy code/i }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith("class UserStrategy: pass  # PRIVATE HUMAN SOURCE"));
+    expect(screen.getByRole("button", { name: /Copied/i })).toBeInTheDocument();
   });
 });

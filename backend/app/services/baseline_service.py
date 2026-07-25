@@ -463,7 +463,9 @@ def utc_now() -> str:
 
 
 def build_guided_human_source(strategy: GuidedHumanStrategy) -> str:
-    """Build the complete LEAN source for the small guided Human form."""
+    """Compile basic or advanced Guided Mode through the fixed template."""
+
+    return compile_strategy_source(_guided_human_strategy_spec(strategy))
 
     reverse = strategy.signal == "momentum"
     signal_label = "Momentum" if reverse else "Mean reversion"
@@ -569,6 +571,116 @@ class UserStrategy(AlphaForgeBaseAlgorithm):
             tag="Guided Human · {signal_label} · establish",
         )
 '''
+
+
+def _guided_human_strategy_spec(
+    strategy: GuidedHumanStrategy,
+) -> dict[str, Any]:
+    """Map user-friendly presets to the validated fixed-template DSL."""
+
+    primary_weight = strategy.primary_signal_weight
+    secondary_weight = round(1.0 - primary_weight, 6)
+    recipes: dict[str, list[dict[str, Any]]] = {
+        "momentum": [
+            {
+                "feature": {"kind": "return", "window": strategy.lookback_days},
+                "direction": "higher",
+                "weight": 1.0,
+            }
+        ],
+        "mean_reversion": [
+            {
+                "feature": {"kind": "return", "window": strategy.lookback_days},
+                "direction": "lower",
+                "weight": 1.0,
+            }
+        ],
+        "low_volatility": [
+            {
+                "feature": {
+                    "kind": "volatility",
+                    "window": strategy.secondary_lookback_days,
+                },
+                "direction": "lower",
+                "weight": 1.0,
+            }
+        ],
+        "momentum_low_volatility": [
+            {
+                "feature": {"kind": "return", "window": strategy.lookback_days},
+                "direction": "higher",
+                "weight": primary_weight,
+            },
+            {
+                "feature": {
+                    "kind": "volatility",
+                    "window": strategy.secondary_lookback_days,
+                },
+                "direction": "lower",
+                "weight": secondary_weight,
+            },
+        ],
+        "trend_quality": [
+            {
+                "feature": {
+                    "kind": "relative_return",
+                    "window": strategy.lookback_days,
+                },
+                "direction": "higher",
+                "weight": primary_weight,
+            },
+            {
+                "feature": {
+                    "kind": "sma_gap",
+                    "window": strategy.secondary_lookback_days,
+                },
+                "direction": "higher",
+                "weight": secondary_weight,
+            },
+        ],
+    }
+    labels = {
+        "momentum": "Momentum Rank",
+        "mean_reversion": "Mean Reversion",
+        "low_volatility": "Low Volatility",
+        "momentum_low_volatility": "Momentum and Low Volatility",
+        "trend_quality": "Relative Trend Quality",
+    }
+    return {
+        "schema_version": TEMPLATE_VERSION,
+        "strategy_name": f"Human Guided - {labels[strategy.signal]}",
+        "track": "Traditional",
+        "thesis": (
+            f"A user-configured {labels[strategy.signal].lower()} strategy "
+            "compiled through the fixed AlphaForge template."
+        ),
+        "signal": {"components": recipes[strategy.signal]},
+        "model": None,
+        "selection": {
+            "top_k": strategy.holdings,
+            "require_positive_score": strategy.require_positive_score,
+            "hybrid_model_weight": 0.50,
+        },
+        "portfolio": {
+            "weighting": strategy.weighting,
+            "gross_exposure": strategy.gross_exposure,
+            "max_position_weight": strategy.max_position_weight,
+            "volatility_window": strategy.secondary_lookback_days,
+            "minimum_variance_blend": 0.0,
+            "rebalance_threshold": strategy.rebalance_threshold,
+        },
+        "schedule": {
+            "frequency": strategy.rebalance,
+            "minutes_after_open": 30,
+        },
+        "risk": {
+            "market_trend_filter": strategy.market_trend_filter,
+            "market_sma_window": strategy.market_sma_window,
+            "stop_loss": None,
+            "maximum_drawdown": None,
+            "cooldown_days": 21,
+        },
+    }
 
 
 def _comparison_entries(run: dict[str, Any]) -> list[dict[str, Any]]:
@@ -719,24 +831,6 @@ def build_battle_analysis(run: dict[str, Any]) -> dict[str, Any]:
         turnover = _entry_metric(entry, "annualized_turnover")
         fees = _entry_metric(entry, "total_fees")
         fee_rate = fees / initial_cash if fees is not None else None
-        risk_adjusted = (
-            0.65 * _normalized(sharpe, metric_values["sharpe_ratio"])
-            + 0.35 * _normalized(cagr, metric_values["cagr"])
-        )
-        drawdown_control = (
-            0.65
-            * _normalized(
-                drawdown,
-                metric_values["maximum_drawdown"],
-                lower_is_better=True,
-            )
-            + 0.35
-            * _normalized(
-                volatility,
-                metric_values["annualized_volatility"],
-                lower_is_better=True,
-            )
-        )
         evidence = entry["behavior_evidence"]
         evidence_quality = statistics.fmean(
             [
@@ -745,7 +839,6 @@ def build_battle_analysis(run: dict[str, Any]) -> dict[str, Any]:
                 1.0 if float(evidence.get("max_gross_exposure") or 0) > 0 else 0.0,
             ]
         )
-        robustness = evidence_quality
         cost = (
             0.6
             * _normalized(
@@ -756,17 +849,43 @@ def build_battle_analysis(run: dict[str, Any]) -> dict[str, Any]:
             + 0.4 * _normalized(fee_rate, fee_rates, lower_is_better=True)
         )
         components = {
-            "risk_adjusted_return": round(risk_adjusted * 100, 2),
-            "drawdown_and_volatility": round(drawdown_control * 100, 2),
-            "robustness": round(robustness * 100, 2),
-            "cost_and_turnover": round(cost * 100, 2),
+            "sharpe_ratio": round(
+                _normalized(sharpe, metric_values["sharpe_ratio"]) * 100,
+                2,
+            ),
+            "cagr": round(
+                _normalized(cagr, metric_values["cagr"]) * 100,
+                2,
+            ),
+            "drawdown_control": round(
+                _normalized(
+                    drawdown,
+                    metric_values["maximum_drawdown"],
+                    lower_is_better=True,
+                )
+                * 100,
+                2,
+            ),
+            "volatility_control": round(
+                _normalized(
+                    volatility,
+                    metric_values["annualized_volatility"],
+                    lower_is_better=True,
+                )
+                * 100,
+                2,
+            ),
+            "cost_efficiency": round(cost * 100, 2),
+            "execution_evidence": round(evidence_quality * 100, 2),
             "explainability": round(float(entry["explainability"]) * 100, 2),
         }
         score = (
-            components["risk_adjusted_return"] * 0.40
-            + components["drawdown_and_volatility"] * 0.25
-            + components["robustness"] * 0.20
-            + components["cost_and_turnover"] * 0.10
+            components["sharpe_ratio"] * 0.35
+            + components["cagr"] * 0.30
+            + components["drawdown_control"] * 0.15
+            + components["volatility_control"] * 0.05
+            + components["cost_efficiency"] * 0.05
+            + components["execution_evidence"] * 0.05
             + components["explainability"] * 0.05
         )
         scorecards.append(
@@ -938,12 +1057,14 @@ def build_battle_analysis(run: dict[str, Any]) -> dict[str, Any]:
     return {
         "schema_version": "1.0",
         "judge": {
-            "method": "deterministic_weighted_score_v1",
+            "method": "deterministic_weighted_score_v2",
             "weights": {
-                "risk_adjusted_return": 0.40,
-                "drawdown_and_volatility": 0.25,
-                "robustness": 0.20,
-                "cost_and_turnover": 0.10,
+                "sharpe_ratio": 0.35,
+                "cagr": 0.30,
+                "drawdown_control": 0.15,
+                "volatility_control": 0.05,
+                "cost_efficiency": 0.05,
+                "execution_evidence": 0.05,
                 "explainability": 0.05,
             },
             "draw_band_points": 2.0,
@@ -954,6 +1075,9 @@ def build_battle_analysis(run: dict[str, Any]) -> dict[str, Any]:
         "overall_best": copy.deepcopy(overall_best),
         "verdict": verdict,
         "education_summary": {
+            "llm_state": "pending",
+            "llm_review": None,
+            "llm_error": None,
             "best_strategy_analysis": {
                 "headline": (
                     f"Why {overall_best['label']} leads this round"
@@ -992,109 +1116,197 @@ def build_robustness_verdict(
     primary_summary: dict[str, Any],
     scenarios: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    """Score deterministic stress runs without asking an LLM to judge itself."""
+    """Score stresses with scenario-specific retention and worst-case safeguards."""
 
-    primary_cagr = _number(primary_summary.get("cagr"), 0.0)
-    primary_sharpe = _number(primary_summary.get("sharpe_ratio"), 0.0)
-    primary_drawdown = _number(
-        primary_summary.get("maximum_drawdown"),
-        0.0,
+    primary_cagr = _number(primary_summary.get("cagr"), 0.0) or 0.0
+    primary_sharpe = _number(primary_summary.get("sharpe_ratio"), 0.0) or 0.0
+    primary_drawdown = (
+        _number(primary_summary.get("maximum_drawdown"), 0.0) or 0.0
     )
-    evaluated = [item for item in scenarios if item.get("state") != "skipped"]
-    passed_checks = 0
-    total_checks = 0
+    policies = {
+        "recent_regime": {
+            "weight": 0.35,
+            "cagr_retention": 0.55,
+            "sharpe_retention": 0.50,
+            "drawdown_multiple": 1.35,
+            "drawdown_addition": 0.08,
+        },
+        "delayed_start": {
+            "weight": 0.25,
+            "cagr_retention": 0.65,
+            "sharpe_retention": 0.60,
+            "drawdown_multiple": 1.30,
+            "drawdown_addition": 0.07,
+        },
+        "friction_2x": {
+            "weight": 0.25,
+            "cagr_retention": 0.80,
+            "sharpe_retention": 0.75,
+            "drawdown_multiple": 1.20,
+            "drawdown_addition": 0.05,
+        },
+        "universe_dropout": {
+            "weight": 0.15,
+            "cagr_retention": 0.65,
+            "sharpe_retention": 0.60,
+            "drawdown_multiple": 1.30,
+            "drawdown_addition": 0.07,
+        },
+    }
+    evaluated = [
+        item
+        for item in scenarios
+        if item.get("state") != "skipped" and item.get("id") in policies
+    ]
     completed_count = 0
+    weighted_score = 0.0
+    active_weight = 0.0
+    scenario_scores: list[float] = []
+    critical_failures: list[str] = []
+
     for scenario in evaluated:
+        policy = policies[scenario["id"]]
         summary = scenario.get("summary") or {}
         behavior = scenario.get("behavior_evidence") or {}
         completed = scenario.get("state") == "completed"
+        active = (
+            completed
+            and int(behavior.get("filled_order_count") or 0) > 0
+            and float(behavior.get("max_gross_exposure") or 0) > 0
+        )
         if completed:
             completed_count += 1
-        cagr = _number(summary.get("cagr"), 0.0)
-        sharpe = _number(summary.get("sharpe_ratio"), 0.0)
-        drawdown = _number(summary.get("maximum_drawdown"), 0.0)
+        cagr = _number(summary.get("cagr"), 0.0) or 0.0
+        sharpe = _number(summary.get("sharpe_ratio"), 0.0) or 0.0
+        drawdown = _number(summary.get("maximum_drawdown"), 1.0) or 1.0
+        cagr_retention = cagr / primary_cagr if primary_cagr > 0 else None
+        sharpe_retention = (
+            sharpe / primary_sharpe if primary_sharpe > 0 else None
+        )
         cagr_floor = (
-            primary_cagr
-            * (0.70 if scenario.get("id") == "friction_2x" else 0.35)
+            primary_cagr * policy["cagr_retention"]
             if primary_cagr > 0
             else 0.0
         )
-        drawdown_ceiling = min(0.60, max(0.35, primary_drawdown + 0.15))
+        sharpe_floor = (
+            primary_sharpe * policy["sharpe_retention"]
+            if primary_sharpe > 0
+            else 0.0
+        )
+        drawdown_ceiling = min(
+            0.60,
+            max(
+                primary_drawdown * policy["drawdown_multiple"],
+                primary_drawdown + policy["drawdown_addition"],
+            ),
+        )
         checks = [
             {
                 "id": "completed",
+                "label": "LEAN completed",
+                "weight": 15,
                 "passed": completed,
                 "observed": scenario.get("state"),
                 "threshold": "completed",
             },
             {
                 "id": "active",
-                "passed": (
-                    completed
-                    and int(behavior.get("filled_order_count") or 0) > 0
-                    and float(behavior.get("max_gross_exposure") or 0) > 0
-                ),
+                "label": "Strategy remained active",
+                "weight": 10,
+                "passed": active,
                 "observed": int(behavior.get("filled_order_count") or 0),
-                "threshold": "filled orders > 0",
+                "threshold": "filled orders > 0 and exposure > 0",
             },
             {
-                "id": "return_retention",
+                "id": "cagr_retention",
+                "label": "CAGR retention",
+                "weight": 30,
                 "passed": completed and cagr >= cagr_floor,
                 "observed": cagr,
                 "threshold": cagr_floor,
             },
             {
-                "id": "risk_control",
-                "passed": (
-                    completed
-                    and sharpe > 0
-                    and drawdown <= drawdown_ceiling
-                ),
-                "observed": {
-                    "sharpe_ratio": sharpe,
-                    "maximum_drawdown": drawdown,
-                },
-                "threshold": {
-                    "sharpe_ratio": "> 0",
-                    "maximum_drawdown": drawdown_ceiling,
-                },
+                "id": "sharpe_retention",
+                "label": "Sharpe retention",
+                "weight": 25,
+                "passed": completed and sharpe >= sharpe_floor,
+                "observed": sharpe,
+                "threshold": sharpe_floor,
+            },
+            {
+                "id": "drawdown_control",
+                "label": "Drawdown control",
+                "weight": 20,
+                "passed": completed and drawdown <= drawdown_ceiling,
+                "observed": drawdown,
+                "threshold": drawdown_ceiling,
             },
         ]
+        scenario_score = (
+            sum(check["weight"] for check in checks if check["passed"])
+            if completed
+            else 0.0
+        )
         scenario["checks"] = checks
-        scenario["cagr_retention"] = (
-            cagr / primary_cagr if primary_cagr > 0 else None
-        )
-        scenario["sharpe_retention"] = (
-            sharpe / primary_sharpe if primary_sharpe > 0 else None
-        )
+        scenario["score"] = round(scenario_score, 1)
+        scenario["policy_weight"] = policy["weight"]
+        scenario["cagr_retention"] = cagr_retention
+        scenario["sharpe_retention"] = sharpe_retention
         scenario["drawdown_change"] = drawdown - primary_drawdown
-        passed_checks += sum(1 for check in checks if check["passed"])
-        total_checks += len(checks)
+        scenario["thresholds"] = {
+            "cagr_retention": policy["cagr_retention"],
+            "sharpe_retention": policy["sharpe_retention"],
+            "maximum_drawdown": drawdown_ceiling,
+        }
+        scenario_scores.append(scenario_score)
+        active_weight += policy["weight"]
+        weighted_score += scenario_score * policy["weight"]
+        if not completed or not active:
+            critical_failures.append(scenario["id"])
 
-    score = round(100 * passed_checks / total_checks, 1) if total_checks else 0.0
-    if len(evaluated) < 3 or completed_count < 2:
+    score = round(weighted_score / active_weight, 1) if active_weight else 0.0
+    worst_score = min(scenario_scores) if scenario_scores else 0.0
+    if len(evaluated) < 3 or completed_count < len(evaluated):
         grade = "insufficient"
-        conclusion = "Not enough completed stress scenarios for a robustness conclusion."
-    elif score >= 75:
+        conclusion = (
+            "Every planned stress must complete before a robustness conclusion "
+            "is reported."
+        )
+    elif score >= 75 and worst_score >= 55 and not critical_failures:
         grade = "robust"
-        conclusion = "The strategy retained activity, return, and risk control across most stresses."
-    elif score >= 50:
+        conclusion = (
+            "Performance and risk controls remained acceptable across every "
+            "completed stress, including the weakest scenario."
+        )
+    elif score >= 55 and worst_score >= 30 and not critical_failures:
         grade = "mixed"
-        conclusion = "The strategy survived some stresses but remains sensitive to at least one regime or assumption."
+        conclusion = (
+            "The strategy survived all stresses, but at least one assumption "
+            "caused material performance or risk deterioration."
+        )
     else:
         grade = "fragile"
-        conclusion = "The strategy materially deteriorated under the deterministic stress battery."
+        conclusion = (
+            "At least one stress produced a critical execution failure or "
+            "unacceptable deterioration."
+        )
     return {
-        "policy_version": "deterministic-robustness-v1",
+        "policy_version": "deterministic-robustness-v2",
         "score": score,
+        "worst_scenario_score": round(worst_score, 1),
         "grade": grade,
         "conclusion": conclusion,
         "completed_scenarios": completed_count,
         "evaluated_scenarios": len(evaluated),
+        "critical_failures": critical_failures,
+        "scenario_weights": {
+            key: value["weight"] for key, value in policies.items()
+        },
         "limitations": [
-            "These are repeated historical simulations, not proof of future performance.",
-            "The recent-regime slice is pseudo-out-of-sample because the design process saw full-period public baseline evidence.",
-            "Parameter sweeps are intentionally excluded to reduce backtest overfitting.",
+            "These are sensitivity tests on historical data, not proof of future performance.",
+            "Recent-regime and delayed-start runs overlap the design sample and are not true out-of-sample tests.",
+            "A robust grade requires every planned scenario to complete and the weakest scenario to remain acceptable.",
+            "Parameter sweeps are intentionally excluded to reduce repeated-test overfitting.",
         ],
     }
 
@@ -1112,10 +1324,12 @@ class ForgeService:
         allowed_benchmarks: set[str],
         trace_root: Path | None = None,
         history_root: Path | None = None,
+        educator: Any | None = None,
     ) -> None:
         self.worker = worker
         self.designer = designer
         self.critic = critic
+        self.educator = educator
         self.allowed_symbols = {item.upper() for item in allowed_symbols}
         self.allowed_benchmarks = {item.upper() for item in allowed_benchmarks}
         self._runs: dict[str, dict[str, Any]] = {}
@@ -1131,6 +1345,11 @@ class ForgeService:
         self._lock = threading.RLock()
         self._history_lock = threading.RLock()
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="forge")
+        self._education_executor = (
+            ThreadPoolExecutor(max_workers=1, thread_name_prefix="education")
+            if educator is not None
+            else None
+        )
 
     def _trace_path(self, run_id: str) -> Path:
         if self.trace_root is None:
@@ -1841,6 +2060,25 @@ class ForgeService:
                 error=None,
             )
             self._persist_history(run_id)
+            if self._education_executor is not None:
+                with self._lock:
+                    education = (
+                        self._runs[run_id]
+                        .get("battle_analysis", {})
+                        .get("education_summary")
+                    )
+                    if isinstance(education, dict):
+                        education.update(
+                            {
+                                "llm_state": "pending",
+                                "llm_review": None,
+                                "llm_error": None,
+                            }
+                        )
+                self._education_executor.submit(
+                    self._generate_education_review,
+                    run_id,
+                )
         except Exception as exc:
             self._change_robustness(
                 run_id,
@@ -2030,10 +2268,13 @@ class ForgeService:
 
         for iteration_number in range(1, MAX_TEMPLATE_BACKTESTS + 1):
             attempted_iteration_count = iteration_number
-            self._change(
+            self._change_item(
                 run_id,
-                stage=(
-                    f"Running {track} parameters · iteration "
+                "candidates",
+                index,
+                current_iteration=iteration_number,
+                pipeline_stage=(
+                    f"Preparing LEAN iteration "
                     f"{iteration_number}/{MAX_TEMPLATE_BACKTESTS}"
                 ),
             )
@@ -2362,6 +2603,185 @@ class ForgeService:
             error=None,
         )
 
+    def _run_public_baseline(
+        self,
+        *,
+        run_id: str,
+        index: int,
+        parameters: dict[str, str],
+    ) -> dict[str, Any]:
+        """Execute one independent public baseline and return its evidence."""
+
+        baseline = BASELINES[index]
+        self._change_item(run_id, "baselines", index, state="submitting")
+        submitted = self.worker.submit(baseline["strategy_id"], parameters)
+        result = self._wait_for_worker(
+            run_id,
+            "baselines",
+            index,
+            submitted["run_id"],
+        )
+        if result.get("status") != "completed":
+            raise RuntimeError(f"{baseline['name']} did not complete")
+        with self._lock:
+            snapshot = copy.deepcopy(self._runs[run_id]["baselines"][index])
+        return {
+            "name": baseline["name"],
+            "family": baseline["family"],
+            "summary": result.get("summary", {}),
+            "performance_profile": copy.deepcopy(
+                snapshot.get("analysis", {}).get("statistics", {})
+            ),
+            "execution_profile": {
+                key: snapshot.get("behavior_evidence", {}).get(key)
+                for key in (
+                    "filled_order_count",
+                    "max_gross_exposure",
+                    "staged_rebalance_completed_count",
+                    "staged_rebalance_replacement_count",
+                )
+            },
+            "public_lesson": copy.deepcopy(
+                BASELINE_LESSONS.get(baseline["name"], {})
+            ),
+        }
+
+    @staticmethod
+    def _education_evidence(run: dict[str, Any]) -> dict[str, Any]:
+        analysis = run.get("battle_analysis") or {}
+        champion = analysis.get("overall_best") or analysis.get("ai_champion")
+        champion_id = champion.get("id") if isinstance(champion, dict) else None
+        champion_spec: dict[str, Any] | None = None
+        iterations: list[dict[str, Any]] = []
+        if champion_id == "human":
+            guided = (run.get("human") or {}).get("guided")
+            champion_spec = (
+                _guided_human_strategy_spec(
+                    GuidedHumanStrategy.model_validate(guided)
+                )
+                if isinstance(guided, dict)
+                else None
+            )
+        elif isinstance(champion_id, str) and champion_id.startswith("ai-"):
+            champion_track = champion.get("track")
+            candidate = next(
+                (
+                    item
+                    for item in run.get("candidates", [])
+                    if item.get("track") == champion_track
+                ),
+                None,
+            )
+            if candidate:
+                champion_spec = copy.deepcopy(candidate.get("strategy_spec"))
+                iterations = [
+                    {
+                        "iteration": item.get("iteration"),
+                        "selected_as_best": item.get("selected_as_best"),
+                        "summary": copy.deepcopy(item.get("summary") or {}),
+                        "strategy_spec": copy.deepcopy(item.get("strategy_spec")),
+                        "critic": copy.deepcopy(item.get("critique") or {}),
+                    }
+                    for item in candidate.get("iterations", [])
+                ]
+        return {
+            "run_id": run.get("run_id"),
+            "winner": copy.deepcopy(analysis.get("verdict") or {}),
+            "champion": copy.deepcopy(champion or {}),
+            "reference_leader": copy.deepcopy(
+                analysis.get("reference_leader") or {}
+            ),
+            "score_policy": copy.deepcopy(
+                (analysis.get("judge") or {}).get("weights") or {}
+            ),
+            "scorecards": copy.deepcopy(
+                (analysis.get("judge") or {}).get("scorecards") or []
+            ),
+            "champion_strategy_spec": champion_spec,
+            "champion_iterations": iterations,
+            "robustness": copy.deepcopy(run.get("robustness")),
+        }
+
+    def _generate_education_review(self, run_id: str) -> None:
+        if self.educator is None:
+            return
+        try:
+            with self._lock:
+                run = copy.deepcopy(self._runs[run_id])
+            evidence = self._education_evidence(run)
+            result = self.educator.explain(evidence=evidence)
+            review = result["review"]
+            allowed_paths = {
+                "selection.top_k",
+                "selection.require_positive_score",
+                "portfolio.gross_exposure",
+                "portfolio.max_position_weight",
+                "portfolio.volatility_window",
+                "portfolio.rebalance_threshold",
+                "schedule.frequency",
+                "risk.market_trend_filter",
+                "risk.market_sma_window",
+            }
+            for action in review.get("next_round_actions", []):
+                path = str(action.get("parameter_path") or "")
+                if path.startswith("strategy_spec."):
+                    path = path[len("strategy_spec.") :]
+                    action["parameter_path"] = path
+                if path not in allowed_paths:
+                    raise ValueError(
+                        f"Teaching Explainer suggested unsupported parameter: {path}"
+                    )
+                current: Any = evidence.get("champion_strategy_spec")
+                for part in path.split("."):
+                    if not isinstance(current, dict) or part not in current:
+                        raise ValueError(
+                            f"Teaching Explainer parameter is absent from champion: {path}"
+                        )
+                    current = current[part]
+                action["current_value"] = str(current)
+            self._record_agent_call(
+                run_id=run_id,
+                track="Education",
+                stage="teaching_explainer",
+                attempt=1,
+                trace=result.get("trace"),
+            )
+            with self._lock:
+                education = self._runs[run_id]["battle_analysis"][
+                    "education_summary"
+                ]
+                education.update(
+                    {
+                        "llm_state": "completed",
+                        "llm_review": review,
+                        "llm_error": None,
+                    }
+                )
+                self._runs[run_id]["updated_at"] = utc_now()
+            self._persist_history(run_id)
+        except Exception as exc:
+            failed_trace = getattr(exc, "trace", None)
+            self._record_agent_call(
+                run_id=run_id,
+                track="Education",
+                stage="teaching_explainer",
+                attempt=1,
+                trace=failed_trace,
+                error=exc,
+            )
+            with self._lock:
+                analysis = self._runs[run_id].get("battle_analysis") or {}
+                education = analysis.get("education_summary") or {}
+                education.update(
+                    {
+                        "llm_state": "fallback",
+                        "llm_review": None,
+                        "llm_error": str(exc),
+                    }
+                )
+                self._runs[run_id]["updated_at"] = utc_now()
+            self._persist_history(run_id)
+
     def _execute(
         self,
         run_id: str,
@@ -2370,45 +2790,49 @@ class ForgeService:
     ) -> None:
         parameters = settings.worker_parameters()
         try:
-            self._change(run_id, state="running", stage="Running four public baselines")
-            evidence: list[dict[str, Any]] = []
-            for index, baseline in enumerate(BASELINES):
-                self._change_item(run_id, "baselines", index, state="submitting")
-                submitted = self.worker.submit(baseline["strategy_id"], parameters)
-                result = self._wait_for_worker(
-                    run_id,
-                    "baselines",
-                    index,
-                    submitted["run_id"],
+            self._change(
+                run_id,
+                state="running",
+                stage="Running four public baselines in parallel",
+            )
+            evidence_by_index: dict[int, dict[str, Any]] = {}
+            baseline_errors: dict[int, Exception] = {}
+            with ThreadPoolExecutor(
+                max_workers=len(BASELINES),
+                thread_name_prefix="baseline",
+            ) as baseline_executor:
+                baseline_futures = {
+                    baseline_executor.submit(
+                        self._run_public_baseline,
+                        run_id=run_id,
+                        index=index,
+                        parameters=parameters,
+                    ): index
+                    for index in range(len(BASELINES))
+                }
+                for future in as_completed(baseline_futures):
+                    index = baseline_futures[future]
+                    try:
+                        evidence_by_index[index] = future.result()
+                    except Exception as exc:
+                        baseline_errors[index] = exc
+                        self._change_item(
+                            run_id,
+                            "baselines",
+                            index,
+                            state="failed",
+                            error=str(exc),
+                        )
+            if baseline_errors:
+                failures = "; ".join(
+                    f"{BASELINES[index]['name']}: {error}"
+                    for index, error in sorted(baseline_errors.items())
                 )
-                if result.get("status") != "completed":
-                    raise RuntimeError(f"{baseline['name']} did not complete")
-                evidence.append(
-                    {
-                        "name": baseline["name"],
-                        "family": baseline["family"],
-                        "summary": result.get("summary", {}),
-                        "performance_profile": copy.deepcopy(
-                            self._runs[run_id]["baselines"][index]
-                            .get("analysis", {})
-                            .get("statistics", {})
-                        ),
-                        "execution_profile": {
-                            key: self._runs[run_id]["baselines"][index]
-                            .get("behavior_evidence", {})
-                            .get(key)
-                            for key in (
-                                "filled_order_count",
-                                "max_gross_exposure",
-                                "staged_rebalance_completed_count",
-                                "staged_rebalance_replacement_count",
-                            )
-                        },
-                        "public_lesson": copy.deepcopy(
-                            BASELINE_LESSONS.get(baseline["name"], {})
-                        ),
-                    }
-                )
+                raise RuntimeError(f"Public baseline batch failed: {failures}")
+            evidence = [
+                evidence_by_index[index]
+                for index in range(len(BASELINES))
+            ]
 
             for metric, lower_is_better in (
                 ("sharpe_ratio", False),
@@ -2517,16 +2941,21 @@ class ForgeService:
                             error=str(exc),
                         )
 
-            for index, track in enumerate(DESIGNER_TRACKS):
-                generated = generated_candidates.get(index)
-                if generated is None:
-                    continue
-                self._change(
-                    run_id,
-                    stage=f"Running {track} Designer candidate",
-                )
-                try:
-                    self._run_template_candidate(
+            self._change(
+                run_id,
+                stage="Running three independent AI candidate pipelines in parallel",
+            )
+            with ThreadPoolExecutor(
+                max_workers=len(DESIGNER_TRACKS),
+                thread_name_prefix="candidate",
+            ) as candidate_executor:
+                candidate_futures: dict[Future, tuple[int, str]] = {}
+                for index, track in enumerate(DESIGNER_TRACKS):
+                    generated = generated_candidates.get(index)
+                    if generated is None:
+                        continue
+                    future = candidate_executor.submit(
+                        self._run_template_candidate,
                         run_id=run_id,
                         index=index,
                         track=track,
@@ -2535,18 +2964,28 @@ class ForgeService:
                         baseline_results=evidence,
                         initial_proposal=generated,
                     )
-                except Exception as exc:
-                    self._change_item(
-                        run_id,
-                        "candidates",
-                        index,
-                        state="failed",
-                        error=str(exc),
-                    )
+                    candidate_futures[future] = (index, track)
+
+                for future in as_completed(candidate_futures):
+                    index, track = candidate_futures[future]
+                    try:
+                        future.result()
+                    except Exception as exc:
+                        self._change_item(
+                            run_id,
+                            "candidates",
+                            index,
+                            state="failed",
+                            error=f"{track} pipeline failed: {exc}",
+                        )
 
             with self._lock:
                 analysis_input = copy.deepcopy(self._runs[run_id])
             battle_analysis = build_battle_analysis(analysis_input)
+            if self.educator is None:
+                education_summary = battle_analysis.get("education_summary")
+                if isinstance(education_summary, dict):
+                    education_summary["llm_state"] = "fallback"
             self._change(
                 run_id,
                 state="completed",
@@ -2554,6 +2993,11 @@ class ForgeService:
                 battle_analysis=battle_analysis,
             )
             self._trace_change(run_id, state="completed", error=None)
+            if self._education_executor is not None:
+                self._education_executor.submit(
+                    self._generate_education_review,
+                    run_id,
+                )
         except Exception as exc:
             self._change(run_id, state="failed", stage="Stopped", error=str(exc))
             self._trace_change(run_id, state="failed", error=str(exc))
