@@ -1790,10 +1790,13 @@ class ForgeService:
     def _persist_history(self, run_id: str) -> None:
         if self.history_root is None:
             return
-        with self._lock:
-            run = copy.deepcopy(self._runs[run_id])
-        record = self._history_record(run)
         with self._history_lock:
+            # Snapshot only after obtaining the write lock. Otherwise an older
+            # polling request can copy "pending", wait behind the Education
+            # writer, and then overwrite its newer "completed" snapshot.
+            with self._lock:
+                run = copy.deepcopy(self._runs[run_id])
+            record = self._history_record(run)
             path = self._history_path(run_id)
             temporary = path.with_suffix(f".{threading.get_ident()}.json.tmp")
             temporary.write_text(
@@ -1873,6 +1876,19 @@ class ForgeService:
                 restored["battle_id"] = sqlite_record.get("battle_id")
                 restored["round_number"] = sqlite_record.get("round_number")
                 restored["user_id"] = sqlite_record.get("user_id")
+                durable_education = (
+                    (sqlite_record.get("battle_analysis") or {}).get(
+                        "education_summary"
+                    )
+                    or {}
+                )
+                if durable_education.get("llm_state") in {
+                    "completed",
+                    "fallback",
+                }:
+                    restored.setdefault("battle_analysis", {})[
+                        "education_summary"
+                    ] = copy.deepcopy(durable_education)
                 sqlite_candidates = {
                     item.get("track"): item
                     for item in sqlite_record.get("candidates") or []

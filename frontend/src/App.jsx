@@ -2275,6 +2275,63 @@ function GeneratedReviews({ candidates }) {
   );
 }
 
+function BacktestContract({ run }) {
+  const settings = run?.settings || {};
+  const symbols = settings.symbols || [];
+  const reusedBaselines = (run?.baselines || []).some(
+    (item) => item.baseline_execution === "reused",
+  );
+  return (
+    <section className="backtest-contract-card">
+      <div className="backtest-contract-heading">
+        <div>
+          <span className="section-kicker">Frozen Experiment Contract</span>
+          <h2>This backtest used</h2>
+        </div>
+        <div className="contract-context-badges">
+          {run?.round_number ? <span>Battle Round {run.round_number}</span> : null}
+          {reusedBaselines ? <span>Round 1 baselines reused</span> : null}
+        </div>
+      </div>
+      <div className="backtest-contract-grid">
+        <div>
+          <span>Backtest Window</span>
+          <strong>
+            <span className="contract-date">{settings.start_date || "—"}</span>
+            <ArrowRight size={14} />
+            <span className="contract-date">{settings.end_date || "—"}</span>
+          </strong>
+        </div>
+        <div>
+          <span>Initial Cash</span>
+          <strong>{formatMetric(settings.initial_cash, "currency")}</strong>
+        </div>
+        <div>
+          <span>Benchmark</span>
+          <strong>{settings.benchmark || "—"}</strong>
+        </div>
+        <div>
+          <span>Trading Assumptions</span>
+          <strong>
+            {settings.transaction_cost_bps ?? "—"} bps fee · {settings.slippage_bps ?? "—"} bps slippage
+          </strong>
+        </div>
+      </div>
+      <div className="contract-symbols">
+        <div>
+          <span>Selected Stock Universe</span>
+          <strong>{symbols.length} stocks</strong>
+        </div>
+        <div className="contract-symbol-list">
+          {symbols.length
+            ? symbols.map((symbol) => <span key={symbol}>{symbol}</span>)
+            : <em>No symbols recorded</em>}
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function ResultsWorkspace({ run, loading, error, onRefresh, onBuild, onLearning }) {
   if (!run && loading) return <div className="page-loading"><RefreshCw className="spin" size={24} /> Loading Run</div>;
   if (!run) return <><PageHeader eyebrow="Backtest Results" title="Results" description="Compare completed strategies and inspect their review history." /><EmptyRun onBuild={onBuild} />{error ? <div className="inline-error centered">{error}</div> : null}</>;
@@ -2307,6 +2364,7 @@ function ResultsWorkspace({ run, loading, error, onRefresh, onBuild, onLearning 
         <div className="overview-stat"><CircleDollarSign size={20} /><div><span>Initial Cash</span><strong>{formatMetric(settings.initial_cash, "currency")}</strong></div></div>
         <div className="overview-stat"><Gauge size={20} /><div><span>Benchmark</span><strong>{settings.benchmark || "—"}</strong></div></div>
       </section>
+      <BacktestContract run={run} />
       {run.error ? <div className="inline-error">{run.error}</div> : null}
       <JudgeBreakdown analysis={run.battle_analysis} />
       <MetricChart rows={rows} />
@@ -2638,21 +2696,30 @@ function BattleLobby({
                           <p>{memory.round_summary}</p>
                           <div className="coach-track-lessons">
                             {(memory.track_lessons || []).map((lesson) => (
-                              <article key={lesson.track}>
-                                <div className="coach-lesson-heading">
-                                  <strong>{formatTrack(lesson.track)}</strong>
-                                  {lesson.next_move ? <span className={`coach-move coach-move-${lesson.next_move}`}>{readableEnum(lesson.next_move)}</span> : null}
+                              <details className="coach-track-lesson" key={lesson.track}>
+                                <summary>
+                                  <div className="coach-lesson-heading">
+                                    <strong>{formatTrack(lesson.track)}</strong>
+                                    {lesson.next_move ? <span className={`coach-move coach-move-${lesson.next_move}`}>{readableEnum(lesson.next_move)}</span> : null}
+                                  </div>
+                                  <p className="coach-lesson-preview">{lesson.evidence_summary}</p>
+                                  <span className="coach-lesson-expand">
+                                    <span>View evidence &amp; next plan</span>
+                                    <ChevronDown size={17} />
+                                  </span>
+                                </summary>
+                                <div className="coach-lesson-body">
+                                  <p>{lesson.evidence_summary}</p>
+                                  {lesson.decision_reason ? <p className="coach-decision-reason">{lesson.decision_reason}</p> : null}
+                                  <div className="coach-change-scope">
+                                    {lesson.change_scope ? <span>Change: <b>{readableEnum(lesson.change_scope)}</b></span> : null}
+                                    {lesson.parameter_change_budget ? <span>Budget: <b>{lesson.parameter_change_budget} parameters</b></span> : null}
+                                  </div>
+                                  <ul>
+                                    {(lesson.next_hypotheses || []).map((hypothesis, index) => <li key={index}>{hypothesis}</li>)}
+                                  </ul>
                                 </div>
-                                <p>{lesson.evidence_summary}</p>
-                                {lesson.decision_reason ? <p className="coach-decision-reason">{lesson.decision_reason}</p> : null}
-                                <div className="coach-change-scope">
-                                  {lesson.change_scope ? <span>Change: <b>{readableEnum(lesson.change_scope)}</b></span> : null}
-                                  {lesson.parameter_change_budget ? <span>Budget: <b>{lesson.parameter_change_budget} parameters</b></span> : null}
-                                </div>
-                                <ul>
-                                  {(lesson.next_hypotheses || []).map((hypothesis, index) => <li key={index}>{hypothesis}</li>)}
-                                </ul>
-                              </article>
+                              </details>
                             ))}
                           </div>
                           <p className="overfit-note">{memory.overfitting_guard}</p>
@@ -2841,9 +2908,7 @@ export default function App() {
       setRun(result);
       setRunId(id);
       setRunQuery(id);
-      if (result.battle_id && TERMINAL_RUN_STATES.has(result.state)) {
-        loadBattle(result.battle_id);
-      }
+      if (result.battle_id) loadBattle(result.battle_id);
     } catch (error) {
       setRunError(error.message);
       if (!quiet) setRun(null);
@@ -2894,6 +2959,7 @@ export default function App() {
     setRunId(created.run_id);
     setRunQuery(created.run_id);
     setView("results");
+    if (created.battle_id) loadBattle(created.battle_id);
   };
 
   const createBattle = async (name) => {

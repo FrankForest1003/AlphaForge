@@ -109,8 +109,12 @@ function parameterRun() {
     state: "completed",
     settings: {
       symbols: catalog.default_symbols,
+      start_date: "2020-01-02",
+      end_date: "2024-12-31",
       initial_cash: 100000,
       benchmark: "SPY",
+      transaction_cost_bps: 10,
+      slippage_bps: 5,
     },
     baselines: [1, 2, 3, 4].map((index) => ({
       name: `Baseline ${index}`,
@@ -175,6 +179,66 @@ describe("AlphaForge Studio", () => {
     expect(screen.getByText("Transparent Risk Rank")).toBeInTheDocument();
     expect(screen.getByText(/Schema-valid parameters compiled/i)).toBeInTheDocument();
     expect(screen.queryByText("PRIVATE HUMAN SOURCE")).not.toBeInTheDocument();
+  });
+
+  it("shows the frozen backtest contract on Strategy Results", async () => {
+    const run = parameterRun();
+    window.history.replaceState({}, "", "/?run_id=forge-test");
+    installFetch(run);
+
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "Strategy Results" });
+    expect(screen.getByRole("heading", { name: "This backtest used" })).toBeInTheDocument();
+    expect(screen.getByText("2020-01-02")).toBeInTheDocument();
+    expect(screen.getByText("2024-12-31")).toBeInTheDocument();
+    expect(screen.getByText("10 bps fee · 5 bps slippage")).toBeInTheDocument();
+    for (const symbol of catalog.default_symbols) {
+      expect(screen.getByText(symbol)).toBeInTheDocument();
+    }
+  });
+
+  it("refreshes the battle immediately so a running round is not shown as unplayed", async () => {
+    const runningRun = {
+      ...parameterRun(),
+      run_id: "forge-running",
+      state: "running",
+      battle_id: "battle-test",
+      round_number: 1,
+      battle_analysis: null,
+    };
+    const runningBattle = {
+      ...battle,
+      round_count: 1,
+      next_round: 2,
+      can_start_round: false,
+      rounds: [
+        {
+          round_number: 1,
+          forge_run_id: "forge-running",
+          state: "running",
+          winner: null,
+        },
+      ],
+    };
+    window.history.replaceState({}, "", "/?run_id=forge-running");
+    global.fetch = vi.fn((url) => {
+      if (url.endsWith("/catalog/universe")) return response(catalog);
+      if (url.endsWith("/health")) return response({ status: "ok" });
+      if (url.endsWith("/auth/me")) return response({ id: "user-test", username: "tester" });
+      if (url.endsWith("/battles")) return response([battle]);
+      if (url.endsWith("/battles/battle-test")) return response(runningBattle);
+      if (url.endsWith("/forge-runs/forge-running")) return response(runningRun);
+      return response({ detail: "Not Found" }, false);
+    });
+
+    render(<App />);
+
+    const roundButton = await screen.findByRole("button", {
+      name: /R1 Running/i,
+    });
+    expect(roundButton).toBeEnabled();
+    expect(screen.queryByRole("button", { name: /R1 Not played/i })).not.toBeInTheDocument();
   });
 
   it("shows every Critic iteration and identifies the retained trial", async () => {
