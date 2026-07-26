@@ -18,6 +18,8 @@ from pydantic import BaseModel, Field
 
 from app.io_utils import atomic_write_text
 
+# Each container receives its own runtime root and configuration, while market
+# data may be mounted read-only and shared across all Worker slots.
 CONFIG_PATH = Path(os.environ.get("ALPHAFORGE_WORKER_CONFIG", "/app/config/worker.json"))
 CONFIG = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
 RUNTIME_ROOT = Path(CONFIG["runtime_root"]).resolve()
@@ -46,6 +48,8 @@ app = FastAPI(
     version=os.environ.get("ALPHAFORGE_RUNTIME_VERSION", "1.2.0"),
 )
 executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="lean-job")
+# LEAN uses process-global runtime resources. One slot therefore runs one job at
+# a time; backend-level parallelism comes from multiple isolated containers.
 execution_lock = threading.Lock()
 
 
@@ -149,6 +153,8 @@ def record_path(run_id: str) -> Path:
 
 
 def save_record(record: dict[str, Any]) -> None:
+    """Persist job state atomically so polling never observes partial JSON."""
+
     atomic_write_text(
         record_path(record["run_id"]),
         json.dumps(record, ensure_ascii=False, indent=2) + "\n",
@@ -199,6 +205,8 @@ def ensure_data_ready(item: dict[str, Any]) -> None:
 
 
 def custom_source(run_id: str, code: str) -> Path:
+    """Freeze submitted Human code under the run id before asynchronous execution."""
+
     path = (CUSTOM_SOURCE_ROOT / f"{run_id}.py").resolve()
     path.relative_to(CUSTOM_SOURCE_ROOT)
     path.write_text(code, encoding="utf-8")

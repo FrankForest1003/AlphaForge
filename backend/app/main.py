@@ -29,6 +29,8 @@ from app.services import (
 )
 
 
+# Application composition root: construct long-lived adapters once and inject
+# them into ForgeService. Request handlers below remain thin transport boundaries.
 settings = load_settings()
 universe = json.loads(settings.universe_path.read_text(encoding="utf-8"))
 tradable_symbols = {
@@ -89,6 +91,8 @@ bearer = HTTPBearer(auto_error=False)
 def optional_user(
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
 ) -> dict[str, Any] | None:
+    """Resolve identity when present while preserving anonymous standalone runs."""
+
     if credentials is None:
         return None
     return games.user_from_token(credentials.credentials)
@@ -97,6 +101,8 @@ def optional_user(
 def current_user(
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
 ) -> dict[str, Any]:
+    """Require a valid session for user-owned battle resources."""
+
     user = (
         games.user_from_token(credentials.credentials)
         if credentials is not None
@@ -217,6 +223,8 @@ def authorize_run(
     run_id: str,
     user: dict[str, Any] | None,
 ) -> dict[str, Any]:
+    """Hide battle-owned run existence from users outside that battle."""
+
     run = forge.get(run_id)
     if run is None:
         raise HTTPException(status_code=404, detail="unknown run_id")

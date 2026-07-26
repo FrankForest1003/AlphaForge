@@ -1552,6 +1552,9 @@ class ForgeService:
             self.history_root.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
         self._history_lock = threading.RLock()
+        # Forge orchestration is serialized per API process. Work inside one run
+        # is parallelized explicitly below so shared run-state mutations remain
+        # ordered while independent LEAN jobs can still use separate workers.
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="forge")
         self._education_executor = (
             ThreadPoolExecutor(max_workers=1, thread_name_prefix="education")
@@ -1589,6 +1592,8 @@ class ForgeService:
 
     @staticmethod
     def _entry_score(summary: dict[str, Any]) -> tuple[float, float, float]:
+        """Return the deterministic champion ordering used across battle rounds."""
+
         def metric(name: str, default: float) -> float:
             value = summary.get(name)
             return default if value is None else float(value)
@@ -1863,6 +1868,8 @@ class ForgeService:
         return restored
 
     def _restore_run(self, run_id: str) -> dict[str, Any] | None:
+        """Restore a complete snapshot and overlay newer durable round metadata."""
+
         record = self.get_history(run_id)
         sqlite_record = (
             self.game_repository.restore_run(run_id)
@@ -1882,6 +1889,9 @@ class ForgeService:
                     )
                     or {}
                 )
+                # Education is generated asynchronously after the main snapshot.
+                # SQLite may therefore hold a newer terminal result than the
+                # corresponding run-history JSON written at run completion.
                 if durable_education.get("llm_state") in {
                     "completed",
                     "fallback",
@@ -3608,6 +3618,8 @@ class ForgeService:
                     state="running",
                     stage="Running four public baselines in parallel",
                 )
+                # Preserve catalog order in the public response even though
+                # isolated workers complete in a nondeterministic order.
                 evidence_by_index: dict[int, dict[str, Any]] = {}
                 baseline_errors: dict[int, Exception] = {}
                 with ThreadPoolExecutor(
@@ -3671,6 +3683,8 @@ class ForgeService:
                 run_id,
                 stage="Generating three Designer candidates in parallel · Running Human strategy",
             )
+            # Designers never receive Human output. Running Human work in the
+            # calling thread overlaps latency without crossing that boundary.
             generated_candidates: dict[int, dict[str, Any]] = {}
             with ThreadPoolExecutor(
                 max_workers=len(DESIGNER_TRACKS),
@@ -3762,6 +3776,8 @@ class ForgeService:
                 run_id,
                 stage="Running three independent AI candidate pipelines in parallel",
             )
+            # Each track iterates sequentially (LEAN -> Critic -> Designer), but
+            # the three tracks are independent and may occupy different workers.
             with ThreadPoolExecutor(
                 max_workers=len(DESIGNER_TRACKS),
                 thread_name_prefix="candidate",

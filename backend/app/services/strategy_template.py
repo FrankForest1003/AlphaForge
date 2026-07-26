@@ -20,6 +20,8 @@ TEMPLATE_PATH = (
 def validate_strategy_spec(
     payload: StrategyTemplateSpec | dict[str, Any],
 ) -> StrategyTemplateSpec:
+    """Return the canonical schema object accepted by the fixed template."""
+
     if isinstance(payload, StrategyTemplateSpec):
         return payload
     return StrategyTemplateSpec.model_validate(payload)
@@ -40,6 +42,8 @@ def compile_strategy_source(
     template = TEMPLATE_PATH.read_text(encoding="utf-8")
     if template.count(TEMPLATE_MARKER) != 1:
         raise RuntimeError("strategy template must contain exactly one spec marker")
+    # The digest links displayed source code and persisted trial evidence back to
+    # one normalized parameter object, independent of JSON key ordering.
     digest = hashlib.sha256(canonical_json.encode("utf-8")).hexdigest()
     source = template.replace(TEMPLATE_MARKER, repr(canonical_json))
     return source.replace("__ALPHAFORGE_STRATEGY_SPEC_SHA256__", digest)

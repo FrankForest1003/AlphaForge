@@ -24,12 +24,16 @@ class WorkerClientError(RuntimeError):
 
 
 class LeanWorkerClient:
+    """HTTP adapter for one isolated LEAN execution service."""
+
     def __init__(self, base_url: str, token: str = "", timeout: float = 20.0):
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self.headers = {"X-Worker-Token": token} if token else {}
 
     def _request(self, method: str, path: str, **kwargs: Any) -> Any:
+        """Normalize transport failures into the backend's worker error type."""
+
         parse_json = kwargs.pop("parse_json", True)
         try:
             response = requests.request(
@@ -133,6 +137,8 @@ class LeanWorkerPoolClient:
 
     def _select_slot(self) -> int:
         with self._lock:
+            # Least-active routing avoids queueing new jobs behind a busy slot;
+            # round-robin tie breaking prevents a permanent preference for slot 0.
             minimum = min(self._active)
             candidates = [
                 index
@@ -171,6 +177,8 @@ class LeanWorkerPoolClient:
 
     def _release(self, virtual_run_id: str, slot: int) -> None:
         with self._lock:
+            # Pop makes release idempotent because both terminal polling and
+            # result retrieval may observe completion for the same job.
             leased_slot = self._leases.pop(virtual_run_id, None)
             if leased_slot is None:
                 return

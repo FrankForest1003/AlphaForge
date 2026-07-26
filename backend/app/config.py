@@ -10,6 +10,8 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 
 @dataclass(frozen=True)
 class Settings:
+    """Process-level configuration resolved once by the FastAPI composition root."""
+
     worker_urls: tuple[str, ...]
     worker_token: str
     universe_path: Path
@@ -35,6 +37,8 @@ def _env_bool(name: str, default: bool) -> bool:
 
 
 def load_settings() -> Settings:
+    """Load environment configuration with repository-local development defaults."""
+
     configured_urls = os.getenv("ALPHAFORGE_WORKER_URLS", "").strip()
     worker_urls = tuple(
         item.strip().rstrip("/")

@@ -55,6 +55,8 @@ class RunSettings(BaseModel):
 
 
 class GuidedHumanStrategy(BaseModel):
+    """Validated controls exposed by the basic and advanced Guided UI."""
+
     model_config = ConfigDict(extra="forbid")
 
     level: Literal["basic", "advanced"] = "basic"
@@ -88,6 +90,8 @@ class GuidedHumanStrategy(BaseModel):
 
 
 class HumanStrategyRequest(BaseModel):
+    """Discriminated Human input without silently mixing code and Guided modes."""
+
     model_config = ConfigDict(extra="forbid")
 
     mode: Literal["code", "guided"]
@@ -110,6 +114,8 @@ class HumanStrategyRequest(BaseModel):
 
 
 class ForgeRunRequest(BaseModel):
+    """API contract for a standalone run or the next round of one battle."""
+
     model_config = ConfigDict(extra="forbid")
 
     settings: RunSettings
@@ -118,6 +124,8 @@ class ForgeRunRequest(BaseModel):
 
 
 class RobustnessRunRequest(BaseModel):
+    """Select which completed strategy receives the scenario stress suite."""
+
     model_config = ConfigDict(extra="forbid")
 
     target: Literal["best_ai", "human"] = "best_ai"

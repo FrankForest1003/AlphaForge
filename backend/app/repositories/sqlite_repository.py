@@ -53,6 +53,8 @@ class SQLiteGameRepository:
         connection = sqlite3.connect(self.path, timeout=30)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
+        # WAL lets status reads proceed while a round completion transaction is
+        # being committed. Each repository method still owns a short connection.
         connection.execute("PRAGMA journal_mode = WAL")
         try:
             yield connection
@@ -120,6 +122,8 @@ class SQLiteGameRepository:
                 row["name"]
                 for row in connection.execute("PRAGMA table_info(battles)").fetchall()
             }
+            # Keep startup migration additive so existing local battle databases
+            # remain usable without a separate migration command.
             if "contract_json" not in columns:
                 connection.execute(
                     "ALTER TABLE battles ADD COLUMN contract_json TEXT"

@@ -18,6 +18,10 @@ AlphaForge 是一个面向金融教育的本地策略实验平台。用户在冻
 - Docker Compose：Frontend、Backend 和四个隔离的 LEAN Worker 槽位本地编排。
 - Worker Pool：按当前负载把任务固定路由到一个 Worker；共享只读行情数据，但隔离配置、锁、任务、模型和结果目录。
 
+API 进程内的顶层 Forge Run 串行编排，保证共享状态按顺序变化；单个 Run
+内部对四个基线、三个 Designer 和三条候选赛道使用有界并行。每条赛道内部
+仍保持 LEAN → Critic → Designer 的顺序，确保下一次修订只读取已经完成的证据。
+
 ## 系统流程
 
 ```text
@@ -100,3 +104,9 @@ SQLite。第一轮冻结市场与回测设置，并保存四个基线的完整�
 直接复用第一轮基线。完成的 Forge 页面快照同时保存在 run history，后端
 重启后可恢复历史 Run、策略代码、曲线和冠军谱系。前端提供 R1–R5 切换、
 整场对战删除和下一轮 Human 参数预填。
+
+Run history 使用独立锁和临时文件替换写入，避免较早的 `pending` 状态覆盖
+较新的完成快照。Teaching Explainer 和 AI Coach 异步结束，因此恢复历史
+Run 时，以完整 JSON 快照提供曲线、代码和候选证据，再用 SQLite 中较新的
+终态教学与轮次信息覆盖旧状态。Results 的实验合同卡直接读取该历史快照，
+确保显示的是当轮实际使用的股票、日期、资金、基准、费用和滑点。

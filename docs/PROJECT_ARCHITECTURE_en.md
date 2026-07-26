@@ -19,6 +19,11 @@ three AI tracks.
 - Docker Compose for the frontend, backend, and four isolated LEAN Worker slots.
 - A sticky Worker Pool routes by current load. Market data is shared read-only, while launcher configuration, locks, jobs, models, and result directories remain isolated.
 
+Top-level Forge runs are serialized inside one API process to keep shared state
+transitions ordered. Within a run, the four baselines, three Designer calls, and
+three track pipelines use bounded parallel executors. Each individual track still
+iterates sequentially so Critic evidence always precedes the next Designer revision.
+
 ## AI workflow
 
 Each Traditional, ML, and Hybrid track follows the same bounded process:
@@ -92,6 +97,15 @@ switch directly between R1–R5, apply evidence-based Human parameter suggestion
 review AI Coach decisions, reopen persisted runs after a backend restart, and
 delete an entire battle. SQLite stores identity and battle state, while complete
 Forge snapshots preserve curves, code, candidate evidence, and champion lineage.
+The Results page reads its contract card from that run snapshot, so historical
+rounds display the exact symbols, dates, capital, benchmark, fees, and slippage
+used at execution time.
+
+Run-history JSON is written by atomic temporary-file replacement under a dedicated
+lock. Because Teaching Explainer and AI Coach finish asynchronously, restoration
+overlays newer terminal education and round metadata from SQLite onto an older
+complete run snapshot. This prevents a stale `pending` write from hiding completed
+content after a backend restart.
 
 Selecting the best of three still creates multiple-testing bias. The retained
 trial is an in-sample development result, not evidence of future profit.

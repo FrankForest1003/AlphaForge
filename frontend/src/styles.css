@@ -1,3 +1,4 @@
+/* Global design tokens and browser-level defaults */
 :root {
   color: #172238;
   background: #f3f5f7;
@@ -42,6 +43,7 @@ button {
   color: inherit;
 }
 
+/* Authentication and initial application loading */
 .app-loading,
 .auth-page {
   min-height: 100vh;
@@ -157,6 +159,7 @@ button {
   line-height: 1.65;
 }
 
+/* Persisted battle navigation, scoring, recommendations, and AI Coach */
 .battle-round-switcher {
   display: grid;
   grid-template-columns: minmax(150px, auto) 1fr auto;
@@ -989,6 +992,7 @@ textarea:focus-visible {
   outline-offset: 2px;
 }
 
+/* Primary application shell and navigation */
 .app-shell {
   display: grid;
   grid-template-columns: 248px minmax(0, 1fr);
@@ -1226,6 +1230,7 @@ textarea:focus-visible {
 }
 
 .step-card,
+/* Shared result, chart, table, and learning surfaces */
 .chart-card,
 .table-card,
 .review-card,
@@ -2214,6 +2219,7 @@ textarea:focus-visible {
   transition: width 300ms ease;
 }
 
+/* Frozen experiment settings displayed from each persisted run snapshot */
 .backtest-contract-card {
   padding: 22px;
   margin-bottom: 22px;
@@ -2348,6 +2354,7 @@ textarea:focus-visible {
   font-size: 16px;
 }
 
+/* AI Forge stages, track cards, and three-trial evidence */
 .forge-stage-grid {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
@@ -5009,6 +5016,7 @@ td strong {
   font-size: 11px;
 }
 
+/* Optional robustness scenario battery */
 .robustness-intro,
 .robustness-verdict,
 .robustness-table-card,

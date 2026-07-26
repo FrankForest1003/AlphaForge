@@ -23,6 +23,8 @@ class WorkerError(RuntimeError):
 
 
 class ExclusiveFileLock:
+    """Cross-process guard for one container's process-global LEAN runtime."""
+
     def __init__(self, path: Path, wait_seconds: int, metadata: dict[str, Any]):
         self.path = path
         self.wait_seconds = wait_seconds
@@ -138,6 +140,8 @@ def replace_jsonc_container(text: str, key: str, value: Any) -> str:
 
 
 def build_job_config(template: str, algorithm_class: str, algorithm_file: Path, data_folder: Path, parameters: dict[str, Any]) -> str:
+    """Create a per-job LEAN configuration without mutating the stock template."""
+
     config = template
     required = {
         "algorithm-type-name": algorithm_class,

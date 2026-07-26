@@ -44,6 +44,8 @@ import {
   ZAxis,
 } from "recharts";
 
+// Shared client-side contracts mirror backend states and display names. They
+// intentionally contain no scoring or financial decision logic.
 const API_ROOT = "/api/v1";
 const MIN_STOCKS = 5;
 const MAX_STOCKS = 30;
@@ -57,6 +59,8 @@ const FINISHED_ITEM_STATES = new Set([
   "timeout",
 ]);
 
+// The custom-code editor starts with an executable example so users modify a
+// known LEAN-compatible boundary instead of beginning from an empty file.
 export const HUMAN_CODE_STARTER = `from datetime import datetime
 
 from AlgorithmImports import *
@@ -181,6 +185,10 @@ const BASELINE_CLASSROOM = {
   },
 };
 
+// ---------------------------------------------------------------------------
+// API and presentation-model helpers
+// ---------------------------------------------------------------------------
+
 async function apiRequest(path, options = {}) {
   const token = window.localStorage.getItem("alphaforge_token");
   const response = await fetch(`${API_ROOT}${path}`, {
@@ -236,6 +244,8 @@ function formatNumber(value) {
 }
 
 function strategyRows(run) {
+  // Normalize baseline, Human, and AI payloads once so every comparison view
+  // uses the same labels, scorecards, and category semantics.
   if (!run) return [];
   const scorecards = new Map(
     (run.battle_analysis?.judge?.scorecards || []).map((item) => [item.id, item]),
@@ -465,6 +475,10 @@ function Field({ label, children, hint }) {
     </label>
   );
 }
+
+// ---------------------------------------------------------------------------
+// Experiment setup and Human strategy input
+// ---------------------------------------------------------------------------
 
 function BuildWorkspace({
   catalog,
@@ -900,6 +914,8 @@ function stageState(done, active) {
   return active ? "running" : "waiting";
 }
 
+// Round switching is shared by result-oriented pages so navigation does not
+// alter the currently selected workspace.
 function BattleRoundSwitcher({ battle, runId, onSwitch }) {
   if (!battle?.rounds?.length) return null;
   return (
@@ -985,6 +1001,10 @@ const PYTHON_KEYWORDS = new Set([
 ]);
 
 const PYTHON_TOKEN_PATTERN = /("""[\s\S]*?"""|'''[\s\S]*?'''|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|#[^\n]*|@[A-Za-z_]\w*|\b[A-Za-z_]\w*\b|\b\d+(?:\.\d+)?\b)/g;
+
+// ---------------------------------------------------------------------------
+// AI design, compilation, and iteration evidence
+// ---------------------------------------------------------------------------
 
 function pythonTokenClass(token) {
   if (token.startsWith("#")) return "python-comment";
@@ -1395,6 +1415,10 @@ function AIForgeWorkspace({ run, onBuild }) {
     </>
   );
 }
+
+// ---------------------------------------------------------------------------
+// Comparable performance and educational analytics
+// ---------------------------------------------------------------------------
 
 function MetricChart({ rows }) {
   const [metricKey, setMetricKey] = useState("cagr");
@@ -1873,6 +1897,10 @@ function LearningWorkspace({ run, loading, error, onResults, onBuild }) {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Results, review evidence, robustness, and reproducible source code
+// ---------------------------------------------------------------------------
+
 function RobustnessWorkspace({ run, loading, error, onBuild, onStart }) {
   const [target, setTarget] = useState("best_ai");
   const [submitting, setSubmitting] = useState(false);
@@ -2276,6 +2304,8 @@ function GeneratedReviews({ candidates }) {
 }
 
 function BacktestContract({ run }) {
+  // Read from the persisted run snapshot, not current Build-form state, so an
+  // old round always displays the exact contract under which it was executed.
   const settings = run?.settings || {};
   const symbols = settings.symbols || [];
   const reusedBaselines = (run?.baselines || []).some(
@@ -2535,6 +2565,10 @@ function CodeWorkspace({ run, onBuild }) {
     </>
   );
 }
+
+// ---------------------------------------------------------------------------
+// Authentication and persisted best-of-five battles
+// ---------------------------------------------------------------------------
 
 function AuthWorkspace({ onAuthenticated }) {
   const [mode, setMode] = useState("login");
@@ -2817,6 +2851,8 @@ function BattleArenaWorkspace({ battle, onLobby, onOpenRound }) {
   );
 }
 
+// Application-level state coordinates navigation, polling, authentication, and
+// the selected persisted battle/run. Page components receive owned data by props.
 export default function App() {
   const initialRunId = new URLSearchParams(window.location.search).get("run_id") || "";
   const [view, setView] = useState(initialRunId ? "results" : "lobby");
@@ -2908,6 +2944,9 @@ export default function App() {
       setRun(result);
       setRunId(id);
       setRunQuery(id);
+      // A run and its battle round finish through separate persistence paths.
+      // Refresh both views on every poll to prevent a started round remaining
+      // labelled "Not played" in the lobby.
       if (result.battle_id) loadBattle(result.battle_id);
     } catch (error) {
       setRunError(error.message);
@@ -2938,6 +2977,8 @@ export default function App() {
     const educationActive = run?.battle_analysis?.education_summary?.llm_state === "pending";
     const latestRound = activeBattle?.rounds?.[activeBattle.rounds.length - 1];
     const coachActive = latestRound?.forge_run_id === runId && latestRound?.coach_state === "pending";
+    // Main backtesting, robustness, education, and coaching complete
+    // independently. Stop polling only when all active subflows are terminal.
     if (!runId || (run && TERMINAL_RUN_STATES.has(run.state) && !robustnessActive && !educationActive && !coachActive)) return undefined;
     const timer = window.setInterval(() => loadRun(runId, { quiet: true }), 3000);
     return () => window.clearInterval(timer);

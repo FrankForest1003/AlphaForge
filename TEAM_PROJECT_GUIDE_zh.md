@@ -1,7 +1,7 @@
 # AlphaForge 团队运行与开发对齐
 
-> 2026-07-24：AI 主链已从“生成代码—修复代码—语义验收”重构为
-> “生成参数—模板回测—Critic 评价—Designer 改参—三轮择优”。
+> 2026-07-26：当前版本已完成参数型 AI 主链、四 Worker 并行回测、
+> SQLite 五局三胜对战、跨轮冠军与 AI Coach、运行快照恢复及教学页面。
 
 ## 当前系统
 
@@ -15,6 +15,12 @@ AI 只返回 `StrategyTemplateSpec` JSON。后端把合法参数注入固定
 Critic 评价并把参数调整方向交回 Designer。最终不会盲目使用最新版，而是
 保留三轮中 Sharpe 最高、再看 CAGR、再看较低回撤的一轮。
 
+用户登录后从 Battle Lobby 创建或继续一场五局三胜对战。第一轮冻结股票池、
+日期、资金、基准、费用和滑点，并保存四个公共基线；同场后续轮次直接复用
+基线证据。Traditional、ML、Hybrid 分别保留跨轮冠军，本轮挑战者未超过旧
+冠军时不会替换冠军。每轮结束后，Human 获得可应用的参数建议，AI Coach
+则只基于公共基线与 AI 证据指导下一轮的微调、机制轮换或赛道重建。
+
 ## 目录
 
 - `agent/designer.py`：结构化参数设计与修订。
@@ -24,7 +30,10 @@ Critic 评价并把参数调整方向交回 Designer。最终不会盲目使用�
 - `backend/app/templates/parameterized_strategy.py.tmpl`：固定 LEAN 实现。
 - `backend/app/services/strategy_template.py`：校验与确定性编译。
 - `backend/app/services/baseline_service.py`：完整实验编排。
-- `frontend/src/App.jsx`：参数、轮次、Critic 建议和最佳轮次展示。
+- `backend/app/repositories/sqlite_repository.py`：用户、会话、对战和轮次持久化。
+- `frontend/src/App.jsx`：登录、对战、参数、轮次、结果、教学和代码展示。
+- `docs/PROJECT_ARCHITECTURE_zh.md` / `_en.md`：中英文完整架构说明。
+- `docs/BATTLE_SYSTEM_zh.md`：对战、持久化、基线复用和跨轮 Coach 规则。
 
 ## 运行
 
@@ -43,8 +52,10 @@ docker compose logs -f backend lean-worker lean-worker-2 lean-worker-3 lean-work
 ```
 
 打开 `http://localhost:8501`。先在 Build 页面确认至少 5 只白名单股票和
-统一实验设置，再运行 Human 与 AI Forge。一次完整 AI 运行包含四个基线、
-一个 Human 回测，以及最多 3 × 3 个 AI 参数回测。
+统一实验设置，再运行 Human 与 AI Forge。第一轮最多包含四个基线、一个
+Human 回测及 3 × 3 个 AI 参数回测；同场后续轮次不会重复运行四个基线。
+Results 顶部会显示本轮实际使用的冻结参数，R1–R5 可从结果页或 PK Arena
+直接切换。
 
 ## 开发规则
 
@@ -53,6 +64,8 @@ docker compose logs -f backend lean-worker lean-worker-2 lean-worker-3 lean-work
 - 新策略自由度必须先作为 schema 字段和模板实现共同加入。
 - 所有 schema 合法组合都应可运行；失败时修模板，不增加错误枚举提示词。
 - 保留每轮参数、SHA-256、Worker run id、指标和 Critic 报告以便复现。
+- 不直接修改 `backend/workspace` 中的 SQLite 或 Run 快照；通过 API 管理历史。
+- 对复杂并发和信息边界写“原因型”注释，避免复述代码行为的逐行注释。
 - 三轮择优只是开发期模型选择；对外解释时必须同时展示过拟合限制和鲁棒性。
 
 ## 测试
@@ -62,7 +75,7 @@ $env:PYTHONPATH='.;backend'
 .\.venv\Scripts\python.exe -m pytest -q backend/tests
 
 cd frontend
-npm.cmd install
+npm.cmd test -- --run
 npm.cmd run build
 ```
 
