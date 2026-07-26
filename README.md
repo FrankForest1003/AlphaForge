@@ -40,6 +40,7 @@ AlphaForge 是一个面向金融学习者的本地量化策略实验与竞技平
 | 回测引擎 | QuantConnect LEAN                                            |
 | 持久化   | SQLite + JSON Run Snapshots + Agent Traces                   |
 | 部署     | Docker Compose + 4 个隔离 LEAN Worker                        |
+| 开源协议 | [MIT License](LICENSE)，第三方资产适用各自许可               |
 
 ---
 
@@ -758,6 +759,7 @@ Every Human strategy, AI candidate, and public baseline is executed under the sa
 | Backtest Engine     | QuantConnect LEAN                                            |
 | Persistence         | SQLite + JSON Run Snapshots + Agent Traces                   |
 | Deployment          | Docker Compose + four isolated LEAN Workers                  |
+| License             | [MIT License](LICENSE); third-party assets retain their own terms |
 
 ---
 
@@ -1442,9 +1444,22 @@ The following items are planned and must not be presented as implemented in the 
 
 AlphaForge uses or references QuantConnect LEAN, Tiingo, academic papers, open-source Python/JavaScript libraries, and AI-assisted development tools. The final report and presentation should cite research papers, data providers, frameworks, and third-party components appropriately. Team members should be able to explain the submitted code, experiment contract, scoring policy, Agent information boundary, and known limitations.
 
-LEAN Worker licensing and notices:
+### Open-source License
 
+Original AlphaForge source code and team-authored documentation are released under the
+[MIT License](LICENSE).
+
+The MIT License does **not** relicense third-party components, downloaded market data,
+publisher-owned papers, trademarks, or external services. Their original licenses,
+contracts, and terms remain applicable. See:
+
+- [Root third-party notices](THIRD_PARTY_NOTICES.md)
 - [lean_worker/LICENSE](lean_worker/LICENSE)
 - [lean_worker/THIRD_PARTY_NOTICES.md](lean_worker/THIRD_PARTY_NOTICES.md)
+
+The PDF files currently tracked under `docs/research/papers/` are not covered by the MIT
+License. Before public release, the team must confirm redistribution permission for every
+paper or remove the PDF from the public Git history and retain bibliographic metadata and
+authorized links only.
 
 > **Risk Disclaimer:** AlphaForge is for coursework, research, and educational demonstration only. It is not investment advice, a trading recommendation, or a promise of returns. Historical backtests, scores, AI-generated strategies, and robustness analyses may be affected by data quality, parameter selection, execution assumptions, overfitting, and changing market structure.
