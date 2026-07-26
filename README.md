@@ -406,7 +406,7 @@ Run History 使用锁和临时文件替换进行原子写入。异步 Teaching E
 ### 11.2 克隆项目
 
 ```bash
-git clone https://github.com/FrankForest1003/NUS_AI-ML-Finance_Final_Project.git
+git clone https://github.com/FrankForest1003/AlphaForge.git
 cd NUS_AI-ML-Finance_Final_Project
 ```
 
