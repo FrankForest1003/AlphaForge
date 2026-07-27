@@ -1,0 +1,77 @@
+{
+  "schema_version": "1.0",
+  "study_id": "designer-reliability-v1",
+  "kind": "reliability",
+  "description": "Measure structured Designer output reliability without running LEAN.",
+  "replicates": 10,
+  "tracks": ["Traditional", "ML", "Hybrid"],
+  "max_parallel_tracks": 3,
+  "arms": [
+    {
+      "id": "current",
+      "label": "Current Designer",
+      "options": {
+        "thinking_enabled": true,
+        "include_valid_example": true,
+        "transport_attempts": 2,
+        "semantic_attempts": 2
+      }
+    },
+    {
+      "id": "thinking_off",
+      "label": "Thinking Disabled",
+      "options": {
+        "thinking_enabled": false,
+        "include_valid_example": true,
+        "transport_attempts": 2,
+        "semantic_attempts": 2
+      }
+    },
+    {
+      "id": "no_valid_example",
+      "label": "Valid Example Removed",
+      "options": {
+        "thinking_enabled": true,
+        "include_valid_example": false,
+        "transport_attempts": 2,
+        "semantic_attempts": 2
+      }
+    },
+    {
+      "id": "no_retry",
+      "label": "Single Attempt",
+      "options": {
+        "thinking_enabled": true,
+        "include_valid_example": true,
+        "transport_attempts": 1,
+        "semantic_attempts": 1
+      }
+    }
+  ],
+  "run_settings": {
+    "symbols": ["MSFT", "AAPL", "NVDA", "GOOGL", "AMZN"],
+    "start_date": "2020-01-02",
+    "end_date": "2024-12-31",
+    "benchmark": "SPY",
+    "transaction_cost_bps": 10.0,
+    "slippage_bps": 5.0
+  },
+  "execution": {
+    "arm_order": "sequential",
+    "track_order": "parallel",
+    "resume_interrupted": true
+  },
+  "reporting": {
+    "formats": ["json", "csv", "markdown"],
+    "metrics": [
+      "first_schema_pass_rate",
+      "semantic_retry_rate",
+      "empty_response_rate",
+      "api_attempts",
+      "prompt_tokens",
+      "completion_tokens",
+      "latency_ms",
+      "unique_spec_count"
+    ]
+  }
+}
