@@ -826,7 +826,11 @@ Pydantic 还检查：
 - 类型和数值范围；
 - Feature 不可重复；
 - Track 结构合法；
-- `top_k × max_position_weight` 必须能够覆盖 `gross_exposure`。
+- `top_k` 不超过运行股票池。
+
+`gross_exposure` 是目标上限。若 Top-K 与单股上限只能形成更低的组合容量，
+模板按可实现容量配置仓位并保留剩余现金；这是一种正常的约束结果，不会被
+判定为参数错误。
 
 ### 11.4 Performance Critic
 

@@ -161,13 +161,3 @@ class StrategyTemplateSpec(BaseModel):
         elif self.signal is None or self.model is None:
             raise ValueError("Hybrid requires both a transparent signal and an ML model")
         return self
-
-    @model_validator(mode="after")
-    def validate_portfolio_capacity(self):
-        capacity = self.selection.top_k * self.portfolio.max_position_weight
-        if capacity + 1e-12 < self.portfolio.gross_exposure:
-            raise ValueError(
-                "top_k * max_position_weight must cover gross_exposure"
-            )
-        return self
-

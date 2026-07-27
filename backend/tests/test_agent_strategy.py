@@ -11,7 +11,7 @@ from agent import DeepSeekCritic, DeepSeekDesigner
 from agent.critic import build_metric_comparisons
 from agent.prompts import PARAMETER_RULES, TRACK_SPEC_EXAMPLES
 from app.schemas import CritiqueReport, RunSettings, StrategyTemplateSpec
-from app.services.baseline_service import ForgeService
+from app.services.baseline_service import ForgeService, public_agent_failure
 from app.services.worker_client import LeanWorkerPoolClient, WorkerClientError
 
 
@@ -273,6 +273,28 @@ def test_parameter_rules_expose_previously_missed_numeric_bounds():
     rules = " ".join(PARAMETER_RULES)
     assert "ridge_alpha 0.01-100" in rules
     assert "gross_exposure 0.50-0.98" in rules
+    assert "position limits may result in a lower realized exposure" in rules
+    assert "top_k * max_position_weight" not in rules
+
+
+def test_public_agent_failure_hides_raw_pydantic_details():
+    raw_error = (
+        "1 validation error for StrategyTemplateSpec: "
+        "top_k * max_position_weight must cover gross_exposure"
+    )
+    trace = {
+        "semantic_validation_attempts": [
+            {"status": "schema_failed", "error": raw_error}
+        ]
+    }
+
+    code, message = public_agent_failure(trace)
+
+    assert code == "agent_parameter_schema"
+    assert "strategy parameter contract" in message
+    assert "top_k" not in message
+    assert "Pydantic" not in message
+    assert trace["semantic_validation_attempts"][0]["error"] == raw_error
 
 
 def test_forge_runs_three_parameter_iterations_and_retains_best():
@@ -482,7 +504,13 @@ def test_forge_preserves_best_completed_iteration_when_later_worker_poll_fails()
     assert candidate["best_iteration"] == 2
     assert candidate["attempted_iteration_count"] == 3
     assert candidate["partial_completion"] is True
-    assert "temporary worker index failure" in candidate["partial_completion_reason"]
+    assert candidate["partial_completion_reason"] == (
+        service_module.PUBLIC_BACKTEST_SERVICE_ERROR
+    )
+    assert "temporary worker index failure" not in candidate["partial_completion_reason"]
+    assert "temporary worker index failure" in service._traces["forge-partial"][
+        "worker_attempts"
+    ][-1]["error"]["message"]
     service._executor.shutdown(wait=True)
 
 

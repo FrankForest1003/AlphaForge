@@ -56,6 +56,36 @@ MAX_TEMPLATE_BACKTESTS = 3
 MAX_MATCH_ROUNDS = 5
 MAX_PUBLIC_CURVE_POINTS = 520
 
+PUBLIC_AI_PARAMETER_ERROR = (
+    "The AI proposal did not meet the strategy parameter contract after its "
+    "validation retry. Technical details are available in the run trace."
+)
+PUBLIC_AI_GENERATION_ERROR = (
+    "The AI proposal could not be completed. Technical details are available "
+    "in the run trace."
+)
+PUBLIC_BACKTEST_SERVICE_ERROR = (
+    "The backtest service could not complete this candidate. Technical details "
+    "are available in the run trace."
+)
+PUBLIC_TEMPLATE_RUNTIME_ERROR = (
+    "The compiled strategy did not complete its LEAN backtest. Technical details "
+    "are available in the run trace."
+)
+PUBLIC_FORGE_RUN_ERROR = (
+    "The Forge run stopped because an internal step could not be completed. "
+    "Technical details are available in the run trace."
+)
+
+
+def public_agent_failure(trace: dict[str, Any] | None) -> tuple[str, str]:
+    """Return a stable public code/message while raw provider details stay in Trace."""
+
+    semantic_attempts = (trace or {}).get("semantic_validation_attempts") or []
+    if any(item.get("status") == "schema_failed" for item in semantic_attempts):
+        return "agent_parameter_schema", PUBLIC_AI_PARAMETER_ERROR
+    return "agent_generation_failed", PUBLIC_AI_GENERATION_ERROR
+
 
 BASELINE_LESSONS = {
     "Momentum Rank": {
@@ -2169,6 +2199,7 @@ class ForgeService:
                     "analysis": {},
                     "behavior_evidence": {},
                     "error": None,
+                    "error_code": None,
                     "usage": {},
                     "generation_retries": 0,
                     "iteration_count": 0,
@@ -2718,12 +2749,23 @@ class ForgeService:
                 spec = validated.model_dump(mode="json")
                 source = compile_strategy_source(validated)
             except Exception as exc:
+                self._trace_change(
+                    run_id,
+                    last_pipeline_error={
+                        "stage": "template_parameter_validation",
+                        "track": track,
+                        "iteration": iteration_number,
+                        "type": type(exc).__name__,
+                        "message": str(exc),
+                    },
+                )
                 self._change_item(
                     run_id,
                     "candidates",
                     index,
                     state="failed",
-                    error=f"Template parameter contract failed: {exc}",
+                    error=PUBLIC_AI_PARAMETER_ERROR,
+                    error_code="agent_parameter_schema",
                     failure_classification="agent_parameter_schema",
                 )
                 return
@@ -2748,6 +2790,7 @@ class ForgeService:
                 usage=usage,
                 generation_retries=generation_retries,
                 error=None,
+                error_code=None,
             )
 
             worker_run_id: str | None = None
@@ -2771,7 +2814,8 @@ class ForgeService:
                     worker_run_id,
                 )
             except Exception as exc:
-                partial_completion_reason = str(exc)
+                internal_error = str(exc)
+                partial_completion_reason = PUBLIC_BACKTEST_SERVICE_ERROR
                 if worker_run_id is not None:
                     self._update_worker_attempt(
                         run_id=run_id,
@@ -2780,7 +2824,7 @@ class ForgeService:
                         outcome="worker_polling_failed",
                         error={
                             "type": type(exc).__name__,
-                            "message": partial_completion_reason,
+                            "message": internal_error,
                         },
                     )
                 if iterations:
@@ -2790,7 +2834,8 @@ class ForgeService:
                     "candidates",
                     index,
                     state="failed",
-                    error=str(exc),
+                    error=PUBLIC_BACKTEST_SERVICE_ERROR,
+                    error_code="backtest_service_failed",
                     failure_classification="template_or_infrastructure_defect",
                 )
                 return
@@ -2808,7 +2853,7 @@ class ForgeService:
                     outcome="template_runtime_defect",
                     error={"type": "template_runtime_defect", "message": message},
                 )
-                partial_completion_reason = message
+                partial_completion_reason = PUBLIC_TEMPLATE_RUNTIME_ERROR
                 if iterations:
                     break
                 self._change_item(
@@ -2816,7 +2861,8 @@ class ForgeService:
                     "candidates",
                     index,
                     state="failed",
-                    error=message,
+                    error=PUBLIC_TEMPLATE_RUNTIME_ERROR,
+                    error_code="template_runtime_failed",
                     failure_classification="template_or_infrastructure_defect",
                 )
                 return
@@ -2917,7 +2963,7 @@ class ForgeService:
                     trace=getattr(exc, "trace", None),
                     error=exc,
                 )
-                iterations[-1]["critique_error"] = str(exc)
+                iterations[-1]["critique_error"] = PUBLIC_AI_GENERATION_ERROR
                 critique = {
                     "iteration": iteration_number,
                     "diagnosis": (
@@ -2999,7 +3045,8 @@ class ForgeService:
                     trace=getattr(exc, "trace", None),
                     error=exc,
                 )
-                iterations[-1]["revision_error"] = str(exc)
+                _, public_error = public_agent_failure(getattr(exc, "trace", None))
+                iterations[-1]["revision_error"] = public_error
                 break
 
         if not iterations:
@@ -3009,6 +3056,7 @@ class ForgeService:
                 index,
                 state="failed",
                 error="No parameter iteration completed",
+                error_code="no_completed_trial",
                 failure_classification="agent_or_platform_failure",
             )
             return
@@ -3054,6 +3102,7 @@ class ForgeService:
             partial_completion_reason=partial_completion_reason,
             failure_classification=None,
             error=None,
+            error_code=None,
             selection_origin=(
                 "prior_round_incumbent"
                 if retained_incumbent
@@ -3698,6 +3747,7 @@ class ForgeService:
                         index,
                         state="generating",
                         error=None,
+                        error_code=None,
                     )
                     future = designer_executor.submit(
                         self.designer.generate,
@@ -3746,9 +3796,11 @@ class ForgeService:
                                 generated.get("generation_retries", 0) or 0
                             ),
                             error=None,
+                            error_code=None,
                         )
                     except Exception as exc:
                         failed_trace = getattr(exc, "trace", None)
+                        error_code, public_error = public_agent_failure(failed_trace)
                         self._record_agent_call(
                             run_id=run_id,
                             track=track,
@@ -3769,7 +3821,9 @@ class ForgeService:
                                 )
                                 or 0
                             ),
-                            error=str(exc),
+                            error=public_error,
+                            error_code=error_code,
+                            failure_classification=error_code,
                         )
 
             self._change(
@@ -3848,9 +3902,14 @@ class ForgeService:
                     run_id,
                 )
         except Exception as exc:
-            self._change(run_id, state="failed", stage="Stopped", error=str(exc))
+            self._change(
+                run_id,
+                state="failed",
+                stage="Stopped",
+                error=PUBLIC_FORGE_RUN_ERROR,
+            )
             self._trace_change(run_id, state="failed", error=str(exc))
             if self.game_repository is not None:
-                self.game_repository.fail_round(run_id, str(exc))
+                self.game_repository.fail_round(run_id, PUBLIC_FORGE_RUN_ERROR)
         finally:
             self._persist_history(run_id)

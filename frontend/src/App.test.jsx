@@ -78,8 +78,12 @@ function parameterRun() {
     track: "Traditional",
     thesis: "Momentum and volatility ranks may improve risk adjusted returns.",
     signal: { components: [] },
-    selection: { top_k: 5 },
-    portfolio: { weighting: "inverse_volatility" },
+    selection: { top_k: 3 },
+    portfolio: {
+      weighting: "inverse_volatility",
+      gross_exposure: 0.95,
+      max_position_weight: 0.30,
+    },
   };
   const iteration = {
     iteration: 1,
@@ -91,7 +95,7 @@ function parameterRun() {
       maximum_drawdown: 0.18,
       end_equity: 120000,
     },
-    behavior_evidence: {},
+    behavior_evidence: { max_gross_exposure: 0.90 },
     critique: {
       diagnosis: "Risk-adjusted return is competitive with the public reference.",
       recommended_changes: [
@@ -178,6 +182,12 @@ describe("AlphaForge Studio", () => {
     expect(screen.getByRole("heading", { name: "User Strategy Hidden From AI" })).toBeInTheDocument();
     expect(screen.getByText("Transparent Risk Rank")).toBeInTheDocument();
     expect(screen.getByText(/Schema-valid parameters compiled/i)).toBeInTheDocument();
+    expect(screen.getAllByText("Position limits retain cash").length).toBeGreaterThan(0);
+    expect(
+      [...document.querySelectorAll(".exposure-cap-note")].some((note) =>
+        note.textContent.includes("can deploy up to 90%"),
+      ),
+    ).toBe(true);
     expect(screen.queryByText("PRIVATE HUMAN SOURCE")).not.toBeInTheDocument();
   });
 

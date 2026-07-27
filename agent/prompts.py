@@ -79,7 +79,8 @@ PARAMETER_RULES = [
         "portfolio fields are numeric: gross_exposure 0.50-0.98, "
         "max_position_weight 0.10-0.60, volatility_window 10-252, "
         "minimum_variance_blend 0-1, and rebalance_threshold 0-0.10; never null. "
-        "Ensure top_k * max_position_weight >= gross_exposure."
+        "Gross exposure is a target ceiling; position limits may result in a lower "
+        "realized exposure with the remainder held as cash."
     ),
     "schedule.frequency is weekly or monthly; minutes_after_open is 5-120.",
     (

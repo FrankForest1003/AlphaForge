@@ -149,13 +149,21 @@ def test_track_contract_rejects_hybrid_without_both_components():
         StrategyTemplateSpec.model_validate(payload)
 
 
-def test_portfolio_capacity_must_support_requested_exposure():
+def test_position_cap_may_leave_cash_below_requested_exposure():
     payload = traditional_spec()
-    payload["selection"]["top_k"] = 2
-    payload["portfolio"]["max_position_weight"] = 0.20
+    payload["selection"]["top_k"] = 3
+    payload["portfolio"]["gross_exposure"] = 0.95
+    payload["portfolio"]["max_position_weight"] = 0.30
 
-    with pytest.raises(ValidationError, match="must cover gross_exposure"):
-        StrategyTemplateSpec.model_validate(payload)
+    validated = StrategyTemplateSpec.model_validate(payload)
+
+    assert validated.selection.top_k == 3
+    assert validated.portfolio.gross_exposure == pytest.approx(0.95)
+    assert (
+        validated.selection.top_k * validated.portfolio.max_position_weight
+        == pytest.approx(0.90)
+    )
+    ast.parse(compile_strategy_source(validated))
 
 
 def test_agent_contract_contains_parameters_but_no_python_source_field():

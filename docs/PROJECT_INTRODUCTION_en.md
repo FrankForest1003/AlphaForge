@@ -701,7 +701,7 @@ The DSL supports:
 - weekly or monthly scheduling;
 - trend filters, stop loss, drawdown limits, and cooldown.
 
-Pydantic rejects unknown fields, invalid ranges, repeated features, track-contract violations, and portfolio-capacity contradictions.
+Pydantic rejects unknown fields, invalid ranges, repeated features, and track-contract violations. Gross exposure is a target ceiling: when Top-K and the single-position limit imply a lower deployable capacity, the template retains the remainder as cash and reports realized exposure separately.
 
 ### 11.4 Performance Critic
 

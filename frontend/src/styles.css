@@ -2738,6 +2738,38 @@ textarea:focus-visible {
   white-space: nowrap;
 }
 
+.exposure-cap-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 12px 16px;
+  color: #53697d;
+  background: #f2f7f6;
+  border-top: 1px solid #dce9e6;
+}
+
+.exposure-cap-note svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+  color: #2f756b;
+}
+
+.exposure-cap-note strong,
+.exposure-cap-note span {
+  display: block;
+}
+
+.exposure-cap-note strong {
+  color: #2f625d;
+  font-size: 12px;
+}
+
+.exposure-cap-note span {
+  margin-top: 3px;
+  font-size: 11px;
+  line-height: 1.55;
+}
+
 .strategy-parameter-details > summary {
   display: flex;
   align-items: center;

@@ -969,7 +969,7 @@ const PARAMETER_LABELS = {
   require_positive_score: "Positive scores only",
   hybrid_model_weight: "ML contribution",
   weighting: "Allocation method",
-  gross_exposure: "Target exposure",
+  gross_exposure: "Exposure target ceiling",
   max_position_weight: "Single-stock limit",
   volatility_window: "Risk lookback",
   minimum_variance_blend: "Minimum-variance blend",
@@ -1121,15 +1121,38 @@ function StrategyParameters({ spec }) {
   const modelLabel = spec.model
     ? readableEnum(spec.model.algorithm)
     : `${spec.signal?.components?.length || 0}-factor transparent rank`;
+  const requestedExposure = Number(spec.portfolio?.gross_exposure);
+  const topK = Number(spec.selection?.top_k);
+  const positionLimit = Number(spec.portfolio?.max_position_weight);
+  const positionCapacity = Math.round(topK * positionLimit * 1e10) / 1e10;
+  const positionCapBinds =
+    Number.isFinite(requestedExposure) &&
+    Number.isFinite(positionCapacity) &&
+    positionCapacity + 1e-12 < requestedExposure;
   return (
     <section className="strategy-parameters" aria-label="Strategy configuration">
       <div className="parameter-overview">
         <div><span>Decision engine</span><strong>{modelLabel}</strong></div>
         <div><span>Portfolio</span><strong>Top {spec.selection?.top_k || "—"} holdings</strong></div>
         <div><span>Allocation</span><strong>{readableEnum(spec.portfolio?.weighting || "Not set")}</strong></div>
-        <div><span>Exposure</span><strong>{parameterValue("gross_exposure", spec.portfolio?.gross_exposure)}</strong></div>
+        <div><span>Exposure target</span><strong>{parameterValue("gross_exposure", spec.portfolio?.gross_exposure)}</strong></div>
         <div><span>Rebalance</span><strong>{readableEnum(spec.schedule?.frequency || "—")}</strong></div>
       </div>
+
+      {positionCapBinds ? (
+        <div className="exposure-cap-note">
+          <CircleDollarSign size={17} />
+          <div>
+            <strong>Position limits retain cash</strong>
+            <span>
+              The strategy requests up to {parameterValue("gross_exposure", requestedExposure)},
+              while {topK} holdings at {parameterValue("max_position_weight", positionLimit)} each
+              can deploy up to {parameterValue("gross_exposure", positionCapacity)}. The remaining
+              portfolio stays in cash; this is an expected constraint, not a run failure.
+            </span>
+          </div>
+        </div>
+      ) : null}
 
       <details className="strategy-parameter-details">
         <summary>
@@ -2053,16 +2076,21 @@ function ResultsTable({ rows }) {
 function BehaviorGrid({ evidence }) {
   if (!evidence || !Object.keys(evidence).length) return null;
   const items = [
-    ["Filled Orders", evidence.filled_order_count],
-    ["Invested Snapshots", evidence.invested_snapshot_count],
-    ["Maximum Gross Exposure", evidence.max_gross_exposure],
-    ["Rebalances", evidence.rebalance_count],
-    ["Completed Rebalances", evidence.staged_rebalance_completed_count],
-    ["Replaced Targets", evidence.staged_rebalance_replacement_count],
+    ["Filled Orders", evidence.filled_order_count, "number"],
+    ["Invested Snapshots", evidence.invested_snapshot_count, "number"],
+    ["Realized Maximum Exposure", evidence.max_gross_exposure, "percent"],
+    ["Rebalances", evidence.rebalance_count, "number"],
+    ["Completed Rebalances", evidence.staged_rebalance_completed_count, "number"],
+    ["Replaced Targets", evidence.staged_rebalance_replacement_count, "number"],
   ];
   return (
     <div className="behavior-grid">
-      {items.map(([label, value]) => <div key={label}><span>{label}</span><strong>{formatNumber(value)}</strong></div>)}
+      {items.map(([label, value, format]) => (
+        <div key={label}>
+          <span>{label}</span>
+          <strong>{format === "percent" ? formatMetric(value, "percent") : formatNumber(value)}</strong>
+        </div>
+      ))}
     </div>
   );
 }
