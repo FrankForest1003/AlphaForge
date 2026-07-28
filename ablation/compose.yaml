@@ -1,0 +1,20 @@
+services:
+  runner:
+    build:
+      context: ..
+      dockerfile: ablation/Dockerfile
+    env_file:
+      - ../.env
+    environment:
+      ABLATION_WORKER_URLS: http://lean-worker:8081,http://lean-worker-2:8081,http://lean-worker-3:8081,http://lean-worker-4:8081
+      ALPHAFORGE_WORKER_TOKEN: ${ALPHAFORGE_WORKER_TOKEN:-local-dev-token}
+    networks:
+      - alphaforge
+    volumes:
+      - ./runs:/workspace/ablation/runs
+      - ../backend/workspace/run_history:/workspace/backend/workspace/run_history:ro
+
+networks:
+  alphaforge:
+    name: alphaforge_default
+    external: true

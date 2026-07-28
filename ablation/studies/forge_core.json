@@ -1,0 +1,83 @@
+{
+  "schema_version": "1.0",
+  "study_id": "forge-core-v1",
+  "kind": "forge",
+  "description": "Compare the current three-iteration Forge loop with Critic and baseline-context ablations.",
+  "replicates": 5,
+  "tracks": ["Traditional", "ML", "Hybrid"],
+  "max_parallel_tracks": 3,
+  "arms": [
+    {
+      "id": "full",
+      "label": "Full Loop",
+      "options": {
+        "iterations": 3,
+        "critic_enabled": true,
+        "baseline_context": true,
+        "shared_initial_branch": "full_vs_no_critic"
+      }
+    },
+    {
+      "id": "no_critic",
+      "label": "Critic Removed",
+      "options": {
+        "iterations": 3,
+        "critic_enabled": false,
+        "baseline_context": true,
+        "shared_initial_branch": "full_vs_no_critic"
+      }
+    },
+    {
+      "id": "no_baseline_context",
+      "label": "Baseline Context Removed",
+      "options": {
+        "iterations": 3,
+        "critic_enabled": true,
+        "baseline_context": false,
+        "shared_initial_branch": null
+      }
+    }
+  ],
+  "run_settings": {
+    "symbols": ["MSFT", "AAPL", "NVDA", "GOOGL", "AMZN"],
+    "start_date": "2020-01-02",
+    "end_date": "2024-12-31",
+    "initial_cash": 100000.0,
+    "benchmark": "SPY",
+    "transaction_cost_bps": 10.0,
+    "slippage_bps": 5.0
+  },
+  "execution": {
+    "freeze_public_baselines_per_replicate": true,
+    "reuse_shared_iteration_one": true,
+    "derive_one_shot_from_iteration_one": true,
+    "arm_order": "sequential",
+    "track_order": "parallel",
+    "iteration_order": "sequential",
+    "worker_poll_seconds": 2.0,
+    "worker_timeout_seconds": 1800,
+    "resume_interrupted": true
+  },
+  "reporting": {
+    "formats": ["json", "csv", "markdown"],
+    "primary_metrics": [
+      "sharpe_ratio",
+      "lean_completion_rate",
+      "best_minus_iteration_one_sharpe",
+      "full_minus_no_critic_sharpe",
+      "total_tokens",
+      "wall_clock_seconds"
+    ],
+    "secondary_metrics": [
+      "cagr",
+      "maximum_drawdown",
+      "sortino_ratio",
+      "annualized_volatility",
+      "portfolio_turnover",
+      "total_fees",
+      "filled_order_count",
+      "max_gross_exposure"
+    ],
+    "statistics": ["median", "iqr", "paired_win_rate", "hierarchical_bootstrap_95ci"]
+  }
+}
